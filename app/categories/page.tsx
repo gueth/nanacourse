@@ -19,7 +19,15 @@ export default function CategoriesPage() {
   }
 
   useEffect(() => {
-    loadCategories();
+    supabase
+      .from('categories')
+      .select('*')
+      .order('name')
+      .then(({ data, error }) => {
+        if (error) console.error(error);
+        else setCategories(data);
+        setLoading(false);
+      });
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {

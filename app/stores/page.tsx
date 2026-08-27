@@ -19,7 +19,15 @@ export default function StoresPage() {
   }
 
   useEffect(() => {
-    loadStores();
+    supabase
+      .from('stores')
+      .select('*')
+      .order('name')
+      .then(({ data, error }) => {
+        if (error) console.error(error);
+        else setStores(data);
+        setLoading(false);
+      });
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {

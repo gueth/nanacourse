@@ -33,7 +33,20 @@ export default function IngredientsPage() {
   }
 
   useEffect(() => {
-    loadAll();
+    Promise.all([
+      supabase.from('categories').select('*').order('name'),
+      supabase.from('stores').select('*').order('name'),
+      supabase
+        .from('ingredients')
+        .select('*, category:categories(*), prices:ingredient_prices(*, store:stores(*))')
+        .order('name')
+    ]).then(([{ data: cats }, { data: sts }, { data: ings, error }]) => {
+      if (error) console.error(error);
+      setCategories(cats ?? []);
+      setStores(sts ?? []);
+      setIngredients((ings as unknown as IngredientWithRelations[]) ?? []);
+      setLoading(false);
+    });
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {

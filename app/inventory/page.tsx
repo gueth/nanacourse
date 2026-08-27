@@ -24,7 +24,14 @@ export default function InventoryPage() {
   }
 
   useEffect(() => {
-    loadAll();
+    Promise.all([
+      supabase.from('inventory').select('*, ingredient:ingredients(*)').order('updated_at', { ascending: false }),
+      supabase.from('ingredients').select('*').order('name')
+    ]).then(([{ data: inv }, { data: ings }]) => {
+      setRows((inv as unknown as Row[]) ?? []);
+      setIngredients(ings ?? []);
+      setLoading(false);
+    });
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -56,7 +63,7 @@ export default function InventoryPage() {
   return (
     <div>
       <h1 className="title-hand text-4xl mb-1">Inventaire</h1>
-      <p className="opacity-70 mb-6">Ce qu'il te reste à la maison.</p>
+      <p className="opacity-70 mb-6">Ce qu&apos;il te reste à la maison.</p>
 
       <form onSubmit={handleSubmit} className="card flex flex-wrap items-end gap-4">
         <span className="tape" />
