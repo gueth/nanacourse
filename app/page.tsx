@@ -9,7 +9,6 @@ export default function Home() {
         {/* FOND ECRAN */}
          <div
             className="min-h-screen bg-no-repeat rounded-b-3xl"
-            style={{ backgroundImage: "url('/photo_fond_3.jpg')", backgroundSize: "100%", backgroundPosition: "top right" }}
         >
         </div>
 
