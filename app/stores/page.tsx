@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { Store } from '@/lib/types';
+import { SwipePages } from '@/components/SwipePages';
 
 export default function StoresPage() {
   const [stores, setStores] = useState<Store[]>([]);
@@ -10,6 +11,12 @@ export default function StoresPage() {
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
   const [color, setColor] = useState('#4b6043');
+  const [search, setSearch] = useState('');
+
+  const filtered = useMemo(
+    () => stores.filter((s) => s.name.toLowerCase().includes(search.trim().toLowerCase())),
+    [stores, search]
+  );
 
   async function loadStores() {
     const { data, error } = await supabase.from('stores').select('*').order('name');
@@ -48,10 +55,12 @@ export default function StoresPage() {
 
   if (loading) return <p>Chargement...</p>;
 
-  return (
+  const formPage = (
     <div>
       <h1 className="title-hand text-4xl mb-1">Magasins</h1>
       <p className="opacity-70 mb-6">Les enseignes où tu fais tes courses.</p>
+
+      <h2 className="title-hand text-2xl mb-3">Ajouter un magasin</h2>
 
       <form onSubmit={handleSubmit} className="card flex flex-wrap items-end gap-4">
         <span className="tape" />
@@ -71,9 +80,25 @@ export default function StoresPage() {
           Ajouter
         </button>
       </form>
+    </div>
+  );
+
+  const listPage = (
+    <div>
+      <h2 className="title-hand text-4xl mb-1">Tes magasins</h2>
+      <p className="opacity-70 mb-6">Recherche et gère tes magasins.</p>
+
+      <input
+        type="text"
+        placeholder="Rechercher un magasin..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        className="input-hand w-full mb-4"
+      />
 
       <ul className="space-y-3">
-        {stores.map((s) => (
+        {filtered.length === 0 && <p className="opacity-60">Aucun magasin ne correspond à ta recherche.</p>}
+        {filtered.map((s) => (
           <li key={s.id} className="card flex items-center justify-between">
             <span className="tape" />
             <span className="flex items-center gap-3">
@@ -89,4 +114,6 @@ export default function StoresPage() {
       </ul>
     </div>
   );
+
+  return <SwipePages pages={[formPage, listPage]} labels={['Ajouter un magasin', 'Liste des magasins']} />;
 }

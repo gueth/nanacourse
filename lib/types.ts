@@ -11,12 +11,20 @@ export type Store = {
   color: string | null;
 };
 
+export type Brand = {
+  id: string;
+  name: string;
+  rating: number | null;
+};
+
 export type Ingredient = {
   id: string;
   name: string;
   note: string | null;
   photo_url: string | null;
   category_id: string | null;
+  brand_id: string | null;
+  type: string | null;
 };
 
 export type IngredientPrice = {
@@ -29,6 +37,7 @@ export type IngredientPrice = {
 
 export type IngredientWithRelations = Ingredient & {
   category: Category | null;
+  brand: Brand | null;
   prices: (IngredientPrice & { store: Store })[];
 };
 
