@@ -6,7 +6,7 @@ type NavItem = {
   label: string;
   href : string;
   icon: React.ReactNode;
-  onClick?: () => void;
+  onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
 };
 
 const RADIUS = 260;   // rayon du cercle imaginaire (px)
