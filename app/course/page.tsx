@@ -29,7 +29,9 @@ import { deleteList as deleteListCascade } from '@/lib/deletions';
 import { analyzeList, summarizeTotal, type ListAnalysis, type TotalSummary } from '@/lib/optimize';
 // Icône poubelle pour supprimer un article de la liste
 // (Check / X : boutons ✓ / ✗ pour appliquer ou ignorer l'optimisation d'un article orange)
-import { Check, PowerOff, Trash2, X } from 'lucide-react';
+import { Check, Package, PowerOff, Settings, Trash2, X } from 'lucide-react';
+// Icône de menu qui ouvre les liens Inventaire et Paramètres
+import PageMenu from '@/components/PageMenu';
 // Quantités possibles selon le type d'ingrédient (kg, pièce, paquet...)
 import { formatQuantity, normalizeQuantity, quantityRule } from '@/lib/quantity';
 
@@ -39,14 +41,15 @@ const ITEM_COLUMNS = 'grid grid-cols-[1.25rem_minmax(0,1fr)_7.5rem_6.5rem_1.75re
 // Le budget (somme à ne pas dépasser, marge si des prix manquent, durée de la période)
 // se règle dans Paramètres > Budget : voir lib/budget.ts.
 
-// Liens affichés dans la colonne de droite, sous le bouton "+ Ajouter un ingrédient".
+// Options du menu (icône en haut à droite de la page).
 // Chaque élément contient :
 //  - href  : l'adresse de la page vers laquelle on va
-//  - title : le texte du bouton
+//  - title : le texte de l'option
 //  - desc  : une petite description sous le titre
-const actions = [
-  { href: '/inventory', title: 'Inventaire', desc: "Ce qu'il te reste à la maison." },
-  { href: '/settings', title: 'Paramètres', desc: 'Catégories, marques et ingrédients.' }
+//  - icon  : l'icône affichée à gauche
+const menuItems = [
+  { href: '/inventory', title: 'Inventaire', desc: "Ce qu'il te reste à la maison.", icon: <Package size={20} /> },
+  { href: '/settings', title: 'Paramètres', desc: 'Catégories, marques et ingrédients.', icon: <Settings size={20} /> }
 ];
 
 // ---------------------------------------------------------------------------
@@ -580,10 +583,15 @@ export default function CoursePage() {
     <div>
       {/* Cadre de confirmation des suppressions */}
       {confirmDialog}
-      {/* En-tête de la page */}
-      <h1 className="title-hand text-3xl mb-1">Mieux gérer son budget,</h1>
-      <h1 className="title-hand text-3xl mb-2">et tout sela en une course.</h1>
-      <p className="mb-5 opacity-70">Proposition de course.</p>
+      {/* En-tête de la page, avec le menu (Inventaire, Paramètres) en haut à droite */}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="title-hand text-3xl mb-1">Mieux gérer son budget,</h1>
+          <h1 className="title-hand text-3xl mb-2">et tout sela en une course.</h1>
+          <p className="mb-5 opacity-70">Proposition de course.</p>
+        </div>
+        <PageMenu items={menuItems} />
+      </div>
 
       {/* Mise en page en deux colonnes sur écran large (lg:) :
           à gauche la proposition de liste (2/3), à droite les boutons (1/3).
@@ -735,7 +743,7 @@ export default function CoursePage() {
           })}
         </div>
 
-        {/* ----- COLONNE DE DROITE : boutons d'action ----- */}
+        {/* ----- COLONNE DE DROITE : bouton d'ajout ----- */}
         {/* "lg:sticky lg:top-6" : sur grand écran, la colonne reste visible quand on fait défiler. */}
         <div className="flex flex-col lg:sticky lg:top-6">
           {/* Ce bouton n'ouvre pas une autre page : il affiche le cadre d'ajout au-dessus de l'écran */}
@@ -747,13 +755,6 @@ export default function CoursePage() {
             <p className="title-hand text-2xl mb-1">+ Ajouter un ingrédient</p>
             <p className="text-sm opacity-70">À ta liste de courses en cours.</p>
           </button>
-          {actions.map((a) => (
-            <Link key={a.href} href={a.href} className="card block hover:-translate-y-0.5 transition-transform">
-              <span className="tape" />
-              <p className="title-hand text-2xl mb-1">{a.title}</p>
-              <p className="text-sm opacity-70">{a.desc}</p>
-            </Link>
-          ))}
         </div>
       </div>
 
