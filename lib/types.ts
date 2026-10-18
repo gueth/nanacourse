@@ -7,6 +7,7 @@ export type Category = {
 export type Store = {
   id: string;
   name: string;
+  chain: string | null; // enseigne (ex : Carrefour), pour distinguer plusieurs magasins d'une même chaîne
   address: string | null;
   color: string | null;
 };

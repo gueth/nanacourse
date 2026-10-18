@@ -1,13 +1,14 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { TYPE_SUGGESTIONS } from '@/lib/quantity';
 import { Camera } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { storeLabel } from '@/lib/stores';
 import type { Brand, Category, IngredientWithRelations, Store } from '@/lib/types';
 import PriceEditor from '@/components/PriceEditor';
 import { SwipePages } from '@/components/SwipePages';
 
-const TYPE_SUGGESTIONS = ['pièce', 'kg', 'g', 'litre', 'paquet', 'conserve', 'bouteille'];
 
 export default function IngredientsPage() {
   const [ingredients, setIngredients] = useState<IngredientWithRelations[]>([]);
@@ -180,7 +181,7 @@ export default function IngredientsPage() {
 
       <h2 className="title-hand text-2xl mb-3">Ajouter un nouvel ingrédient</h2>
 
-      <form onSubmit={handleSubmit} className="card flex flex-wrap items-end gap-4">
+      <form onSubmit={handleSubmit} className="card form-grid">
         <span className="tape" />
         <input
           ref={fileInputRef}
@@ -253,7 +254,7 @@ export default function IngredientsPage() {
             <option value="">—</option>
             {stores.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.name}
+                {storeLabel(s)}
               </option>
             ))}
           </select>
@@ -272,7 +273,7 @@ export default function IngredientsPage() {
       </form>
 
       {/* MINI-FORMULAIRE MARQUE : pas de page dédiée, juste nom + avis sur 5 */}
-      <div className="card flex flex-wrap items-end gap-4">
+      <div className="card form-grid">
         <span className="tape" />
         <div>
           <label className="field-label">Nouvelle marque</label>

@@ -4,8 +4,21 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { Ingredient, InventoryRow } from '@/lib/types';
 import { SwipePages } from '@/components/SwipePages';
+import FamilyList from '@/components/FamilyList';
+import { useConfirm } from '@/components/ConfirmDialog';
+import Modal from '@/components/Modal';
+import PantryScan from '@/components/PantryScan';
+import { Camera } from 'lucide-react';
 
 type Row = InventoryRow & { ingredient: Ingredient };
+
+// Inventaire (le plus récemment mis à jour en premier) et liste des ingrédients pour le formulaire
+function fetchAll() {
+  return Promise.all([
+    supabase.from('inventory').select('*, ingredient:ingredients(*)').order('updated_at', { ascending: false }),
+    supabase.from('ingredients').select('*').order('name')
+  ]);
+}
 
 export default function InventoryPage() {
   const [rows, setRows] = useState<Row[]>([]);
@@ -14,6 +27,10 @@ export default function InventoryPage() {
   const [ingredientId, setIngredientId] = useState('');
   const [quantity, setQuantity] = useState('1');
   const [search, setSearch] = useState('');
+  // Cadre de confirmation avant suppression
+  const [confirm, confirmDialog] = useConfirm();
+  // Cadre du scan de frigo / placards ouvert ou non
+  const [scanOpen, setScanOpen] = useState(false);
 
   const filtered = useMemo(
     () =>
@@ -22,20 +39,14 @@ export default function InventoryPage() {
   );
 
   async function loadAll() {
-    const [{ data: inv }, { data: ings }] = await Promise.all([
-      supabase.from('inventory').select('*, ingredient:ingredients(*)').order('updated_at', { ascending: false }),
-      supabase.from('ingredients').select('*').order('name')
-    ]);
+    const [{ data: inv }, { data: ings }] = await fetchAll();
     setRows((inv as unknown as Row[]) ?? []);
     setIngredients(ings ?? []);
     setLoading(false);
   }
 
   useEffect(() => {
-    Promise.all([
-      supabase.from('inventory').select('*, ingredient:ingredients(*)').order('updated_at', { ascending: false }),
-      supabase.from('ingredients').select('*').order('name')
-    ]).then(([{ data: inv }, { data: ings }]) => {
+    fetchAll().then(([{ data: inv }, { data: ings }]) => {
       setRows((inv as unknown as Row[]) ?? []);
       setIngredients(ings ?? []);
       setLoading(false);
@@ -60,8 +71,10 @@ export default function InventoryPage() {
     else loadAll();
   }
 
-  async function handleDelete(id: string) {
-    const { error } = await supabase.from('inventory').delete().eq('id', id);
+  // SUPPRESSION d'un ingrédient de l'inventaire, après confirmation
+  async function handleDelete(r: Row) {
+    if (!(await confirm("Retirer de l'inventaire", `Retirer « ${r.ingredient.name} » de l'inventaire ?`))) return;
+    const { error } = await supabase.from('inventory').delete().eq('id', r.id);
     if (error) console.error(error);
     else loadAll();
   }
@@ -71,11 +84,16 @@ export default function InventoryPage() {
   const formPage = (
     <div>
       <h1 className="title-hand text-4xl mb-1">Inventaire</h1>
-      <p className="opacity-70 mb-6">Ce qu&apos;il te reste à la maison.</p>
+      <p className="opacity-70 mb-4">Ce qu&apos;il te reste à la maison.</p>
+
+      {/* SCAN DU FRIGO ET DES PLACARDS : photos -> produits reconnus -> mise à jour du stock */}
+      <button onClick={() => setScanOpen(true)} className="btn-hand flex items-center gap-2 mb-6">
+        <Camera size={18} /> Scanner mon frigo / mes placards
+      </button>
 
       <h2 className="title-hand text-2xl mb-3">Mettre à jour un stock</h2>
 
-      <form onSubmit={handleSubmit} className="card flex flex-wrap items-end gap-4">
+      <form onSubmit={handleSubmit} className="card form-grid">
         <span className="tape" />
         <div>
           <label className="field-label">Ingrédient</label>
@@ -117,33 +135,57 @@ export default function InventoryPage() {
 
       <ul className="space-y-3">
         {filtered.length === 0 && <p className="opacity-60">Aucun ingrédient ne correspond à ta recherche.</p>}
-        {filtered.map((r) => {
-          const low = r.low_stock;
-          return (
-            <li
-              key={r.id}
-              className={`card flex items-center justify-between ${low ? 'bg-ink text-paper' : 'bg-card text-ink'}`}
-            >
-              <span className="tape" />
-              <span className="flex items-center gap-3">
-                {low && <span className="text-brick font-bold">⚠</span>}
-                <span className="text-lg">{r.ingredient.name}</span>
-                <span className={`text-sm ${low ? 'opacity-80' : 'opacity-60'}`}>quantité : {r.quantity}</span>
-              </span>
-              <span className="flex gap-3">
-                <button onClick={() => toggleLowStock(r.id, r.low_stock)} className="btn-ghost">
-                  {r.low_stock ? 'suffisant' : 'stock faible'}
-                </button>
-                <button onClick={() => handleDelete(r.id)} className="btn-ghost">
-                  supprimer
-                </button>
-              </span>
-            </li>
-          );
-        })}
+        {/* Les variantes d'un même produit sont regroupées sous une bannière (ex : Œufs) */}
+        <FamilyList
+          items={filtered}
+          nameOf={(r) => r.ingredient.name}
+          renderItem={(r, nested) => {
+            const low = r.low_stock;
+            return (
+              // Dans une bannière de famille : simple ligne (la bannière fait office de carte) ; seul : carte avec scotch
+              <li
+                key={r.id}
+                className={`flex items-center justify-between ${nested ? 'py-3 px-2' : 'card'} ${low ? 'bg-ink text-paper' : nested ? '' : 'bg-card text-ink'}`}
+              >
+                {!nested && <span className="tape" />}
+                <span className="flex items-center gap-3">
+                  {low && <span className="text-brick font-bold">⚠</span>}
+                  <span className="text-lg">{r.ingredient.name}</span>
+                  <span className={`text-sm ${low ? 'opacity-80' : 'opacity-60'}`}>quantité : {r.quantity}</span>
+                </span>
+                <span className="flex gap-3">
+                  <button onClick={() => toggleLowStock(r.id, r.low_stock)} className="btn-ghost">
+                    {r.low_stock ? 'suffisant' : 'stock faible'}
+                  </button>
+                  <button onClick={() => handleDelete(r)} className="btn-ghost">
+                    supprimer
+                  </button>
+                </span>
+              </li>
+            );
+          }}
+        />
       </ul>
     </div>
   );
 
-  return <SwipePages pages={[formPage, listPage]} labels={['Mettre à jour un stock', "Liste de l'inventaire"]} />;
+  return (
+    <>
+      {confirmDialog}
+      {/* Cadre du scan, au-dessus de la page ; l'inventaire est rechargé une fois la mise à jour faite */}
+      {scanOpen && (
+        <Modal title="Scanner frigo et placards" onClose={() => setScanOpen(false)}>
+          <PantryScan
+            ingredients={ingredients}
+            stockByIngredient={Object.fromEntries(rows.map((r) => [r.ingredient_id, r.quantity]))}
+            onDone={() => {
+              setScanOpen(false);
+              loadAll();
+            }}
+          />
+        </Modal>
+      )}
+      <SwipePages pages={[formPage, listPage]} labels={['Mettre à jour un stock', "Liste de l'inventaire"]} />
+    </>
+  );
 }

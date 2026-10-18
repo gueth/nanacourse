@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { storeLabel } from '@/lib/stores';
 import type { Store } from '@/lib/types';
 import { SwipePages } from '@/components/SwipePages';
 
@@ -62,7 +63,7 @@ export default function StoresPage() {
 
       <h2 className="title-hand text-2xl mb-3">Ajouter un magasin</h2>
 
-      <form onSubmit={handleSubmit} className="card flex flex-wrap items-end gap-4">
+      <form onSubmit={handleSubmit} className="card form-grid">
         <span className="tape" />
         <div>
           <label className="field-label">Nom</label>
@@ -103,7 +104,7 @@ export default function StoresPage() {
             <span className="tape" />
             <span className="flex items-center gap-3">
               <span className="w-3.5 h-3.5 rounded-full border border-ink" style={{ background: s.color ?? '#ccc' }} />
-              <span className="text-lg">{s.name}</span>
+              <span className="text-lg">{storeLabel(s)}</span>
               {s.address && <span className="text-sm opacity-60">— {s.address}</span>}
             </span>
             <button onClick={() => handleDelete(s.id)} className="btn-ghost">

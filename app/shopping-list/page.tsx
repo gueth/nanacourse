@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { storeLabel } from '@/lib/stores';
 import type { IngredientWithRelations, Store } from '@/lib/types';
 import { optimizeShoppingList, type ShoppingItem, type OptimizationResult } from '@/lib/optimize';
 import { SwipePages } from '@/components/SwipePages';
@@ -88,7 +89,7 @@ export default function ShoppingListPage() {
         ingredientId,
         ingredientName: ing.name,
         quantity,
-        options: ing.prices.filter((p) => p.available).map((p) => ({ storeId: p.store_id, storeName: p.store.name, price: p.price }))
+        options: ing.prices.filter((p) => p.available).map((p) => ({ storeId: p.store_id, storeName: storeLabel(p.store), price: p.price }))
       };
     });
     setResult(optimizeShoppingList(items, stores));
@@ -99,7 +100,8 @@ export default function ShoppingListPage() {
     if (!result) return;
     const { data: list, error: listError } = await supabase
       .from('shopping_lists')
-      .insert({ name: 'Liste de courses', estimated_price: result.totalPrice })
+      // Une nouvelle liste est toujours créée désactivée (on l'active dans Paramètres > Listes de courses)
+      .insert({ name: 'Liste de courses', estimated_price: result.totalPrice, is_active: false })
       .select()
       .single();
     if (listError || !list) return console.error(listError);
@@ -182,7 +184,7 @@ export default function ShoppingListPage() {
             {result.breakdown.map((b) => (
               <div key={b.store.id} className="card">
                 <span className="tape" style={{ background: `${b.store.color ?? '#c98a2c'}55` }} />
-                <p className="title-hand text-2xl mb-2">{b.store.name}</p>
+                <p className="title-hand text-2xl mb-2">{storeLabel(b.store)}</p>
                 <ul className="text-sm space-y-1 mb-2">
                   {b.items.map((it) => (
                     <li key={it.ingredientId} className="flex justify-between">
@@ -212,7 +214,7 @@ export default function ShoppingListPage() {
               </button>
             ) : (
               <p className="title-hand text-2xl text-herb">
-                Liste enregistrée ✓ — retrouve-la sur la page Course pour la valider.
+                Liste enregistrée ✓ — active-la dans Paramètres › Listes de courses pour la retrouver sur la page Course.
               </p>
             )}
           </div>

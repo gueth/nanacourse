@@ -1,125 +1,120 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
+import { Suspense, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import { SwipePages } from '@/components/SwipePages';
+import type { Brand, Category, IngredientWithRelations, Store } from '@/lib/types';
+import CategoriesSettings from '@/components/settings/CategoriesSettings';
+import BrandsSettings from '@/components/settings/BrandsSettings';
+import IngredientsSettings from '@/components/settings/IngredientsSettings';
+import StoresSettings from '@/components/settings/StoresSettings';
+import ListsSettings from '@/components/settings/ListsSettings';
+import BudgetSettings from '@/components/settings/BudgetSettings';
 
-type Category = { id: string; name: string; budget_limit: number | null };
+// Les onglets de la page Paramètres
+const TABS = [
+  { id: 'categories', label: 'Catégories' },
+  { id: 'brands', label: 'Marques' },
+  { id: 'stores', label: 'Supermarchés' },
+  { id: 'ingredients', label: 'Ingrédients' },
+  { id: 'lists', label: 'Listes de courses' },
+  { id: 'budget', label: 'Budget' }
+] as const;
 
-export default function CategoriesPage() {
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [name, setName] = useState('');
-  const [budget, setBudget] = useState('');
-  const [search, setSearch] = useState('');
+type TabId = (typeof TABS)[number]['id'];
 
-  const filtered = useMemo(
-    () => categories.filter((c) => c.name.toLowerCase().includes(search.trim().toLowerCase())),
-    [categories, search]
+// Charge en une fois tout ce dont les onglets Catégories, Marques, Supermarchés et Ingrédients ont besoin
+function fetchAll() {
+  return Promise.all([
+    supabase.from('categories').select('*').order('name'),
+    supabase.from('brands').select('*').order('name'),
+    supabase.from('stores').select('*').order('name'),
+    supabase
+      .from('ingredients')
+      .select('*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(*))')
+      .order('name')
+  ]);
+}
+
+// useSearchParams doit être entouré d'un <Suspense> (sinon la compilation de production échoue)
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={<p>Chargement...</p>}>
+      <SettingsContent />
+    </Suspense>
   );
+}
 
-  async function loadCategories() {
-    const { data, error } = await supabase.from('categories').select('*').order('name');
+function SettingsContent() {
+  // Onglet affiché : celui indiqué dans l'adresse (ex : /settings?tab=lists), sinon Catégories.
+  // Changer d'onglet met à jour l'adresse : un lien comme "Gérer mes listes" ouvre donc directement le bon onglet.
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const asked = searchParams.get('tab');
+  const tab: TabId = TABS.some((t) => t.id === asked) ? (asked as TabId) : 'categories';
+  function setTab(id: TabId) {
+    router.replace(`/settings?tab=${id}`, { scroll: false });
+  }
+  const [loading, setLoading] = useState(true);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [brands, setBrands] = useState<Brand[]>([]);
+  const [stores, setStores] = useState<Store[]>([]);
+  const [ingredients, setIngredients] = useState<IngredientWithRelations[]>([]);
+
+  // CHARGEMENT (ET RECHARGEMENT APRÈS CHAQUE MODIFICATION) DES DONNÉES
+  // Range les données reçues dans les états de la page
+  function applyData([{ data: cats }, { data: brs }, { data: sts }, { data: ings, error }]: Awaited<ReturnType<typeof fetchAll>>) {
     if (error) console.error(error);
-    else setCategories(data);
+    setCategories(cats ?? []);
+    setBrands(brs ?? []);
+    setStores(sts ?? []);
+    setIngredients((ings as unknown as IngredientWithRelations[]) ?? []);
     setLoading(false);
   }
 
+  async function loadAll() {
+    applyData(await fetchAll());
+  }
+
   useEffect(() => {
-    supabase
-      .from('categories')
-      .select('*')
-      .order('name')
-      .then(({ data, error }) => {
-        if (error) console.error(error);
-        else setCategories(data);
-        setLoading(false);
-      });
+    fetchAll().then(applyData);
   }, []);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!name.trim()) return;
-    const { error } = await supabase
-      .from('categories')
-      .insert({ name: name.trim(), budget_limit: budget ? Number(budget) : null });
-    if (error) return console.error(error);
-    setName('');
-    setBudget('');
-    loadCategories();
-  }
-
-  async function handleDelete(id: string) {
-    const { error } = await supabase.from('categories').delete().eq('id', id);
-    if (error) console.error(error);
-    else loadCategories();
-  }
 
   if (loading) return <p>Chargement...</p>;
 
-  const formPage = (
+  return (
     <div>
-      <h1 className="title-hand text-4xl mb-1">Catégories</h1>
-      <p className="opacity-70 mb-6">Fixe un budget max par catégorie, sur chaque achat.</p>
+      <h1 className="title-hand text-4xl mb-4">Paramètres</h1>
 
-      <h2 className="title-hand text-2xl mb-3">Ajouter une catégorie</h2>
-
-      <form onSubmit={handleSubmit} className="card flex flex-wrap items-end gap-4">
-        <span className="tape" />
-        <div>
-          <label className="field-label">Nom</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Fruits & légumes" className="input-hand" />
-        </div>
-        <div>
-          <label className="field-label">Budget max (€)</label>
-          <input
-            value={budget}
-            onChange={(e) => setBudget(e.target.value)}
-            type="number"
-            step="0.01"
-            placeholder="40"
-            className="input-hand w-24"
-          />
-        </div>
-        <button type="submit" className="btn-hand">
-          Ajouter
-        </button>
-      </form>
-    </div>
-  );
-
-  const listPage = (
-    <div>
-      <h2 className="title-hand text-4xl mb-1">Tes catégories</h2>
-      <p className="opacity-70 mb-6">Recherche et gère tes catégories.</p>
-
-      <input
-        type="text"
-        placeholder="Rechercher une catégorie..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        className="input-hand w-full mb-4"
-      />
-
-      <ul className="space-y-3">
-        {filtered.length === 0 && <p className="opacity-60">Aucune catégorie ne correspond à ta recherche.</p>}
-        {filtered.map((c) => (
-          <li key={c.id} className="card flex items-center justify-between">
-            <span className="tape" />
-            <span className="text-lg">{c.name}</span>
-            <span className="flex items-center gap-4">
-              <span className="text-mustard font-bold">
-                {c.budget_limit != null ? `${c.budget_limit} €` : 'pas de budget'}
-              </span>
-              <button onClick={() => handleDelete(c.id)} className="btn-ghost">
-                supprimer
-              </button>
-            </span>
-          </li>
+      {/* BARRE D'ONGLETS : l'onglet actif est mis en avant */}
+      <div className="flex flex-wrap gap-1 border-b-2 border-ink mb-6">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`nav-tab ${tab === t.id ? '' : 'opacity-50'}`}
+          >
+            {t.label}
+          </button>
         ))}
-      </ul>
+      </div>
+
+      {tab === 'categories' && <CategoriesSettings categories={categories} onChange={loadAll} />}
+      {tab === 'brands' && <BrandsSettings brands={brands} onChange={loadAll} />}
+      {tab === 'stores' && <StoresSettings stores={stores} onChange={loadAll} />}
+      {/* Les listes chargent elles-mêmes leurs données (avec leurs articles) */}
+      {tab === 'lists' && <ListsSettings />}
+      {/* Le budget charge lui-même ses réglages et les dépenses de la période */}
+      {tab === 'budget' && <BudgetSettings />}
+      {tab === 'ingredients' && (
+        <IngredientsSettings
+          ingredients={ingredients}
+          categories={categories}
+          brands={brands}
+          stores={stores}
+          onChange={loadAll}
+        />
+      )}
     </div>
   );
-
-  return <SwipePages pages={[formPage, listPage]} labels={['Ajouter une catégorie', 'Liste des catégories']} />;
 }
