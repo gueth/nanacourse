@@ -10,6 +10,9 @@ export type Store = {
   chain: string | null; // enseigne (ex : Carrefour), pour distinguer plusieurs magasins d'une même chaîne
   address: string | null;
   color: string | null;
+  // Position du magasin, calculée une fois à partir de son adresse (voir lib/geo.ts)
+  latitude?: number | null;
+  longitude?: number | null;
 };
 
 export type Brand = {

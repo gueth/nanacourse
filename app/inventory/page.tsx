@@ -8,7 +8,8 @@ import FamilyList from '@/components/FamilyList';
 import { useConfirm } from '@/components/ConfirmDialog';
 import Modal from '@/components/Modal';
 import PantryScan from '@/components/PantryScan';
-import { Camera } from 'lucide-react';
+import ReceiptScan from '@/components/ReceiptScan';
+import { Camera, ReceiptText } from 'lucide-react';
 
 type Row = InventoryRow & { ingredient: Ingredient };
 
@@ -31,6 +32,8 @@ export default function InventoryPage() {
   const [confirm, confirmDialog] = useConfirm();
   // Cadre du scan de frigo / placards ouvert ou non
   const [scanOpen, setScanOpen] = useState(false);
+  // Cadre du scan de reçu ouvert ou non
+  const [receiptOpen, setReceiptOpen] = useState(false);
 
   const filtered = useMemo(
     () =>
@@ -86,10 +89,23 @@ export default function InventoryPage() {
       <h1 className="title-hand text-4xl mb-1">Inventaire</h1>
       <p className="opacity-70 mb-4">Ce qu&apos;il te reste à la maison.</p>
 
-      {/* SCAN DU FRIGO ET DES PLACARDS : photos -> produits reconnus -> mise à jour du stock */}
-      <button onClick={() => setScanOpen(true)} className="btn-hand flex items-center gap-2 mb-6">
-        <Camera size={18} /> Scanner mon frigo / mes placards
-      </button>
+      {/* SCAN DU FRIGO ET DES PLACARDS : désactivé pour l'instant.
+          Il demande une IA capable de reconnaître les produits (service payant) ; le code reste en place
+          (PantryScan + /api/scan-pantry) pour le réactiver : retirer "disabled" et remettre onClick={() => setScanOpen(true)}. */}
+      <div className="flex flex-wrap gap-3 mb-6">
+        <button
+          disabled
+          title="Bientôt disponible : la reconnaissance du frigo demande une IA payante"
+          className="btn-hand flex items-center gap-2 cursor-not-allowed"
+        >
+          <Camera size={18} /> Scanner mon frigo / mes placards
+          <span className="text-xs font-[family-name:var(--font-type)] border border-current rounded px-1">indisponible</span>
+        </button>
+        {/* SCAN D'UN REÇU : produits achetés -> stock, nouveaux ingrédients, infos complétées, prix du magasin */}
+        <button onClick={() => setReceiptOpen(true)} className="btn-hand flex items-center gap-2">
+          <ReceiptText size={18} /> Scanner un reçu
+        </button>
+      </div>
 
       <h2 className="title-hand text-2xl mb-3">Mettre à jour un stock</h2>
 
@@ -180,6 +196,18 @@ export default function InventoryPage() {
             stockByIngredient={Object.fromEntries(rows.map((r) => [r.ingredient_id, r.quantity]))}
             onDone={() => {
               setScanOpen(false);
+              loadAll();
+            }}
+          />
+        </Modal>
+      )}
+      {/* Cadre du scan de reçu ; l'inventaire et les ingrédients sont rechargés une fois l'enregistrement fait */}
+      {receiptOpen && (
+        <Modal title="Scanner un reçu" wide onClose={() => setReceiptOpen(false)}>
+          <ReceiptScan
+            ingredients={ingredients}
+            onDone={() => {
+              setReceiptOpen(false);
               loadAll();
             }}
           />

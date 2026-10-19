@@ -5,7 +5,7 @@ import { Trash2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { fetchBudget, shortDate, type BudgetState } from '@/lib/budget';
 
-// Onglet "Budget" des paramètres :
+// Partie "Budget" de la page Profil :
 //  - la somme à ne pas dépasser sur une période, et la marge si des prix manquent ;
 //  - la durée de la période (en jours ou en semaines) au bout de laquelle le budget se réactive ;
 //  - le suivi de la période en cours : dépensé, reste, et les courses validées (supprimables en cas d'erreur).

@@ -23,23 +23,36 @@ import EditListItemForm from '@/components/EditListItemForm';
 // Cadre de confirmation avant suppression
 import { useConfirm } from '@/components/ConfirmDialog';
 // Total d'une liste et suppression d'une liste avec ses articles (partagés avec les paramètres)
-import { saveListTotal } from '@/lib/lists';
+import { applyStoreToList, saveListTotal } from '@/lib/lists';
+// Ajout des articles achetés au stock (partagé avec le scan de reçu)
+import { addToInventory } from '@/lib/inventory';
 import { deleteList as deleteListCascade } from '@/lib/deletions';
 // Analyse d'une liste : meilleure boutique + comparaison avec l'inventaire
-import { analyzeList, summarizeTotal, type ListAnalysis, type TotalSummary } from '@/lib/optimize';
+import { analyzeList, summarizeTotal, type ListAnalysis } from '@/lib/optimize';
 // Icône poubelle pour supprimer un article de la liste
-// (Check / X : boutons ✓ / ✗ pour appliquer ou ignorer l'optimisation d'un article orange)
-import { Check, Package, PowerOff, Settings, Trash2, X } from 'lucide-react';
+// (Check / X : boutons ✓ / ✗ pour appliquer ou ignorer l'optimisation d'un article grisé)
+import { Check, ChevronRight, Package, Pencil, Plus, PowerOff, Settings, Trash2, UserRound, X } from 'lucide-react';
 // Icône de menu qui ouvre les liens Inventaire et Paramètres
 import PageMenu from '@/components/PageMenu';
+// Emplacement à droite du lien "← Retour" (voir PageShell)
+import { PageHeaderActions } from '@/components/PageShell';
 // Quantités possibles selon le type d'ingrédient (kg, pièce, paquet...)
 import { formatQuantity, normalizeQuantity, quantityRule } from '@/lib/quantity';
+// Ta position et la distance des magasins, pour conseiller un magasin proche
+import { chooseNearbyOption } from '@/lib/geo';
+// Position de départ enregistrée dans le profil
+import { fetchProfile, profileCoords } from '@/lib/profile';
+// Cadre de choix du magasin d'une liste (prix appliqués automatiquement)
+import StoreChooser from '@/components/StoreChooser';
+import type { Store } from '@/lib/types';
 
-// Colonnes d'une ligne d'article : case "acheté" | article | quantité | prix | suppression
-const ITEM_COLUMNS = 'grid grid-cols-[1.25rem_minmax(0,1fr)_7.5rem_6.5rem_1.75rem] items-center gap-x-3';
+// Colonnes d'une ligne d'article : case "acheté" | article | quantité | prix | suppression.
+// Plus étroites sur téléphone (ex : Galaxy A14), pour laisser de la place au nom de l'article.
+const ITEM_COLUMNS =
+  'grid grid-cols-[1rem_minmax(0,1fr)_4.5rem_4.25rem_1.5rem] sm:grid-cols-[1.25rem_minmax(0,1fr)_7rem_6rem_1.75rem] items-center gap-x-2 sm:gap-x-3';
 
 // Le budget (somme à ne pas dépasser, marge si des prix manquent, durée de la période)
-// se règle dans Paramètres > Budget : voir lib/budget.ts.
+// se règle dans Profil > Budget : voir lib/budget.ts.
 
 // Options du menu (icône en haut à droite de la page).
 // Chaque élément contient :
@@ -48,6 +61,7 @@ const ITEM_COLUMNS = 'grid grid-cols-[1.25rem_minmax(0,1fr)_7.5rem_6.5rem_1.75re
 //  - desc  : une petite description sous le titre
 //  - icon  : l'icône affichée à gauche
 const menuItems = [
+  { href: '/profile', title: 'Profil', desc: 'Ta position et ton budget.', icon: <UserRound size={20} /> },
   { href: '/inventory', title: 'Inventaire', desc: "Ce qu'il te reste à la maison.", icon: <Package size={20} /> },
   { href: '/settings', title: 'Paramètres', desc: 'Catégories, marques et ingrédients.', icon: <Settings size={20} /> }
 ];
@@ -78,6 +92,11 @@ type SavedList = {
   id: string; // identifiant unique de la liste
   name: string; // nom de la liste (affiché en titre de la carte)
   estimated_price: number; // total estimé calculé à la création de la liste
+  date?: string | null; // date de la liste (AAAA-MM-JJ)
+  created_at?: string | null; // date de création
+  updated_at?: string | null; // date de dernière modification (mise à jour par Supabase à chaque changement)
+  activated_at?: string | null; // date d'activation (dans Paramètres > Listes de courses)
+  store_id?: string | null; // magasin choisi pour faire les courses (ligne "Magasin" du ticket)
   items: SavedItem[]; // tous les articles de cette liste
 };
 
@@ -92,6 +111,21 @@ function fetchActiveLists() {
     .select('*, items:shopping_list_items(*, ingredient:ingredients(name, type, brand:brands(name), category:categories(id, name)))')
     .eq('is_active', true)
     .order('id', { ascending: false });
+}
+
+
+// Date seule, à la française (ex : « 19 octobre 2026 »).
+// Une date sans heure (« 2026-10-19 ») est lue en heure locale, pour ne pas glisser à la veille.
+function formatDate(value: string) {
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00`) : new Date(value);
+  return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
+}
+
+// Numéro du code-barres : jour, mois, année, heure, minute, seconde d'activation (ex : 19102026143205)
+function barcodeNumber(iso: string) {
+  const d = new Date(iso);
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `${two(d.getDate())}${two(d.getMonth() + 1)}${d.getFullYear()}${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,8 +151,10 @@ export default function CoursePage() {
   // id de la liste en cours de validation (pour désactiver son bouton pendant le traitement),
   // ou null si aucune validation n'est en cours.
   const [validating, setValidating] = useState<string | null>(null);
-  // true quand le cadre "ajouter un ingrédient à la liste" est ouvert.
-  const [addOpen, setAddOpen] = useState(false);
+  // Liste dont la fenêtre de validation est ouverte (clic sur le total ou sur "Valider cette liste"), null = fermée.
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  // Liste dans laquelle le cadre "ajouter un ingrédient" ajoute (ouvert par le "+" de son ticket) ; null = fermé.
+  const [addTo, setAddTo] = useState<SavedList | null>(null);
   // Article dont le cadre de modification est ouvert (clic sur son nom), avec sa liste ; null = fermé.
   const [editing, setEditing] = useState<{ list: SavedList; item: SavedItem } | null>(null);
   // Résultat du bouton "Optimiser", rangé par id de liste (absent = pas encore optimisée).
@@ -134,6 +170,10 @@ export default function CoursePage() {
   const [optimized, setOptimized] = useState<Record<string, boolean>>({});
   // Cadre de confirmation avant suppression
   const [confirm, confirmDialog] = useConfirm();
+  // Supermarchés, pour afficher le magasin choisi sur chaque liste
+  const [stores, setStores] = useState<Store[]>([]);
+  // Liste dont le cadre de choix du magasin est ouvert (clic sur la ligne "Magasin") ; null = fermé
+  const [choosingStoreFor, setChoosingStoreFor] = useState<SavedList | null>(null);
 
   // Un article de la liste a changé (ou la liste elle-même) :
   //  - on autorise une nouvelle optimisation ;
@@ -174,8 +214,12 @@ export default function CoursePage() {
       setLists((data as unknown as SavedList[]) ?? []);
       setLoading(false);
     });
-    // Budget de la période en cours (réglé dans Paramètres > Budget)
+    // Budget de la période en cours (réglé dans Profil > Budget)
     fetchBudget().then(setBudget);
+    supabase
+      .from('stores')
+      .select('*')
+      .then(({ data }) => setStores(data ?? []));
   }, []);
 
   // Regroupe les articles d'une liste par catégorie, pour les afficher par rayon.
@@ -245,13 +289,6 @@ export default function CoursePage() {
     });
   }
 
-  // Texte d'un total, selon le nombre de prix connus (voir summarizeTotal dans lib/optimize.ts)
-  function totalText(label: string, summary: TotalSummary) {
-    if (summary.kind === 'full') return `${label} : ${summary.total.toFixed(2)} €`;
-    if (summary.kind === 'min') return `${label} supérieur à ${summary.total.toFixed(2)} €`;
-    return `${label} : prix indisponibles`;
-  }
-
   // ENREGISTREMENT DU PRIX d'un article quand on quitte le champ (champ vide = prix inconnu)
   async function savePrice(list: SavedList, item: SavedItem) {
     const raw = realPrices[item.id];
@@ -276,7 +313,7 @@ export default function CoursePage() {
     });
   }
 
-  // Retire la suggestion "orange" d'un article (après ✓ ou ✗)
+  // Retire la suggestion "grisée" d'un article (après ✓ ou ✗)
   function clearSuggestion(listId: string, itemId: string) {
     setAnalyses((a) => {
       const current = a[listId];
@@ -289,13 +326,13 @@ export default function CoursePage() {
     });
   }
 
-  // ✗ : refuse l'optimisation d'un article orange (il ne sera plus réoptimisé)
+  // ✗ : refuse l'optimisation d'un article grisé (il ne sera plus réoptimisé)
   function rejectSuggestion(listId: string, itemId: string) {
     setRejected((r) => ({ ...r, [listId]: { ...r[listId], [itemId]: true } }));
     clearSuggestion(listId, itemId);
   }
 
-  // ✓ : applique l'optimisation sur un article orange (quantité divisée par deux, prix au prorata)
+  // ✓ : applique l'optimisation sur un article grisé (quantité divisée par deux, prix au prorata)
   async function applySuggestion(list: SavedList, item: SavedItem, newQty: number) {
     const newPrice = item.expected_price ? (item.expected_price / item.quantity) * newQty : item.expected_price;
     const { error } = await supabase
@@ -325,11 +362,11 @@ export default function CoursePage() {
 
   // OPTIMISATION :
   //  - indique la meilleure boutique et l'économie totale possible ;
-  //  - colore en rouge les articles déjà assez en stock (l'utilisateur les supprime s'il veut) ;
-  //  - colore aussi en rouge les autres articles d'une même famille : seul le premier est gardé ;
-  //  - colore en orange ceux en partie en stock, avec ✓ / ✗ pour diviser ou non leur quantité par deux.
+  //  - colore en rouge les articles déjà assez en stock, sans "stock faible" (l'utilisateur les supprime s'il veut) ;
+  //  - colore aussi en rouge les autres articles d'une même famille : seul le moins cher est gardé ;
+  //  - affiche en gris ceux en "stock faible" ou en partie en stock, avec ✓ / ✗ pour diviser ou non leur quantité par deux.
   // Lors d'une nouvelle optimisation, seuls les articles validés (✓) ou jamais modifiés sont réanalysés :
-  //  - les articles orange encore en attente d'un choix gardent leur statut tel quel ;
+  //  - les articles grisés encore en attente d'un choix gardent leur statut tel quel ;
   //  - les articles refusés (✗) ne sont plus optimisés.
   async function optimizeList(list: SavedList) {
     setOptimizing(list.id);
@@ -339,12 +376,12 @@ export default function CoursePage() {
     const [{ data: prices }, { data: stores }, { data: inv }] = await Promise.all([
       supabase.from('ingredient_prices').select('ingredient_id, store_id, price, available').in('ingredient_id', ingredientIds),
       supabase.from('stores').select('*'),
-      supabase.from('inventory').select('ingredient_id, quantity')
+      supabase.from('inventory').select('ingredient_id, quantity, low_stock')
     ]);
 
-    // Dictionnaire ingredient_id -> quantité en stock à la maison
-    const stock: Record<string, number> = {};
-    for (const row of inv ?? []) stock[row.ingredient_id] = row.quantity;
+    // Dictionnaire ingredient_id -> stock à la maison (quantité, et "stock faible" coché ou non)
+    const stock: Record<string, { quantity: number; low: boolean }> = {};
+    for (const row of inv ?? []) stock[row.ingredient_id] = { quantity: row.quantity, low: !!row.low_stock };
 
     // Articles figés : en attente d'un choix (on garde leur statut) ou refusés (aucun statut)
     const previous = analyses[list.id];
@@ -371,7 +408,20 @@ export default function CoursePage() {
       overrides
     );
 
-    setAnalyses((a) => ({ ...a, [list.id]: analysis }));
+    // Magasin conseillé parmi les 3 meilleurs : le plus avantageux depuis la position du profil (prix + trajet),
+    // ou le moins cher si la position n'est pas renseignée ou que ces magasins sont trop loin
+    const chosen = await chooseNearbyOption(analysis.options, profileCoords(await fetchProfile()));
+    const result = chosen ? { ...analysis, options: [chosen], bestStore: chosen.store, savings: chosen.savings } : analysis;
+
+    // Le magasin trouvé devient celui de la liste (ligne "Magasin"), et ses prix connus sont appliqués,
+    // comme un choix fait avec le crayon. On peut ensuite en choisir un autre avec ce crayon.
+    if (chosen && chosen.store.id !== list.store_id) {
+      const error = await applyStoreToList(list.id, list.items, chosen.store.id);
+      if (error) console.error(error);
+      else await loadLists();
+    }
+
+    setAnalyses((a) => ({ ...a, [list.id]: result }));
     setOptimized((o) => ({ ...o, [list.id]: true }));
     setOptimizing(null);
   }
@@ -391,13 +441,14 @@ export default function CoursePage() {
     loadLists();
   }
 
-  // VALIDATION : les ingrédients rejoignent l'inventaire, la liste disparaît
+  // VALIDATION (après confirmation dans la fenêtre de validation) : les articles achetés rejoignent l'inventaire,
+  // leur prix est déduit du budget, et la liste est désactivée
   // Étapes :
   //  1. on garde uniquement les articles cochés (achetés)
   //  2. on lit l'inventaire actuel pour connaître les quantités déjà présentes
   //  3. on ajoute les quantités achetées dans l'inventaire
-  //  4. on déduit le prix de la course du budget de la période (Paramètres > Budget)
-  //  5. on supprime la liste et ses articles
+  //  4. on déduit le prix de la course du budget de la période (Profil > Budget)
+  //  5. on désactive la liste (elle reste dans les paramètres)
   //  6. on recharge l'affichage et le budget restant
   async function validateList(list: SavedList) {
     // On mémorise quelle liste est en cours de validation (désactive son bouton).
@@ -406,57 +457,22 @@ export default function CoursePage() {
     // 1. Seuls les articles cochés sont considérés comme achetés.
     const boughtItems = list.items.filter((item) => checkedItems[item.id]);
 
-    // 2. Lecture du stock actuel des ingrédients achetés (id de l'ingrédient + quantité en stock).
-    const boughtIds = Array.from(new Set(boughtItems.map((item) => item.ingredient_id)));
-    const { data: inv, error: invError } = await supabase
-      .from('inventory')
-      .select('ingredient_id, quantity')
-      .in('ingredient_id', boughtIds);
-    if (invError) {
-      console.error(invError);
+    // 2-3. Les quantités achetées s'ajoutent au stock, en une seule requête
+    // (un même ingrédient sur plusieurs lignes : toutes ses quantités sont additionnées).
+    const error = await addToInventory(boughtItems.map((item) => ({ ingredientId: item.ingredient_id, quantity: item.quantity })));
+    // En cas d'échec, on garde la liste pour ne rien perdre
+    if (error) {
+      console.error(error);
       return setValidating(null);
-    }
-
-    // 3. Nouveau stock de chaque ingrédient : stock actuel + toutes les quantités achetées.
-    // Un même ingrédient peut être sur plusieurs lignes : on additionne toutes ses lignes.
-    const newStock = new Map<string, number>();
-    for (const row of inv ?? []) newStock.set(row.ingredient_id, row.quantity);
-    for (const item of boughtItems) {
-      const total = (newStock.get(item.ingredient_id) ?? 0) + item.quantity;
-      newStock.set(item.ingredient_id, Math.round(total * 1000) / 1000); // évite 0.30000000000000004
-    }
-
-    // Une seule requête pour tout l'inventaire. "upsert" = update + insert :
-    //  - si une ligne existe déjà pour cet ingrédient, elle est mise à jour
-    //  - sinon, une nouvelle ligne est créée
-    if (boughtIds.length > 0) {
-      const updatedAt = new Date().toISOString();
-      const { error } = await supabase.from('inventory').upsert(
-        boughtIds.map((ingredientId) => ({
-          ingredient_id: ingredientId,
-          quantity: newStock.get(ingredientId)!,
-          low_stock: false, // on vient d'en acheter, donc plus en stock faible
-          updated_at: updatedAt
-        })),
-        // La colonne qui sert à savoir si la ligne existe déjà.
-        { onConflict: 'ingredient_id' }
-      );
-      // En cas d'échec, on garde la liste pour ne rien perdre
-      if (error) {
-        console.error(error);
-        return setValidating(null);
-      }
     }
 
     // 4. Le prix de la course (articles achetés) est déduit du budget de la période en cours
     const spent = boughtItems.reduce((sum, item) => sum + (realPriceFor(item) ?? 0), 0);
     if (spent > 0) await recordExpense(spent, list.name);
 
-    // 5. Suppression : d'abord les articles de la liste, puis la liste elle-même
-    // (dans cet ordre, pour ne pas laisser d'articles "orphelins" rattachés à une liste inexistante).
-    await supabase.from('shopping_list_items').delete().eq('shopping_list_id', list.id);
-    const { error: deleteError } = await supabase.from('shopping_lists').delete().eq('id', list.id);
-    if (deleteError) console.error(deleteError);
+    // 5. La liste validée est désactivée (elle reste dans Paramètres > Listes de courses)
+    const { error: deactivateError } = await supabase.from('shopping_lists').update({ is_active: false }).eq('id', list.id);
+    if (deactivateError) console.error(deactivateError);
 
     // 6. Fin de la validation : on réactive les boutons, on recharge les listes et le budget restant.
     setValidating(null);
@@ -466,18 +482,20 @@ export default function CoursePage() {
 
   // Une ligne d'article de la liste (case "acheté", nom, optimisation, prix, suppression)
   function renderItem(list: SavedList, item: SavedItem) {
-    // Couleur donnée par l'optimisation : rouge = déjà en stock ou doublon de sa famille, orange = quantité à réduire
+    // Couleur donnée par l'optimisation : rouge = déjà en stock ou doublon plus cher de sa famille, gris = quantité à réduire (déjà en partie en stock : moins mis en avant)
     const status = analyses[list.id]?.status[item.id];
-    // Quantité proposée pour un article orange (absente si on ne peut pas diviser par deux)
+    // Quantité proposée pour un article grisé (absente si on ne peut pas diviser par deux)
     const suggestedQty = analyses[list.id]?.newQuantities[item.id];
     const statusColor =
-      status === 'remove' ? 'text-red-600' : status === 'reduce' ? 'text-orange-500' : '';
+      status === 'remove' ? 'text-red-600' : status === 'reduce' ? 'text-ink/60' : '';
     // Quantités possibles pour ce type d'ingrédient (ex : 0,1 kg en 0,1 kg, ou pièces entières)
     const rule = quantityRule(item.ingredient?.type);
     const checked = !!checkedItems[item.id];
     return (
-      <li key={item.id} className={`${ITEM_COLUMNS} py-1 text-sm ${statusColor}`}>
-        {/* Colonne 1 — case à cocher "acheté".
+      // Article coché ("acheté") : toute la ligne est barrée et grisée, et plus rien n'est modifiable
+      // (nom, quantité, prix, optimisation, suppression) tant qu'on ne la décoche pas
+      <li key={item.id} className={`${ITEM_COLUMNS} py-1 text-xs sm:text-sm ${statusColor} ${checked ? 'item-struck' : ''}`}>
+        {/* Colonne 1 — case à cocher "acheté", la seule chose qui reste active sur une ligne cochée.
             "!!" transforme undefined en false pour avoir toujours un booléen. */}
         <input
           type="checkbox"
@@ -486,22 +504,21 @@ export default function CoursePage() {
           className="w-4 h-4 accent-brick"
           title="Acheté"
         />
-        {/* Colonne 2 — article : nom, marque, et ✓ / ✗ pour un article orange.
-            Si l'article est coché, le texte est barré et grisé. */}
+        {/* Colonne 2 — article : nom, marque, et ✓ / ✗ pour un article grisé */}
         <span className="min-w-0 flex flex-wrap items-center gap-x-2">
           {/* Clic sur le nom : ouvre le cadre de modification de l'article */}
           <button
             type="button"
             onClick={() => item.ingredient && setEditing({ list, item })}
-            disabled={!item.ingredient}
-            title="Modifier cet article"
-            className={`truncate text-left hover:underline decoration-dotted underline-offset-2 ${checked ? 'line-through opacity-50' : ''}`}
+            disabled={!item.ingredient || checked}
+            title={checked ? undefined : 'Modifier cet article'}
+            className="truncate text-left enabled:hover:underline decoration-dotted underline-offset-2"
           >
             {item.ingredient?.name ?? 'Ingrédient supprimé'}
             {/* Marque de l'ingrédient, si elle est renseignée */}
             {item.ingredient?.brand && <span className="opacity-60"> — {item.ingredient.brand.name}</span>}
           </button>
-        {/* ✓ / ✗ pour un article orange : diviser sa quantité par deux, ou non */}
+        {/* ✓ / ✗ pour un article grisé : diviser sa quantité par deux, ou non */}
         {status === 'reduce' && suggestedQty != null && (
           <span className="flex items-center gap-1">
             <span className="font-bold">
@@ -509,17 +526,19 @@ export default function CoursePage() {
             </span>
             <button
               onClick={() => applySuggestion(list, item, suggestedQty)}
+              disabled={checked}
               aria-label="Appliquer l'optimisation"
               title="Appliquer"
-              className="p-1 rounded border-2 border-current hover:bg-orange-100"
+              className="p-1 rounded border-2 border-current hover:bg-line/40"
             >
               <Check size={14} />
             </button>
             <button
               onClick={() => rejectSuggestion(list.id, item.id)}
+              disabled={checked}
               aria-label="Ignorer l'optimisation"
               title="Ignorer"
-              className="p-1 rounded border-2 border-current hover:bg-orange-100"
+              className="p-1 rounded border-2 border-current hover:bg-line/40"
             >
               <X size={14} />
             </button>
@@ -529,7 +548,7 @@ export default function CoursePage() {
         {/* Colonne 3 — quantité, modifiable. Le pas et le minimum dépendent du type
             (0,1 kg pour le vrac, 1 pour une pièce ou un paquet). Le prix suit au prorata
             pendant la saisie ; la quantité est arrondie et enregistrée quand on quitte le champ. */}
-        <span className="flex items-center gap-1">
+        <span className="flex items-center justify-end gap-1 min-w-0">
           <input
             type="number"
             inputMode="decimal"
@@ -538,26 +557,29 @@ export default function CoursePage() {
             value={draftQty[item.id] ?? String(item.quantity)}
             onChange={(e) => setDraftQty((d) => ({ ...d, [item.id]: e.target.value }))}
             onBlur={() => saveQuantity(list, item)}
-            className="input-hand w-16 text-right"
+            disabled={checked}
+            className="input-hand w-9 sm:w-14 text-right"
             title={`Quantité (${rule.unit})`}
           />
-          <span className="opacity-60 truncate">{rule.unit}</span>
+          <span className="opacity-60 truncate max-w-8 sm:max-w-none">{rule.unit}</span>
         </span>
         {/* Colonne 4 — prix de la ligne, directement modifiable pour mettre le prix réel.
             Le total se met à jour pendant la saisie, et le prix est enregistré
             quand on quitte le champ. Vide = prix inconnu. */}
-        <span className="flex items-center gap-1">
+        <span className="flex items-center justify-end gap-1">
           <input
             type="number"
+            inputMode="decimal"
             step="0.01"
-            placeholder="prix ?"
+            placeholder="?"
             value={
               realPrices[item.id] ??
               (draftQty[item.id] ? (realPriceFor(item)?.toFixed(2) ?? '') : item.expected_price ? item.expected_price.toFixed(2) : '')
             }
             onChange={(e) => setRealPrices((r) => ({ ...r, [item.id]: e.target.value }))}
             onBlur={() => savePrice(list, item)}
-            className="input-hand w-20 text-right"
+            disabled={checked}
+            className="input-hand w-12 sm:w-16 text-right"
             title="Prix (modifiable)"
           />
           <span>€</span>
@@ -565,9 +587,10 @@ export default function CoursePage() {
         {/* Colonne 5 — suppression de l'article (le total est mis à jour) */}
         <button
           onClick={() => deleteItem(list, item)}
+          disabled={checked}
           aria-label="Supprimer cet article"
-          title="Supprimer"
-          className="p-1 opacity-60 hover:opacity-100 hover:text-brick"
+          title={checked ? undefined : 'Supprimer'}
+          className="p-1 opacity-60 enabled:hover:opacity-100 enabled:hover:text-brick"
         >
           <Trash2 size={16} />
         </button>
@@ -583,43 +606,37 @@ export default function CoursePage() {
     <div>
       {/* Cadre de confirmation des suppressions */}
       {confirmDialog}
-      {/* En-tête de la page, avec le menu (Inventaire, Paramètres) en haut à droite */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="title-hand text-3xl mb-1">Mieux gérer son budget,</h1>
-          <h1 className="title-hand text-3xl mb-2">et tout sela en une course.</h1>
-          <p className="mb-5 opacity-70">Proposition de course.</p>
-        </div>
+      {/* Menu (Inventaire, Paramètres), affiché à la hauteur du lien "← Retour" */}
+      <PageHeaderActions>
         <PageMenu items={menuItems} />
-      </div>
+      </PageHeaderActions>
 
-      {/* Mise en page en deux colonnes sur écran large (lg:) :
-          à gauche la proposition de liste (2/3), à droite les boutons (1/3).
-          Sur mobile, les deux blocs s'empilent l'un sous l'autre. */}
-      <div className="grid lg:grid-cols-3 gap-6 items-start">
-        {/* ----- COLONNE DE GAUCHE : proposition de liste de courses ----- */}
-        {/* Un seul cadre simple ("card-plain" = sans le zigzag du bas), avec le scotch en haut */}
-        <div className="lg:col-span-2 card card-plain">
-          {/* Petit morceau de "scotch" décoratif en haut du cadre */}
-          <span className="tape" />
+      {/* En-tête de la page */}
+      <h1 className="title-hand text-3xl mb-1">Mieux gérer son budget,</h1>
+      <h1 className="title-hand text-3xl mb-2">et tout sela en une course.</h1>
+      <p className="mb-5 opacity-70">Proposition de course.</p>
 
-          {/* Pendant le chargement */}
-          {loading && <p className="opacity-70">Chargement...</p>}
-
-          {/* Aucune liste active : on le précise et on renvoie vers la gestion des listes */}
-          {!loading && lists.length === 0 && (
-            <div>
-              <p className="title-hand text-2xl mb-1">Aucune liste active</p>
-              <p className="mb-3 opacity-70">Active une de tes listes, ou crées-en une, dans les paramètres.</p>
-              <Link href="/settings?tab=lists" className="btn-hand inline-block">
-                Gérer mes listes
-              </Link>
+      {/* ----- LA LISTE DE COURSES, présentée comme un ticket de caisse, centrée sur la page ----- */}
+      <div className="max-w-xl mx-auto">
+          {/* Pendant le chargement, ou aucune liste active : un ticket vide avec le message */}
+          {(loading || lists.length === 0) && (
+            <div className="receipt text-center">
+              {loading ? (
+                <p className="opacity-70">IMPRESSION...</p>
+              ) : (
+                <>
+                  <p className="title-hand text-3xl mb-1">Aucune liste active</p>
+                  <p className="mb-4 opacity-70 text-sm">Active une de tes listes, ou crées-en une, dans les paramètres.</p>
+                  <Link href="/settings?tab=lists" className="btn-hand inline-block">
+                    Gérer mes listes
+                  </Link>
+                </>
+              )}
             </div>
           )}
 
-          {/* Une section par liste de courses, séparées par un trait pointillé.
-              "key" aide React à identifier chaque élément. */}
-          {lists.map((list, i) => {
+          {/* Un ticket par liste de courses. "key" aide React à identifier chaque élément. */}
+          {lists.map((list) => {
             // Total de la liste (somme des prix connus) et dépassement de budget :
             // plus que ce qui reste sur la période, ou plus que (reste - marge) si des articles n'ont pas de prix.
             // Dans ce cas, "Optimiser" passe en rouge et "Valider cette liste" est désactivé.
@@ -627,79 +644,206 @@ export default function CoursePage() {
             const summary = summarizeTotal(prices);
             const hasMissingPrice = prices.some((p) => p == null);
             const overBudget = budget ? isOverBudget(summary.total, hasMissingPrice, budget) : false;
+            const analysis = analyses[list.id];
+            // Magasin choisi pour la liste (via la ligne "Magasin" du ticket)
+            const chosenStore = stores.find((s) => s.id === list.store_id);
             return (
-            <div key={list.id} className={i > 0 ? 'mt-6 pt-6 border-t-2 border-dashed border-line' : ''}>
-              {/* Libellé de la liste, avec les icônes d'action en haut à droite, sur la même ligne */}
-              <div className="flex items-center justify-between gap-3 mb-3">
-                <p className="title-hand text-2xl">{list.name}</p>
-                <span className="flex items-center gap-1 shrink-0">
+            <div key={list.id}>
+              <div className="receipt">
+                {/* Icônes d'action, discrètes, dans le coin du ticket */}
+                <span className="absolute top-2 right-2 flex items-center gap-1">
                   {/* Désactiver : la liste est gardée (dans Paramètres > Listes de courses) mais quitte cette page */}
                   <button
                     onClick={() => deactivateList(list)}
                     aria-label="Désactiver la liste"
                     title="Désactiver la liste"
-                    className="p-1.5 opacity-60 hover:opacity-100"
+                    className="p-1.5 opacity-40 hover:opacity-100"
                   >
-                    <PowerOff size={18} />
+                    <PowerOff size={16} />
                   </button>
                   {/* Supprimer : la liste et tous ses articles, après confirmation */}
                   <button
                     onClick={() => deleteList(list)}
                     aria-label="Supprimer la liste"
                     title="Supprimer la liste"
-                    className="p-1.5 opacity-60 hover:opacity-100 hover:text-brick"
+                    className="p-1.5 opacity-40 hover:opacity-100 hover:text-brick"
                   >
-                    <Trash2 size={18} />
+                    <Trash2 size={16} />
                   </button>
                 </span>
-              </div>
 
-              {/* En-tête des colonnes, aligné sur les lignes d'articles */}
-              {list.items.length > 0 && (
-                <div className={`${ITEM_COLUMNS} field-label pb-1 mb-2 border-b-2 border-dashed border-line`}>
+                {/* EN-TÊTE : nom de la liste, comme le nom du magasin sur un ticket */}
+                <div className="text-center px-8">
+                  <p className="title-hand text-3xl sm:text-4xl text-ink">{list.name}</p>
+                  <p className="text-xs tracking-[0.3em] opacity-60 mt-1">✦ LISTE DE COURSES ✦</p>
+                </div>
+
+                <div className="receipt-rule" />
+
+                {/* INFORMATIONS : date, magasin conseillé, budget restant */}
+                <div className="text-xs sm:text-sm space-y-0.5">
+                  {/* Date de la liste (sans l'heure), ou à défaut sa date de création */}
+                  <p className="receipt-row">
+                    <span>Date :</span>
+                    <span className="text-right">{formatDate(list.date ?? list.created_at ?? new Date().toISOString())}</span>
+                  </p>
+                  {/* MAGASIN : celui choisi pour la liste, sinon celui conseillé par l'optimisation.
+                      Un clic ouvre le choix du magasin (les prix connus y sont appliqués automatiquement). */}
+                  <p className="receipt-row">
+                    <span>Lieux :</span>
+                    {/* Nom du magasin (un trait si aucun), puis l'icône crayon à droite qui ouvre le choix du magasin */}
+                    <span className="flex items-center justify-end gap-2 min-w-0">
+                      <span className="text-right">
+                        {chosenStore ? storeLabel(chosenStore) : analysis?.bestStore ? storeLabel(analysis.bestStore) : '—'}
+                      </span>
+                      <button
+                        onClick={() => setChoosingStoreFor(list)}
+                        aria-label="Modifier le magasin"
+                        title="Modifier le magasin"
+                        className="shrink-0 p-1 -m-1 opacity-70 hover:opacity-100 hover:text-brick"
+                      >
+                        <Pencil size={18} />
+                      </button>
+                    </span>
+                  </p>
+                  {/* Budget encore disponible sur la période en cours, et date de sa réactivation */}
+                  {budget && (
+                    <p className="receipt-row">
+                      <span>Budget :</span>
+                      <span className="text-right">
+                        {budget.remaining.toFixed(2)} € jusqu&apos;au {shortDate(new Date(budget.period.end.getTime() - 86_400_000))}
+                      </span>
+                    </p>
+                  )}
+                </div>
+
+                <div className="receipt-rule-double" />
+
+                {/* En-tête des colonnes, aligné sur les lignes d'articles : Qté et Prix à droite, comme leurs valeurs.
+                    Dans la colonne des poubelles, le "+" ajoute un ingrédient directement à cette liste. */}
+                <div className={`${ITEM_COLUMNS} text-xs sm:text-sm uppercase pb-1 mb-2`}>
                   <span />
                   <span>Article</span>
-                  <span>Quantité</span>
-                  <span>Prix</span>
-                  <span />
+                  <span className="text-right">Qté</span>
+                  <span className="text-right">Prix</span>
+                  <button
+                    onClick={() => setAddTo(list)}
+                    aria-label="Ajouter un ingrédient à cette liste"
+                    title="Ajouter un ingrédient"
+                    className="flex items-center justify-center p-0.5 rounded border-2 border-ink hover:bg-ink hover:text-paper"
+                  >
+                    <Plus size={14} />
+                  </button>
                 </div>
-              )}
+                {list.items.length === 0 && <p className="text-center text-sm opacity-60 py-2">AUCUN ARTICLE</p>}
 
-              {/* Les articles, regroupés par catégorie */}
-              {groupByCategory(list.items).map((g) => (
-                <div key={g.name} className="mb-3">
-                  {/* Nom de la catégorie */}
-                  <p className="field-label">{g.name}</p>
-                  <ul className="space-y-1">
-                    {/* Les variantes d'un même produit sont regroupées sous une bannière (ex : Œufs) ;
-                        le premier article d'une famille est celui que l'optimisation garde */}
-                    <FamilyList
-                      compact
-                      items={g.items}
-                      nameOf={(item) => item.ingredient?.name ?? ''}
-                      renderItem={(item) => renderItem(list, item)}
-                    />
-                  </ul>
+                {/* Les articles, regroupés par catégorie */}
+                {groupByCategory(list.items).map((g) => (
+                  <div key={g.name} className="mb-3">
+                    {/* Nom de la catégorie */}
+                    <p className="text-xs uppercase tracking-widest opacity-50 mb-0.5">— {g.name} —</p>
+                    <ul className="space-y-1">
+                      {/* Les variantes d'un même produit sont regroupées sous une bannière (ex : Œufs) ;
+                          l'optimisation garde le moins cher d'une famille */}
+                      <FamilyList
+                        compact
+                        items={g.items}
+                        nameOf={(item) => item.ingredient?.name ?? ''}
+                        renderItem={(item) => renderItem(list, item)}
+                      />
+                    </ul>
+                  </div>
+                ))}
+
+                <div className="receipt-rule-double" />
+
+                {/* TOTAL, recalculé en direct depuis les prix des articles :
+                    exact si tous les prix sont connus, "supérieur à" si au moins la moitié, sinon indisponible */}
+                <div className="space-y-0.5">
+                  {/* RÉCAPITULATIF, en "réel / prévu" :
+                      - prévu = toute la liste ; réel = les articles barrés (pris pendant la course),
+                        car on ne prend pas forcément tout ce qui était prévu ;
+                      - "> " devant un montant quand au moins un prix est inconnu (le vrai montant est plus élevé). */}
+                  {(() => {
+                    const taken = list.items.filter((item) => checkedItems[item.id]);
+                    const takenPrices = taken.map(realPriceFor);
+                    const takenTotal = takenPrices.reduce<number>((sum, p) => sum + (p ?? 0), 0);
+                    const takenMissing = takenPrices.some((p) => p == null);
+                    const plannedTotal = summary.kind === 'none' ? 'prix ?' : `${hasMissingPrice ? '> ' : ''}${summary.total.toFixed(2)} €`;
+                    return (
+                      <>
+                        {/* Économie possible trouvée par l'optimisation */}
+                        {analysis?.bestStore && (
+                          <p className="receipt-row text-xs sm:text-sm text-herb">
+                            <span>Économie</span>
+                            <span>
+                              {hasMissingPrice ? '> ' : ''}{analysis.savings.toFixed(2)} €
+                            </span>
+                          </p>
+                        )}
+                        <p className="receipt-row text-xs sm:text-sm">
+                          <span>
+                            Articles 
+                          </span>
+                          <span>
+                            {taken.length} / {list.items.length}
+                          </span>
+                        </p>
+                        {/* Deux totaux : celui prévu (toute la liste), puis le réel (articles barrés) */}
+                        <p className={`receipt-row text-sm sm:text-base ${overBudget ? 'text-brick' : ''}`}>
+                          <span>Total prévu</span>
+                          <span className="text-right">{plannedTotal}</span>
+                        </p>
+                        <p className="receipt-row text-base sm:text-lg font-bold">
+                          <span>Total réel</span>
+                          <span className="text-right">
+                            {takenMissing ? '> ' : ''}
+                            {takenTotal.toFixed(2)} €
+                          </span>
+                        </p>
+                        {/* Validation des articles barrés, écrite clairement */}
+                        <button
+                          onClick={() => setConfirmingId(list.id)}
+                          title="Les articles barrés rejoignent l'inventaire et leur prix est déduit du budget"
+                          className="flex items-center gap-0.5 ml-auto text-[10px] sm:text-xs uppercase underline decoration-dotted underline-offset-4 opacity-70 hover:opacity-100"
+                        >
+                          Valider mes achats <ChevronRight size={14} />
+                        </button>
+                      </>
+                    );
+                  })()}
+                  {overBudget && <p className="text-xs text-brick text-right uppercase">Budget dépassé</p>}
+                  {analysis && !analysis.bestStore && (
+                    <p className="text-xs opacity-60 text-right uppercase">Aucun prix en magasin pour ces ingrédients</p>
+                  )}
                 </div>
-              ))}
 
-              {/* Total de la liste, recalculé en direct depuis les prix des articles :
-                  exact si tous les prix sont connus, "supérieur à" si au moins la moitié, sinon indisponible */}
-              <div className="border-t-2 border-dashed border-line pt-2 flex flex-wrap items-baseline justify-between gap-2">
-                {/* Budget encore disponible sur la période en cours, et date de sa réactivation */}
-                {budget ? (
-                  <span className="text-sm opacity-70">
-                    Budget restant : <strong>{budget.remaining.toFixed(2)} €</strong> jusqu&apos;au{' '}
-                    {shortDate(new Date(budget.period.end.getTime() - 86_400_000))}
-                  </span>
+                <div className="receipt-rule" />
+
+                {/* Code-barres décoratif ; son numéro = jour, mois, année, heure, minute, seconde d'activation de la liste */}
+                <div className="receipt-barcode mt-4" aria-hidden="true" />
+                <p className="text-center text-xs tracking-[0.25em] sm:tracking-[0.35em] mt-1 opacity-70" title="Date et heure d'activation">
+                  {barcodeNumber(list.activated_at ?? list.created_at ?? new Date().toISOString())}
+                </p>
+                {/* Pied du ticket : "Optimiser votre visite !" tant que la liste peut être optimisée
+                    (un clic lance l'optimisation), puis "Merci de votre visite !" */}
+                {optimizing === list.id ? (
+                  <p className="text-center text-xs uppercase mt-3 opacity-60">Optimisation...</p>
+                ) : list.items.length > 0 && !optimized[list.id] ? (
+                  <button
+                    onClick={() => optimizeList(list)}
+                    title="Optimiser la liste"
+                    className={`block mx-auto text-xs uppercase mt-3 underline decoration-dotted underline-offset-4 hover:opacity-100 ${overBudget ? 'text-brick' : 'opacity-80'}`}
+                  >
+                    Optimiser votre visite !
+                  </button>
                 ) : (
-                  <span />
+                  <p className="text-center text-xs uppercase mt-3 opacity-60">Merci de votre visite !</p>
                 )}
-                <span className={`font-bold ${overBudget ? 'text-brick' : 'text-mustard'}`}>{totalText('Total', summary)}</span>
               </div>
 
-              {/* Boutons : "Optimiser" à gauche, avant "Valider cette liste" */}
-              <div className="flex flex-wrap items-center gap-3 mt-3">
+              {/* Boutons sous le ticket : "Optimiser" à gauche, avant "Valider cette liste" */}
+              <div className="flex flex-wrap items-center justify-center gap-3 mt-6 mb-8">
                 {/* En rouge quand le budget est dépassé, pour inviter à optimiser */}
                 <button
                   onClick={() => optimizeList(list)}
@@ -707,12 +851,11 @@ export default function CoursePage() {
                   title={optimized[list.id] ? 'Déjà optimisée : modifie un article pour pouvoir réoptimiser' : undefined}
                   className={`btn-hand disabled:cursor-not-allowed ${overBudget ? 'bg-brick' : ''}`}
                 >
-                  {/* Après une première optimisation, le bouton propose d'aller plus loin */}
-                  {optimizing === list.id ? 'Optimisation...' : analyses[list.id] ? "Plus d'optimisation" : 'Optimiser'}
+                  {optimizing === list.id ? 'Optimisation...' : 'Optimiser'}
                 </button>
                 {/* Bouton de validation : désactivé pendant le traitement, ou tant que le budget est dépassé */}
                 <button
-                  onClick={() => validateList(list)}
+                  onClick={() => setConfirmingId(list.id)}
                   disabled={validating === list.id || overBudget}
                   title={overBudget ? 'Budget dépassé : optimise la liste avant de la valider' : undefined}
                   className="btn-hand disabled:cursor-not-allowed"
@@ -720,54 +863,130 @@ export default function CoursePage() {
                   {validating === list.id ? 'Validation...' : 'Valider cette liste'}
                 </button>
               </div>
-
-              {/* Résultat de l'optimisation : meilleure boutique et économie totale */}
-              {analyses[list.id] && (
-                <div className="mt-3 text-sm space-y-1">
-                  {analyses[list.id].bestStore ? (
-                    <>
-                      <p>
-                        Meilleure boutique : <strong>{storeLabel(analyses[list.id].bestStore!)}</strong>
-                      </p>
-                      <p>
-                        Économie : <span className="text-herb font-bold">{analyses[list.id].savings.toFixed(2)} €</span>
-                      </p>
-                    </>
-                  ) : (
-                    <p>Aucun prix en magasin pour ces ingrédients.</p>
-                  )}
-                </div>
-              )}
             </div>
             );
           })}
-        </div>
-
-        {/* ----- COLONNE DE DROITE : bouton d'ajout ----- */}
-        {/* "lg:sticky lg:top-6" : sur grand écran, la colonne reste visible quand on fait défiler. */}
-        <div className="flex flex-col lg:sticky lg:top-6">
-          {/* Ce bouton n'ouvre pas une autre page : il affiche le cadre d'ajout au-dessus de l'écran */}
-          <button
-            onClick={() => setAddOpen(true)}
-            className="card block text-left hover:-translate-y-0.5 transition-transform"
-          >
-            <span className="tape" />
-            <p className="title-hand text-2xl mb-1">+ Ajouter un ingrédient</p>
-            <p className="text-sm opacity-70">À ta liste de courses en cours.</p>
-          </button>
-        </div>
       </div>
 
-      {/* CADRE D'AJOUT : affiché au-dessus de la page quand addOpen vaut true.
+      {/* FENÊTRE DE VALIDATION : ouverte par un clic sur le total (ou sur "Valider cette liste").
+          La validation n'est possible que si tous les prix sont renseignés et le magasin choisi ;
+          on montre alors un récapitulatif et on demande à l'utilisateur s'il est sûr de ces informations. */}
+      {(() => {
+        const list = lists.find((l) => l.id === confirmingId);
+        if (!list) return null;
+        const missingPrices = list.items.filter((item) => realPriceFor(item) == null);
+        const chosenStore = stores.find((s) => s.id === list.store_id);
+        const prices = list.items.map(realPriceFor);
+        const total = prices.reduce<number>((sum, p) => sum + (p ?? 0), 0);
+        const overBudget = budget ? isOverBudget(total, missingPrices.length > 0, budget) : false;
+        const bought = list.items.filter((item) => checkedItems[item.id]);
+        const boughtTotal = bought.reduce((sum, item) => sum + (realPriceFor(item) ?? 0), 0);
+        const ready = list.items.length > 0 && missingPrices.length === 0 && !!chosenStore && !overBudget;
+        return (
+          <Modal title="Valider la liste" onClose={() => setConfirmingId(null)}>
+            {ready ? (
+              <>
+                {/* Récapitulatif à vérifier avant de valider */}
+                <ul className="text-sm space-y-1 mb-4">
+                  <li className="flex justify-between gap-3">
+                    <span className="opacity-70">Liste</span>
+                    <strong>{list.name}</strong>
+                  </li>
+                  <li className="flex justify-between gap-3">
+                    <span className="opacity-70">Magasin</span>
+                    <strong>{storeLabel(chosenStore!)}</strong>
+                  </li>
+                  <li className="flex justify-between gap-3">
+                    <span className="opacity-70">Articles</span>
+                    <strong>{list.items.length}</strong>
+                  </li>
+                  <li className="flex justify-between gap-3">
+                    <span className="opacity-70">Total de la liste</span>
+                    <strong>{total.toFixed(2)} €</strong>
+                  </li>
+                  <li className="flex justify-between gap-3">
+                    <span className="opacity-70">Achetés (cochés)</span>
+                    <strong>
+                      {bought.length} — {boughtTotal.toFixed(2)} €
+                    </strong>
+                  </li>
+                </ul>
+                {bought.length === 0 && (
+                  <p className="text-sm text-brick mb-3">
+                    Aucun article n&apos;est coché : rien ne sera ajouté à l&apos;inventaire ni déduit du budget.
+                  </p>
+                )}
+                <p className="mb-5">
+                  Es-tu sûr de ces informations ? Les articles cochés seront ajoutés à l&apos;inventaire, leur prix déduit de
+                  ton budget, et la liste sera désactivée.
+                </p>
+                <div className="flex flex-wrap items-center gap-4">
+                  <button
+                    autoFocus
+                    onClick={() => {
+                      setConfirmingId(null);
+                      validateList(list);
+                    }}
+                    className="btn-hand"
+                  >
+                    Oui, valider
+                  </button>
+                  <button onClick={() => setConfirmingId(null)} className="btn-ghost">
+                    annuler
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Validation impossible : on dit précisément ce qui manque */}
+                <p className="mb-3">La liste ne peut pas encore être validée :</p>
+                <ul className="text-sm list-disc pl-5 space-y-1 mb-5 text-brick">
+                  {list.items.length === 0 && <li>la liste ne contient aucun article ;</li>}
+                  {!chosenStore && <li>aucun magasin n&apos;est choisi (ligne « Magasin » du ticket) ;</li>}
+                  {missingPrices.length > 0 && (
+                    <li>
+                      {missingPrices.length === 1 ? 'un prix manque' : `${missingPrices.length} prix manquent`} :{' '}
+                      {missingPrices.map((item) => item.ingredient?.name ?? 'Ingrédient supprimé').join(', ')} ;
+                    </li>
+                  )}
+                  {overBudget && <li>le budget de la période est dépassé (optimise la liste).</li>}
+                </ul>
+                <button autoFocus onClick={() => setConfirmingId(null)} className="btn-hand">
+                  Compléter la liste
+                </button>
+              </>
+            )}
+          </Modal>
+        );
+      })()}
+
+      {/* CADRE D'AJOUT : affiché au-dessus de la page, pour la liste dont on a cliqué le "+".
           Après l'ajout, on ferme le cadre et on recharge les listes pour voir le nouvel article. */}
-      {addOpen && (
-        <Modal title="Ajouter à la liste" onClose={() => setAddOpen(false)}>
+      {addTo && (
+        <Modal title={`Ajouter à « ${addTo.name} »`} onClose={() => setAddTo(null)}>
           <AddToListForm
-            lists={lists}
+            lists={[addTo]}
             onAdded={() => {
-              setAddOpen(false);
+              setAddTo(null);
               // Un article a été ajouté : les listes peuvent être réoptimisées
               setOptimized({});
+              loadLists();
+            }}
+          />
+        </Modal>
+      )}
+
+      {/* CADRE DE CHOIX DU MAGASIN : ouvert par un clic sur la ligne "Magasin" du ticket.
+          Une fois le magasin choisi, les prix connus sont appliqués : on recharge la liste. */}
+      {choosingStoreFor && (
+        <Modal title="Où fais-tu tes courses ?" onClose={() => setChoosingStoreFor(null)}>
+          <StoreChooser
+            listId={choosingStoreFor.id}
+            items={choosingStoreFor.items}
+            currentStoreId={choosingStoreFor.store_id ?? null}
+            onChosen={() => {
+              markModified(choosingStoreFor.id);
+              setChoosingStoreFor(null);
               loadLists();
             }}
           />

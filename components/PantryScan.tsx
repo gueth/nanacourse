@@ -1,10 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { Camera, ImagePlus, X } from 'lucide-react';
+import { useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { Ingredient } from '@/lib/types';
-import { toJpeg } from '@/lib/image';
+import PhotoPicker, { photosFormData, usePhotos } from '@/components/PhotoPicker';
 import { createIngredient } from '@/lib/ingredients';
 import { formatQuantity, normalizeQuantity, quantityRule } from '@/lib/quantity';
 // "import type" : seul le type est repris, le code serveur de la route n'est pas envoyé au navigateur
@@ -37,9 +36,8 @@ type ResultRow = {
 //  3. on vérifie / corrige chaque ligne (ingrédient rattaché, quantité, case à cocher) ;
 //  4. les lignes cochées remplacent le stock dans l'inventaire (un nouvel ingrédient est créé si besoin).
 export default function PantryScan({ ingredients, stockByIngredient, onDone }: Props) {
-  const cameraRef = useRef<HTMLInputElement>(null);
-  const galleryRef = useRef<HTMLInputElement>(null);
-  const [photos, setPhotos] = useState<{ file: File; url: string }[]>([]);
+  // Photos choisies (appareil photo ou galerie), avec leur aperçu
+  const { photos, add: addPhotos, remove: removePhoto, error: photoError } = usePhotos(MAX_PHOTOS);
   const [step, setStep] = useState<'pick' | 'analyzing' | 'review' | 'saving'>('pick');
   const [rows, setRows] = useState<ResultRow[]>([]);
   const [error, setError] = useState('');
@@ -53,41 +51,15 @@ export default function PantryScan({ ingredients, stockByIngredient, onDone }: P
   const unseen = ingredients.filter((i) => (stockByIngredient[i.id] ?? 0) > 0 && !seenIds.has(i.id));
   const toZero = zeroUnseen ? unseen.filter((i) => !keepIds[i.id]) : [];
 
-  // Adresses des aperçus créés, libérées quand le cadre se ferme
-  const previewUrls = useRef<string[]>([]);
-  useEffect(() => () => previewUrls.current.forEach((url) => URL.revokeObjectURL(url)), []);
-
-  function addPhotos(files: FileList | null) {
-    if (!files) return;
-    const room = MAX_PHOTOS - photos.length;
-    const added = Array.from(files)
-      .slice(0, room)
-      .map((file) => ({ file, url: URL.createObjectURL(file) }));
-    previewUrls.current.push(...added.map((p) => p.url));
-    if (files.length > room) setError(`${MAX_PHOTOS} photos au maximum.`);
-    setPhotos((p) => [...p, ...added]);
-  }
-
-  function removePhoto(index: number) {
-    setPhotos((p) => {
-      URL.revokeObjectURL(p[index].url);
-      return p.filter((_, i) => i !== index);
-    });
-  }
-
   // ANALYSE : envoi des photos (réduites en JPEG) à la route /api/scan-pantry
   async function analyze() {
     setError('');
     setStep('analyzing');
     try {
-      const formData = new FormData();
-      for (const [i, p] of photos.entries()) {
-        const jpeg = await toJpeg(p.file);
-        if (!jpeg) {
-          setStep('pick');
-          return setError('Format de photo non pris en charge : essaie avec des photos JPEG ou PNG.');
-        }
-        formData.append('photos', jpeg, `photo-${i + 1}.jpg`);
+      const formData = await photosFormData(photos);
+      if (!formData) {
+        setStep('pick');
+        return setError('Format de photo non pris en charge : essaie avec des photos JPEG ou PNG.');
       }
       const res = await fetch('/api/scan-pantry', { method: 'POST', body: formData });
       const data = await res.json();
@@ -182,58 +154,15 @@ export default function PantryScan({ ingredients, stockByIngredient, onDone }: P
           avant de mettre à jour l&apos;inventaire.
         </p>
 
-        {/* Deux champs cachés : appareil photo direct, ou choix de plusieurs photos existantes */}
-        <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={(e) => {
-            addPhotos(e.target.files);
-            e.target.value = ''; // permet de reprendre la même photo
-          }} className="hidden" />
-        <input ref={galleryRef} type="file" accept="image/*" multiple onChange={(e) => {
-            addPhotos(e.target.files);
-            e.target.value = ''; // permet de reprendre la même photo
-          }} className="hidden" />
+        <PhotoPicker
+          photos={photos}
+          max={MAX_PHOTOS}
+          onAdd={addPhotos}
+          onRemove={removePhoto}
+          disabled={step === 'analyzing'}
+        />
 
-        <div className="flex flex-wrap gap-3 mb-4">
-          <button
-            type="button"
-            onClick={() => cameraRef.current?.click()}
-            disabled={photos.length >= MAX_PHOTOS || step === 'analyzing'}
-            className="flex items-center gap-2 px-3 h-10 rounded-full border-2 border-ink bg-paper disabled:opacity-50"
-          >
-            <Camera size={18} /> <span className="text-sm">Prendre une photo</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => galleryRef.current?.click()}
-            disabled={photos.length >= MAX_PHOTOS || step === 'analyzing'}
-            className="flex items-center gap-2 px-3 h-10 rounded-full border-2 border-ink bg-paper disabled:opacity-50"
-          >
-            <ImagePlus size={18} /> <span className="text-sm">Choisir des photos</span>
-          </button>
-        </div>
-
-        {/* Aperçus des photos, avec une croix pour en retirer une */}
-        {photos.length > 0 && (
-          <div className="grid grid-cols-3 gap-2 mb-4">
-            {photos.map((p, i) => (
-              <div key={p.url} className="relative">
-                {/* eslint-disable-next-line @next/next/no-img-element -- aperçu local (blob:), pas d'optimisation possible */}
-                <img src={p.url} alt={`Photo ${i + 1}`} className="w-full h-24 object-cover rounded border-2 border-ink" />
-                {step === 'pick' && (
-                  <button
-                    type="button"
-                    onClick={() => removePhoto(i)}
-                    aria-label={`Retirer la photo ${i + 1}`}
-                    className="absolute top-1 right-1 p-0.5 rounded-full bg-paper border-2 border-ink"
-                  >
-                    <X size={14} />
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {error && <p className="text-sm text-brick mb-3">{error}</p>}
+        {(error || photoError) && <p className="text-sm text-brick mb-3">{error || photoError}</p>}
 
         <button onClick={analyze} disabled={photos.length === 0 || step === 'analyzing'} className="btn-hand">
           {step === 'analyzing' ? 'Analyse en cours...' : `Analyser ${photos.length || ''} photo${photos.length > 1 ? 's' : ''}`}

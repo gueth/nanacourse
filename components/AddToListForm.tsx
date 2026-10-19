@@ -151,15 +151,43 @@ export default function AddToListForm({ lists, onAdded }: Props) {
       targetListId = created.id;
     }
 
-    // 3. L'article dans la liste (prix de la ligne = prix unitaire × quantité)
-    const lineTotal = unitPrice * qty;
-    const { error: itemError } = await supabase.from('shopping_list_items').insert({
-      shopping_list_id: targetListId,
-      ingredient_id: ingredientId,
-      quantity: qty,
-      expected_price: lineTotal,
-      store_id: storeId || null
-    });
+    // 3. L'article dans la liste (prix de la ligne = prix unitaire × quantité).
+    // Si l'ingrédient y est déjà, on ne crée pas de doublon : sa quantité augmente et son prix est recalculé
+    // (avec le prix unitaire saisi, ou à défaut celui déjà connu sur la ligne).
+    const { data: existingItem, error: readError } = await supabase
+      .from('shopping_list_items')
+      .select('id, quantity, expected_price, store_id')
+      .eq('shopping_list_id', targetListId)
+      .eq('ingredient_id', ingredientId)
+      .limit(1)
+      .maybeSingle();
+    if (readError) {
+      console.error(readError);
+      return setSaving(false);
+    }
+
+    let itemError;
+    if (existingItem) {
+      const newQty = Math.round((Number(existingItem.quantity) + qty) * 1000) / 1000;
+      const knownUnit = existingItem.expected_price ? Number(existingItem.expected_price) / Number(existingItem.quantity) : 0;
+      const unit = unitPrice > 0 ? unitPrice : knownUnit;
+      ({ error: itemError } = await supabase
+        .from('shopping_list_items')
+        .update({
+          quantity: newQty,
+          expected_price: Math.round(unit * newQty * 100) / 100,
+          store_id: storeId || existingItem.store_id
+        })
+        .eq('id', existingItem.id));
+    } else {
+      ({ error: itemError } = await supabase.from('shopping_list_items').insert({
+        shopping_list_id: targetListId,
+        ingredient_id: ingredientId,
+        quantity: qty,
+        expected_price: unitPrice * qty,
+        store_id: storeId || null
+      }));
+    }
     if (itemError) {
       console.error(itemError);
       return setSaving(false);
@@ -180,6 +208,8 @@ export default function AddToListForm({ lists, onAdded }: Props) {
           onResult={(r) => {
             if (r.name) handleNameChange(r.name);
             if (r.price != null) setPrice(String(r.price));
+            // Seul un prix au kilo affiché : produit en vrac
+            if (r.type) setType(r.type);
           }}
         />
       </div>

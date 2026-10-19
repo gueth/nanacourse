@@ -53,10 +53,10 @@ export default function ListsSettings() {
 
   function showError(error: { code?: string; message: string }) {
     console.error(error);
-    // 42703 = colonne inconnue : la colonne "is_active" n'a pas encore été ajoutée dans Supabase
+    // 42703 = colonne inconnue : une colonne n'a pas encore été ajoutée dans Supabase
     setErrorMessage(
       error.code === '42703'
-        ? "La colonne « is_active » manque dans la table shopping_lists (voir le SQL à lancer dans Supabase)."
+        ? "Une colonne manque dans la table shopping_lists (is_active ou activated_at) : lance le SQL fourni dans Supabase."
         : error.message
     );
   }
@@ -89,7 +89,11 @@ export default function ListsSettings() {
     setErrorMessage('');
     const { error: offError } = await supabase.from('shopping_lists').update({ is_active: false }).eq('is_active', true);
     if (offError) return showError(offError);
-    const { error } = await supabase.from('shopping_lists').update({ is_active: true }).eq('id', id);
+    // La date d'activation est gardée : elle s'affiche sous le code-barres du ticket (page Course)
+    const { error } = await supabase
+      .from('shopping_lists')
+      .update({ is_active: true, activated_at: new Date().toISOString() })
+      .eq('id', id);
     if (error) return showError(error);
     loadLists();
   }

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { Brand, Category, IngredientWithRelations, Store } from '@/lib/types';
 import StoreOptions from '@/components/StoreOptions';
+import { saveIngredientPrice } from '@/lib/ingredients';
 import { formatQuantity, normalizeQuantity, quantityRule, TYPE_SUGGESTIONS } from '@/lib/quantity';
 
 
@@ -116,14 +117,7 @@ export default function EditListItemForm({ item, onSaved }: Props) {
 
     // 3. Le prix est mémorisé pour ce magasin (mis à jour s'il existait, ajouté sinon)
     if (storeId && unitPrice) {
-      const known = ingredient.prices.find((p) => p.store_id === storeId);
-      const { error: priceError } = known
-        ? known.price === unit
-          ? { error: null }
-          : await supabase.from('ingredient_prices').update({ price: unit }).eq('id', known.id)
-        : await supabase
-            .from('ingredient_prices')
-            .insert({ ingredient_id: ingredient.id, store_id: storeId, price: unit, available: true });
+      const priceError = await saveIngredientPrice(ingredient.id, storeId, unit);
       if (priceError) console.error(priceError);
     }
 

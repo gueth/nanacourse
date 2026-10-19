@@ -7,11 +7,13 @@ type Props = {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
+  // Cadre plus large, pour les contenus en tableau (ex : vérification d'un reçu)
+  wide?: boolean;
 };
 
 // Cadre qui s'affiche au-dessus de la page, avec un fond assombri.
 // Se ferme avec la croix, la touche Échap ou un clic en dehors du cadre.
-export default function Modal({ title, onClose, children }: Props) {
+export default function Modal({ title, onClose, children, wide = false }: Props) {
   // Fermeture avec la touche Échap
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -28,7 +30,7 @@ export default function Modal({ title, onClose, children }: Props) {
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="card card-plain modal-solid relative w-full max-w-xl mt-12"
+        className={`card card-plain modal-solid relative w-full mt-12 ${wide ? 'max-w-3xl' : 'max-w-xl'}`}
         onClick={(e) => e.stopPropagation()}
       >
         <span className="tape" />

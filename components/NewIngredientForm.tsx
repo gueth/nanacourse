@@ -50,6 +50,8 @@ export default function NewIngredientForm({ initialName = '', categories, brands
           onResult={(r) => {
             if (r.name) setName(r.name);
             if (r.price != null) setPrice(String(r.price));
+            // Seul un prix au kilo affiché : produit en vrac
+            if (r.type) setType(r.type);
           }}
         />
       </div>

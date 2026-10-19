@@ -4,6 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { TYPE_SUGGESTIONS } from '@/lib/quantity';
 import { Camera } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+// Lecture gratuite de l'étiquette dans le navigateur (Tesseract.js) et analyse de son texte
+import { readLines } from '@/lib/ocr';
+import { parseLabel } from '@/lib/labelParser';
 import { storeLabel } from '@/lib/stores';
 import type { Brand, Category, IngredientWithRelations, Store } from '@/lib/types';
 import PriceEditor from '@/components/PriceEditor';
@@ -136,16 +139,15 @@ export default function IngredientsPage() {
     setScanning(true);
     setScanError('');
     try {
-      const formData = new FormData();
-      formData.append('photo', file);
-      const res = await fetch('/api/scan-price', { method: 'POST', body: formData });
-      const data = await res.json();
-      if (!res.ok) {
-        setScanError(data.error ?? "Échec de l'analyse de la photo.");
+      // Lecture du texte de l'étiquette dans le navigateur (gratuit), puis recherche du nom et du prix
+      const data = parseLabel(await readLines([file]));
+      if (!data.name && data.price == null) {
+        setScanError("Rien de lisible : reprends l'étiquette de face, nette et bien cadrée.");
         return;
       }
       if (data.name) setName(data.name);
       if (data.price != null) setPrice(String(data.price));
+      if (data.type) setType(data.type);
     } catch (err) {
       console.error(err);
       setScanError("Échec de l'analyse de la photo.");

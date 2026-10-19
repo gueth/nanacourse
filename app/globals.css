@@ -55,6 +55,109 @@ body {
     display: none;
   }
 
+  /* ----- TICKET DE CAISSE (liste de la page Course) ----- */
+
+  /* Papier du ticket : blanc, police machine à écrire, bas découpé en dents de scie */
+  .receipt {
+    position: relative;
+    margin-bottom: 1.75rem;
+    padding: 1.5rem 0.75rem 1.25rem;
+    background: #fff;
+    color: var(--color-ink);
+    font-family: var(--font-type);
+    box-shadow: 0 6px 14px rgba(43, 33, 24, 0.12);
+  }
+  .receipt::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -10px;
+    height: 10px;
+    background: #fff;
+    clip-path: polygon(
+      0% 0%, 100% 0%, 100% 0%, 98% 100%, 96% 0%, 94% 100%, 92% 0%, 90% 100%, 88% 0%, 86% 100%, 84% 0%, 82% 100%,
+      80% 0%, 78% 100%, 76% 0%, 74% 100%, 72% 0%, 70% 100%, 68% 0%, 66% 100%, 64% 0%, 62% 100%, 60% 0%, 58% 100%,
+      56% 0%, 54% 100%, 52% 0%, 50% 100%, 48% 0%, 46% 100%, 44% 0%, 42% 100%, 40% 0%, 38% 100%, 36% 0%, 34% 100%,
+      32% 0%, 30% 100%, 28% 0%, 26% 100%, 24% 0%, 22% 100%, 20% 0%, 18% 100%, 16% 0%, 14% 100%, 12% 0%, 10% 100%,
+      8% 0%, 6% 100%, 4% 0%, 2% 100%, 0% 0%
+    );
+  }
+
+  /* Séparateurs : trait simple, et double trait (comme sous l'en-tête d'un ticket) */
+  .receipt-rule {
+    border-top: 2px solid var(--color-ink);
+    margin: 0.75rem 0;
+  }
+  .receipt-rule-double {
+    border-top: 5px double var(--color-ink);
+    margin: 0.75rem 0;
+  }
+
+  /* Ligne "libellé ........ valeur" */
+  .receipt-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+    text-transform: uppercase;
+  }
+
+  /* Code-barres décoratif, en bas du ticket */
+  .receipt-barcode {
+    height: 44px;
+    background: repeating-linear-gradient(
+      90deg,
+      var(--color-ink) 0 2px, transparent 2px 3px, var(--color-ink) 3px 4px, transparent 4px 7px,
+      var(--color-ink) 7px 10px, transparent 10px 11px, var(--color-ink) 11px 12px, transparent 12px 14px,
+      var(--color-ink) 14px 15px, transparent 15px 17px, var(--color-ink) 17px 20px, transparent 20px 21px
+    );
+  }
+
+  /* Article coché ("acheté") : la ligne entière est barrée d'un trait et grisée.
+     Le trait part après la case à cocher (1,25rem + l'espace entre colonnes), qui reste nette et cliquable. */
+  .item-struck {
+    position: relative;
+  }
+  .item-struck > :not(:first-child) {
+    opacity: 0.45;
+  }
+  .item-struck::after {
+    content: "";
+    position: absolute;
+    left: 1.5rem;
+    right: 0;
+    top: 50%;
+    border-top: 2px solid currentColor;
+    pointer-events: none;
+  }
+
+  /* Écrans plus larges que 640px : ticket et colonnes retrouvent plus d'espace */
+  @media (min-width: 640px) {
+    .receipt {
+      padding: 1.75rem 1.25rem 1.5rem;
+    }
+    .item-struck::after {
+      left: 2rem;
+    }
+  }
+
+  /* Champs numériques du ticket sans les petites flèches (gagne de la place, chiffres bien alignés à droite) */
+  .receipt input[type="number"] {
+    appearance: textfield;
+    -moz-appearance: textfield;
+  }
+  .receipt input[type="number"]::-webkit-inner-spin-button,
+  .receipt input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  /* Dans le ticket, les champs ressemblent à du texte imprimé (trait plein au survol / à la saisie) */
+  .receipt .input-hand {
+    border-bottom: 1px dotted rgba(43, 33, 24, 0.35);
+  }
+
   .tape {
     position: absolute;
     top: -10px;

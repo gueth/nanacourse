@@ -9,7 +9,6 @@ import BrandsSettings from '@/components/settings/BrandsSettings';
 import IngredientsSettings from '@/components/settings/IngredientsSettings';
 import StoresSettings from '@/components/settings/StoresSettings';
 import ListsSettings from '@/components/settings/ListsSettings';
-import BudgetSettings from '@/components/settings/BudgetSettings';
 
 // Les onglets de la page Paramètres
 const TABS = [
@@ -17,8 +16,7 @@ const TABS = [
   { id: 'brands', label: 'Marques' },
   { id: 'stores', label: 'Supermarchés' },
   { id: 'ingredients', label: 'Ingrédients' },
-  { id: 'lists', label: 'Listes de courses' },
-  { id: 'budget', label: 'Budget' }
+  { id: 'lists', label: 'Listes de courses' }
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -105,7 +103,6 @@ function SettingsContent() {
       {/* Les listes chargent elles-mêmes leurs données (avec leurs articles) */}
       {tab === 'lists' && <ListsSettings />}
       {/* Le budget charge lui-même ses réglages et les dépenses de la période */}
-      {tab === 'budget' && <BudgetSettings />}
       {tab === 'ingredients' && (
         <IngredientsSettings
           ingredients={ingredients}

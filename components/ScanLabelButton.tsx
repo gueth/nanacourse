@@ -2,10 +2,13 @@
 
 import { useRef, useState } from 'react';
 import { Camera } from 'lucide-react';
-// Réduction + conversion JPEG de la photo avant envoi (partagée avec le scan du frigo)
-import { toJpeg } from '@/lib/image';
+// Lecture gratuite dans le navigateur (Tesseract.js) et analyse du texte de l'étiquette
+import { readLines } from '@/lib/ocr';
+import { parseLabel, type LabelResult } from '@/lib/labelParser';
+import CameraCapture, { canUseInPageCamera } from '@/components/CameraCapture';
 
-export type ScanResult = { name: string; price: number | null };
+// Nom, prix et, pour le vrac vendu au kilo, le type « kg »
+export type ScanResult = LabelResult;
 
 type Props = {
   // Appelée avec le nom et le prix lus sur l'étiquette
@@ -13,30 +16,31 @@ type Props = {
 };
 
 // Bouton appareil photo : prend (ou choisit) une photo d'étiquette de prix,
-// l'envoie à /api/scan-price et renvoie le nom et le prix du produit lus dessus.
+// lit son texte sur l'appareil (gratuit) et renvoie le nom et le prix du produit.
 export default function ScanLabelButton({ onResult }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState('');
+  // Viseur intégré (caméra arrière imposée) ouvert ou non
+  const [cameraOpen, setCameraOpen] = useState(false);
+
+  // Viseur intégré si possible ; sinon l'appareil photo du téléphone (capture="environment")
+  function openCamera() {
+    if (canUseInPageCamera()) setCameraOpen(true);
+    else fileInputRef.current?.click();
+  }
 
   async function handleScan(file: File) {
     setScanning(true);
     setError('');
     try {
-      const jpeg = await toJpeg(file);
-      if (!jpeg) {
-        setError('Format de photo non pris en charge : essaie avec une photo JPEG ou PNG.');
+      // Lecture du texte de l'étiquette dans le navigateur (gratuit), puis recherche du nom et du prix
+      const result = parseLabel(await readLines([file]));
+      if (!result.name && result.price == null) {
+        setError("Rien de lisible : reprends l'étiquette de face, nette et bien cadrée.");
         return;
       }
-      const formData = new FormData();
-      formData.append('photo', jpeg, 'etiquette.jpg');
-      const res = await fetch('/api/scan-price', { method: 'POST', body: formData });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? "Échec de l'analyse de la photo.");
-        return;
-      }
-      onResult({ name: data.name ?? '', price: data.price ?? null });
+      onResult(result);
     } catch (err) {
       console.error(err);
       setError("Échec de l'analyse de la photo.");
@@ -60,7 +64,7 @@ export default function ScanLabelButton({ onResult }: Props) {
       />
       <button
         type="button"
-        onClick={() => fileInputRef.current?.click()}
+        onClick={openCamera}
         disabled={scanning}
         title="Prendre une photo de l'étiquette"
         className="flex items-center gap-2 px-3 h-10 rounded-full border-2 border-ink bg-paper shrink-0 disabled:opacity-50"
@@ -69,6 +73,14 @@ export default function ScanLabelButton({ onResult }: Props) {
         <span className="text-sm">{scanning ? 'Lecture...' : "Scanner l'étiquette"}</span>
       </button>
       {error && <p className="text-sm text-brick">{error}</p>}
+      {/* Viseur plein écran : une seule photo, analysée dès qu'elle est prise */}
+      {cameraOpen && (
+        <CameraCapture
+          onCapture={(files) => handleScan(files[0])}
+          onClose={() => setCameraOpen(false)}
+          onFallback={() => fileInputRef.current?.click()}
+        />
+      )}
     </div>
   );
 }

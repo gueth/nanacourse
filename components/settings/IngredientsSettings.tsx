@@ -1,7 +1,8 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { TYPE_SUGGESTIONS } from '@/lib/quantity';
+import { quantityRule, TYPE_SUGGESTIONS } from '@/lib/quantity';
+import { storeLabel } from '@/lib/stores';
 import { supabase } from '@/lib/supabase';
 import type { Brand, Category, IngredientWithRelations, Store } from '@/lib/types';
 import FamilyList from '@/components/FamilyList';
@@ -215,6 +216,23 @@ export default function IngredientsSettings({ ingredients, categories, brands, s
                     </span>
                   </p>
                   {ing.note && <p className="text-sm italic opacity-70">{ing.note}</p>}
+                  {/* PRIX : un par magasin, du moins cher au plus cher (le moins cher en gras), pour une unité du type */}
+                  <p className="text-sm mt-0.5">
+                    {ing.prices.length === 0 ? (
+                      <span className="opacity-60">prix inconnu</span>
+                    ) : (
+                      ing.prices
+                        .slice()
+                        .sort((a, b) => a.price - b.price)
+                        .map((p, i) => (
+                          <span key={p.id} className={i === 0 ? 'font-bold' : 'opacity-70'}>
+                            {i > 0 && ' · '}
+                            {p.price.toFixed(2)} €{ing.type ? ` / ${quantityRule(ing.type).unit}` : ''}
+                            <span className="font-normal opacity-70"> ({storeLabel(p.store)})</span>
+                          </span>
+                        ))
+                    )}
+                  </p>
                 </div>
                 <button onClick={() => (editingId === ing.id ? setEditingId(null) : startEdit(ing))} className="btn-ghost">
                   {editingId === ing.id ? 'fermer' : 'modifier'}

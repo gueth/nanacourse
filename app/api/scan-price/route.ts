@@ -51,6 +51,10 @@ export async function POST(request: Request) {
     return Response.json(response.parsed_output);
   } catch (error) {
     console.error(error);
+    // Clé API absente, invalide ou révoquée (ANTHROPIC_API_KEY dans .env.local)
+    if (error instanceof Anthropic.AuthenticationError || error instanceof Anthropic.PermissionDeniedError) {
+      return Response.json({ error: 'Clé API Anthropic refusée : vérifie ANTHROPIC_API_KEY dans .env.local.' }, { status: 502 });
+    }
     return Response.json({ error: "Échec de l'analyse de la photo." }, { status: 500 });
   }
 }

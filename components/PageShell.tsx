@@ -1,12 +1,29 @@
 "use client";
 
+import { createContext, useContext, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
 import { PageTransitionProvider } from "@/components/PageTransitionProvider";
+import { useKeepScreenOn } from "@/lib/wakeLock";
+
+// Emplacement à droite du lien "← Retour", sur la même ligne, où une page peut placer ses actions (ex : un menu)
+const HeaderActionsSlot = createContext<HTMLElement | null>(null);
+
+// À utiliser dans une page : son contenu s'affiche à droite du lien "← Retour"
+export function PageHeaderActions({ children }: { children: ReactNode }) {
+  const slot = useContext(HeaderActionsSlot);
+  return slot ? createPortal(children, slot) : null;
+}
 
 export function PageShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const isHome = pathname === "/";
+  // Élément de l'emplacement des actions (connu une fois affiché, via "ref")
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+
+  // Le téléphone ne se met pas en veille tant que l'application est affichée
+  useKeepScreenOn();
 
   if (isHome) {
     return (
@@ -18,11 +35,15 @@ export function PageShell({ children }: { children: React.ReactNode }) {
 
   return (
     <PageTransitionProvider>
-      <main className="max-w-3xl mx-auto px-6 py-10">
-        <button onClick={() => router.back()} className="btn-ghost mb-4">
-          ← Retour
-        </button>
-        {children}
+      <main className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
+        {/* Ligne du haut : lien de retour à gauche, actions de la page à droite */}
+        <div className="flex items-center justify-between gap-4 mb-4">
+          <button onClick={() => router.back()} className="btn-ghost">
+            ← Retour
+          </button>
+          <div ref={setSlot} />
+        </div>
+        <HeaderActionsSlot.Provider value={slot}>{children}</HeaderActionsSlot.Provider>
       </main>
     </PageTransitionProvider>
   );
