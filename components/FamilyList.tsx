@@ -95,19 +95,20 @@ export default function FamilyList<T>({
             {f.label} <span className={`opacity-60 ${compact ? 'text-sm' : 'text-base'}`}>({f.items.length})</span>
           </>
         );
-        // Titre de la bannière, cliquable si les groupes sont repliables (la flèche tourne à l'ouverture)
+        // Titre de la bannière, cliquable si les groupes sont repliables (la flèche tourne à l'ouverture).
+        // Version resserrée (ticket de la page Course) : en gris, pour rester discret à côté des articles
         const header = collapsible ? (
           <button
             type="button"
             onClick={() => toggle(f.key)}
             aria-expanded={open}
-            className={`title-hand flex items-center gap-1 w-full text-left ${compact ? 'text-lg' : 'text-2xl'}`}
+            className={`title-hand flex items-center gap-1 w-full text-left ${compact ? 'text-lg text-ink/50' : 'text-2xl'}`}
           >
             <ChevronRight size={compact ? 16 : 22} className={`shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
             {title}
           </button>
         ) : (
-          <p className={`title-hand ${compact ? 'text-lg' : 'text-2xl'}`}>{title}</p>
+          <p className={`title-hand ${compact ? 'text-lg text-ink/50' : 'text-2xl'}`}>{title}</p>
         );
 
         // Version resserrée (page Course) : bannière discrète, articles en lignes simples

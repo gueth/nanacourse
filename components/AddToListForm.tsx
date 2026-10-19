@@ -34,6 +34,7 @@ export default function AddToListForm({ lists, onAdded }: Props) {
   const [categoryId, setCategoryId] = useState('');
   const [brandId, setBrandId] = useState('');
   const [type, setType] = useState('');
+  const [note, setNote] = useState('');
   const [price, setPrice] = useState('');
   // Par défaut : la liste la plus récente (la première, triée par id décroissant)
   const [listId, setListId] = useState(lists[0]?.id ?? '');
@@ -83,6 +84,7 @@ export default function AddToListForm({ lists, onAdded }: Props) {
       setCategoryId(match.category_id ?? '');
       setBrandId(match.brand_id ?? '');
       setType(match.type ?? '');
+      setNote(match.note ?? '');
       const p = suggestedPrice(match);
       setPrice(p != null ? String(p) : '');
     }
@@ -109,21 +111,23 @@ export default function AddToListForm({ lists, onAdded }: Props) {
     let ingredientId = existing?.id ?? null;
     if (!existing) {
       ingredientId = await createIngredient(
-        { name, category_id: categoryId, brand_id: brandId, type },
+        { name, category_id: categoryId, brand_id: brandId, type, note },
         storeId || undefined,
         price ? unitPrice : undefined
       );
     } else {
-      // Catégorie, marque ou type modifiés : mise à jour de l'ingrédient
+      // Catégorie, marque, type ou note modifiés : mise à jour de l'ingrédient
       const changes = {
         category_id: categoryId || null,
         brand_id: brandId || null,
-        type: type.trim() || null
+        type: type.trim() || null,
+        note: note.trim() || null
       };
       if (
         changes.category_id !== existing.category_id ||
         changes.brand_id !== existing.brand_id ||
-        changes.type !== existing.type
+        changes.type !== existing.type ||
+        changes.note !== existing.note
       ) {
         const { error } = await supabase.from('ingredients').update(changes).eq('id', existing.id);
         if (error) console.error(error);
@@ -284,6 +288,10 @@ export default function AddToListForm({ lists, onAdded }: Props) {
             </option>
           ))}
         </select>
+      </div>
+      <div>
+        <label className="field-label">Note</label>
+        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="bio de préférence" className="input-hand" />
       </div>
 
       <div>

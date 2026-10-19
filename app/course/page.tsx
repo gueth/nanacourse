@@ -5,7 +5,7 @@
 
 // useState : stocker des valeurs qui, quand elles changent, redessinent la page.
 // useEffect : lancer du code après l'affichage du composant (ici : charger les données).
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 // Link : le composant de Next.js pour naviguer entre les pages sans recharger tout le site.
 import Link from 'next/link';
 // Le client Supabase configuré dans lib/supabase.ts, qui permet de lire/écrire dans la base de données.
@@ -28,6 +28,8 @@ import { useConfirm } from '@/components/ConfirmDialog';
 import { applyStoreToList, saveListTotal } from '@/lib/lists';
 // Ajout des articles achetés au stock (partagé avec le scan de reçu)
 import { addToInventory } from '@/lib/inventory';
+// Modifications faites depuis la liste, appliquées aux ingrédients à la validation
+import { applyPendingChanges, type PendingChanges } from '@/lib/pending';
 import { deleteList as deleteListCascade } from '@/lib/deletions';
 // Analyse d'une liste : meilleure boutique + comparaison avec l'inventaire
 import { analyzeList, summarizeTotal, type ListAnalysis } from '@/lib/optimize';
@@ -49,9 +51,14 @@ import StoreChooser from '@/components/StoreChooser';
 import type { Store } from '@/lib/types';
 
 // Colonnes d'une ligne d'article : case "acheté" | article | quantité | prix | suppression.
-// Plus étroites sur téléphone (ex : Galaxy A14), pour laisser de la place au nom de l'article.
+// Police réduite et colonnes Qté / Prix resserrées (encore plus sur téléphone, ex : Galaxy A14),
+// pour laisser un maximum de place au nom de l'article.
 const ITEM_COLUMNS =
-  'grid grid-cols-[1rem_minmax(0,1fr)_4.5rem_4.25rem_1.5rem] sm:grid-cols-[1.25rem_minmax(0,1fr)_7rem_6rem_1.75rem] items-center gap-x-2 sm:gap-x-3';
+  'grid grid-cols-[1rem_minmax(0,1fr)_4.5rem_3.5rem_1.5rem] sm:grid-cols-[1.25rem_minmax(0,1fr)_5.5rem_4.5rem_1.75rem] items-center gap-x-1.5 sm:gap-x-2';
+
+// Articles au prix incertain (appui long sur le libellé) : clé du stockage local, et durée de l'appui long
+const DOUBTFUL_KEY = 'nanacourses.doubtfulItems';
+const LONG_PRESS_MS = 500;
 
 // Le budget (somme à ne pas dépasser, marge si des prix manquent, durée de la période)
 // se règle dans Profil > Budget : voir lib/budget.ts.
@@ -87,6 +94,9 @@ type SavedItem = {
     brand: { name: string } | null;
     category: { id: string; name: string; budget_limit: number | null } | null; // budget max de la catégorie
   } | null;
+  // Modifications en attente (nom, catégorie, prix modifié...) : appliquées à l'ingrédient à la validation de la liste.
+  // L'ingrédient ci-dessus est déjà affiché avec ces modifications (voir withPending).
+  pending?: PendingChanges | null;
 };
 
 // Une liste de courses enregistrée, avec tous ses articles.
@@ -107,12 +117,39 @@ type SavedList = {
 //   ingredient -> pour chaque ligne, l'ingrédient (nom, type, marque)
 //   category   -> pour chaque ingrédient, sa catégorie (id + nom)
 // Tri par id décroissant : les listes les plus récentes en premier.
-function fetchActiveLists() {
-  return supabase
-    .from('shopping_lists')
-    .select('*, items:shopping_list_items(*, ingredient:ingredients(name, type, brand:brands(name), category:categories(id, name, budget_limit)))')
-    .eq('is_active', true)
-    .order('id', { ascending: false });
+async function fetchActiveLists() {
+  const [lists, { data: categories }, { data: brands }] = await Promise.all([
+    supabase
+      .from('shopping_lists')
+      .select('*, items:shopping_list_items(*, ingredient:ingredients(name, type, brand:brands(name), category:categories(id, name, budget_limit)))')
+      .eq('is_active', true)
+      .order('id', { ascending: false }),
+    supabase.from('categories').select('id, name, budget_limit'),
+    supabase.from('brands').select('id, name')
+  ]);
+  return { data: withPending((lists.data as unknown as SavedList[]) ?? [], categories ?? [], brands ?? []), error: lists.error };
+}
+
+// Affichage des articles avec leurs modifications en attente (nom, catégorie, marque, unité) :
+// la liste montre ce que l'utilisateur a saisi, même si l'ingrédient ne change qu'à la validation
+function withPending(
+  lists: SavedList[],
+  categories: { id: string; name: string; budget_limit: number | null }[],
+  brands: { id: string; name: string }[]
+) {
+  return lists.map((list) => ({
+    ...list,
+    items: list.items.map((item) => {
+      const p = item.pending;
+      if (!p || !item.ingredient) return item;
+      const ingredient = { ...item.ingredient };
+      if (p.name !== undefined) ingredient.name = p.name;
+      if (p.type !== undefined) ingredient.type = p.type ?? null;
+      if (p.brand_id !== undefined) ingredient.brand = brands.find((b) => b.id === p.brand_id) ?? null;
+      if (p.category_id !== undefined) ingredient.category = categories.find((c) => c.id === p.category_id) ?? null;
+      return { ...item, ingredient };
+    })
+  }));
 }
 
 
@@ -155,6 +192,8 @@ export default function CoursePage() {
   const [validating, setValidating] = useState<string | null>(null);
   // Liste dont la fenêtre de validation est ouverte (clic sur le total ou sur "Valider cette liste"), null = fermée.
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  // Dans la fenêtre de validation : créer une liste "Reste ..." avec les articles non barrés (proposé par défaut)
+  const [keepRest, setKeepRest] = useState(true);
   // Liste dans laquelle le cadre "ajouter un ingrédient" ajoute (ouvert par le "+" de son ticket) ; null = fermé.
   const [addTo, setAddTo] = useState<SavedList | null>(null);
   // Article dont le cadre de modification est ouvert (clic sur son nom), avec sa liste ; null = fermé.
@@ -183,6 +222,50 @@ export default function CoursePage() {
   function markModified(listId: string, itemId?: string) {
     setOptimized((o) => ({ ...o, [listId]: false }));
     if (itemId) clearSuggestion(listId, itemId);
+  }
+
+  // Articles au prix incertain, marqués par un appui long sur leur libellé (ligne surlignée en gris).
+  // Gardés dans ce navigateur, pour rester marqués après un rechargement de la page.
+  const [doubtful, setDoubtful] = useState<Record<string, boolean>>(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      return JSON.parse(localStorage.getItem(DOUBTFUL_KEY) ?? '{}');
+    } catch {
+      return {};
+    }
+  });
+  // Appui long en cours (minuteur) et appui long qui vient d'avoir lieu (pour ignorer le clic qui suit)
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressed = useRef(false);
+
+  // Marque / démarque un article comme "prix incertain"
+  function toggleDoubtful(itemId: string) {
+    setDoubtful((d) => {
+      const next = { ...d };
+      if (next[itemId]) delete next[itemId];
+      else next[itemId] = true;
+      try {
+        localStorage.setItem(DOUBTFUL_KEY, JSON.stringify(next));
+      } catch {
+        // Stockage local indisponible (navigation privée...) : le marquage dure jusqu'au rechargement
+      }
+      return next;
+    });
+  }
+
+  // Début d'appui sur un libellé : au bout de LONG_PRESS_MS, la ligne est marquée (ou démarquée)
+  function startPress(itemId: string) {
+    longPressed.current = false;
+    pressTimer.current = setTimeout(() => {
+      longPressed.current = true;
+      toggleDoubtful(itemId);
+    }, LONG_PRESS_MS);
+  }
+
+  // Fin d'appui (doigt levé, glissé hors du libellé...) : on annule l'appui long s'il n'a pas abouti
+  function endPress() {
+    if (pressTimer.current) clearTimeout(pressTimer.current);
+    pressTimer.current = null;
   }
 
   // Coche / décoche un article.
@@ -239,8 +322,18 @@ export default function CoursePage() {
       // On ajoute l'article dans son groupe ("!" dit à TypeScript que le groupe existe forcément).
       groups.get(key)!.items.push(item);
     }
-    // On transforme la Map en simple tableau pour pouvoir faire .map() dans le JSX.
-    return Array.from(groups.values());
+    // Ordre stable et alphabétique (Supabase ne garantit pas l'ordre des articles renvoyés, qui pouvait donc
+    // changer après un ajout ou une modification) : catégories de A à Z ("Sans catégorie" à la fin),
+    // et dans chaque catégorie, articles de A à Z (à nom égal, toujours le même ordre grâce à l'identifiant).
+    const byName = (a: string, b: string) => a.localeCompare(b, 'fr', { sensitivity: 'base' });
+    return Array.from(groups.entries())
+      .sort(([keyA, a], [keyB, b]) => Number(keyA === 'none') - Number(keyB === 'none') || byName(a.name, b.name))
+      .map(([, g]) => ({
+        ...g,
+        items: g.items
+          .slice()
+          .sort((a, b) => byName(a.ingredient?.name ?? '', b.ingredient?.name ?? '') || a.id.localeCompare(b.id))
+      }));
   }
 
   // Prix estimé d'un article, ou null s'il n'est pas encore connu (0 = pas de prix).
@@ -296,7 +389,11 @@ export default function CoursePage() {
     if (raw === undefined) return; // rien n'a été tapé
     const price = raw ? Number(raw) : 0;
     if (price !== (item.expected_price ?? 0)) {
-      const { error } = await supabase.from('shopping_list_items').update({ expected_price: price }).eq('id', item.id);
+      // Le prix de l'ingrédient (dans le magasin de la liste) ne sera mis à jour qu'à la validation
+      const { error } = await supabase
+        .from('shopping_list_items')
+        .update({ expected_price: price, pending: { ...(item.pending ?? {}), price_changed: true } })
+        .eq('id', item.id);
       if (error) return console.error(error);
       await saveListTotal(
         list.id,
@@ -451,7 +548,7 @@ export default function CoursePage() {
   //  4. on déduit le prix de la course du budget de la période (Profil > Budget)
   //  5. on désactive la liste (elle reste dans les paramètres)
   //  6. on recharge l'affichage et le budget restant
-  async function validateList(list: SavedList) {
+  async function validateList(list: SavedList, createRest = false) {
     // On mémorise quelle liste est en cours de validation (désactive son bouton).
     setValidating(list.id);
 
@@ -467,6 +564,12 @@ export default function CoursePage() {
       return setValidating(null);
     }
 
+    // 3 bis. Les modifications faites depuis la liste (informations et prix) s'appliquent maintenant aux ingrédients,
+    // mais seulement pour les articles barrés (achetés) : informations modifiées, et prix mémorisé dans le magasin de la liste.
+    // Celles des articles non barrés restent en attente (reprises dans la liste "Reste ..." si on la crée).
+    const failures = await applyPendingChanges(boughtItems, list.store_id ?? null);
+    if (failures.length > 0) console.error('Non enregistré :', failures.join(', '));
+
     // 4. Le prix de la course (articles achetés) est déduit du budget de la période en cours
     const spent = boughtItems.reduce((sum, item) => sum + (realPriceFor(item) ?? 0), 0);
     if (spent > 0) await recordExpense(spent, list.name);
@@ -475,7 +578,39 @@ export default function CoursePage() {
     const { error: deactivateError } = await supabase.from('shopping_lists').update({ is_active: false }).eq('id', list.id);
     if (deactivateError) console.error(deactivateError);
 
-    // 6. Fin de la validation : on réactive les boutons, on recharge les listes et le budget restant.
+    // 6. Articles non barrés (pas pris pendant la course) : s'il le veut, une nouvelle liste "Reste <nom>"
+    // les reprend (mêmes quantités, prix et magasin), et devient la liste active
+    const rest = list.items.filter((item) => !checkedItems[item.id]);
+    if (createRest && rest.length > 0) {
+      const { data: created, error: createError } = await supabase
+        .from('shopping_lists')
+        .insert({
+          name: `Reste ${list.name}`,
+          estimated_price: rest.reduce((sum, item) => sum + (item.expected_price ?? 0), 0),
+          is_active: true,
+          activated_at: new Date().toISOString(),
+          store_id: list.store_id ?? null
+        })
+        .select()
+        .single();
+      if (createError || !created) console.error(createError);
+      else {
+        const { error: itemsError } = await supabase.from('shopping_list_items').insert(
+          rest.map((item) => ({
+            shopping_list_id: created.id,
+            ingredient_id: item.ingredient_id,
+            quantity: item.quantity,
+            expected_price: item.expected_price,
+            store_id: list.store_id ?? null,
+            // Les modifications en attente suivent l'article : elles s'appliqueront s'il est barré puis validé dans cette liste
+            pending: item.pending ?? null
+          }))
+        );
+        if (itemsError) console.error(itemsError);
+      }
+    }
+
+    // 7. Fin de la validation : on réactive les boutons, on recharge les listes et le budget restant.
     setValidating(null);
     loadLists();
     fetchBudget().then(setBudget);
@@ -495,7 +630,11 @@ export default function CoursePage() {
     return (
       // Article coché ("acheté") : toute la ligne est barrée et grisée, et plus rien n'est modifiable
       // (nom, quantité, prix, optimisation, suppression) tant qu'on ne la décoche pas
-      <li key={item.id} className={`${ITEM_COLUMNS} py-1 text-xs sm:text-sm ${statusColor} ${checked ? 'item-struck' : ''}`}>
+      // Prix incertain (appui long sur le libellé) : ligne légèrement surlignée en gris
+      <li
+        key={item.id}
+        className={`${ITEM_COLUMNS} py-1 text-[0.7rem] sm:text-xs ${statusColor} ${checked ? 'item-struck' : ''} ${doubtful[item.id] ? 'bg-ink/10 rounded-sm' : ''}`}
+      >
         {/* Colonne 1 — case à cocher "acheté", la seule chose qui reste active sur une ligne cochée.
             "!!" transforme undefined en false pour avoir toujours un booléen. */}
         <input
@@ -507,17 +646,31 @@ export default function CoursePage() {
         />
         {/* Colonne 2 — article : nom, marque, et ✓ / ✗ pour un article grisé */}
         <span className="min-w-0 flex flex-wrap items-center gap-x-2">
-          {/* Clic sur le nom : ouvre le cadre de modification de l'article */}
+          {/* Clic sur le nom : ouvre le cadre de modification de l'article.
+              Appui long : marque / démarque l'article comme "prix incertain" (le clic qui suit est ignoré).
+              select-none + pas de menu contextuel : l'appui long ne sélectionne pas le texte sur téléphone. */}
           <button
             type="button"
-            onClick={() => item.ingredient && setEditing({ list, item })}
+            onPointerDown={() => startPress(item.id)}
+            onPointerUp={endPress}
+            onPointerLeave={endPress}
+            onPointerCancel={endPress}
+            onContextMenu={(e) => e.preventDefault()}
+            style={{ WebkitTouchCallout: 'none' }}
+            onClick={() => {
+              if (longPressed.current) {
+                longPressed.current = false;
+                return;
+              }
+              if (item.ingredient) setEditing({ list, item });
+            }}
             disabled={!item.ingredient || checked}
             title={checked ? undefined : 'Modifier cet article'}
-            className="truncate text-left enabled:hover:underline decoration-dotted underline-offset-2"
+            className="truncate text-left select-none enabled:hover:underline decoration-dotted underline-offset-2"
           >
             {item.ingredient?.name ?? 'Ingrédient supprimé'}
-            {/* Marque de l'ingrédient, si elle est renseignée */}
-            {item.ingredient?.brand && <span className="opacity-60"> — {item.ingredient.brand.name}</span>}
+            {/* Marque : seulement sur ordinateur (sm et plus), pour laisser la place au nom sur téléphone */}
+            {item.ingredient?.brand && <span className="hidden sm:inline opacity-60"> — {item.ingredient.brand.name}</span>}
           </button>
         {/* ✓ / ✗ pour un article grisé : diviser sa quantité par deux, ou non */}
         {status === 'reduce' && suggestedQty != null && (
@@ -559,10 +712,11 @@ export default function CoursePage() {
             onChange={(e) => setDraftQty((d) => ({ ...d, [item.id]: e.target.value }))}
             onBlur={() => saveQuantity(list, item)}
             disabled={checked}
-            className="input-hand w-9 sm:w-14 text-right"
+            className="input-hand w-8 sm:w-12 text-right"
             title={`Quantité (${rule.unit})`}
           />
-          <span className="opacity-60 truncate max-w-8 sm:max-w-none">{rule.unit}</span>
+          {/* Unité en entier (jusqu'à 4 lettres : pce, paq, bout...), jamais coupée */}
+          <span className="opacity-60 shrink-0 whitespace-nowrap">{rule.unit}</span>
         </span>
         {/* Colonne 4 — prix de la ligne, directement modifiable pour mettre le prix réel.
             Le total se met à jour pendant la saisie, et le prix est enregistré
@@ -890,6 +1044,8 @@ export default function CoursePage() {
         const total = prices.reduce<number>((sum, p) => sum + (p ?? 0), 0);
         const overBudget = budget ? isOverBudget(total, missingPrices.length > 0, budget) : false;
         const bought = list.items.filter((item) => checkedItems[item.id]);
+        // Articles marqués "prix incertain" (appui long) : simple note dans la fenêtre
+        const doubtfulItems = list.items.filter((item) => doubtful[item.id]);
         const ready = list.items.length > 0 && missingPrices.length === 0 && !!chosenStore && !overBudget;
         return (
           <Modal title="Valider mes achats" onClose={() => setConfirmingId(null)}>
@@ -900,16 +1056,41 @@ export default function CoursePage() {
                     Aucun article n&apos;est coché : rien ne sera ajouté à l&apos;inventaire ni déduit du budget.
                   </p>
                 )}
-                <p className="mb-5">
-                  Es-tu sûr de ces informations ? Les articles cochés seront ajoutés à l&apos;inventaire, leur prix déduit de
-                  ton budget, et la liste sera désactivée.
-                </p>
+                {/* Simple note (n'empêche pas la validation) : articles marqués "prix incertain" par un appui long */}
+                {doubtfulItems.length > 0 && (
+                  <p className="text-sm mb-3 px-2 py-1 bg-ink/10 rounded-sm">
+                    {doubtfulItems.length === 1
+                      ? "1 article surligné en gris : tu n'es pas sûr de son prix"
+                      : `${doubtfulItems.length} articles surlignés en gris : tu n'es pas sûr de leur prix`}{' '}
+                    ({doubtfulItems.map((item) => item.ingredient?.name ?? 'Ingrédient supprimé').join(', ')}).
+                  </p>
+                )}
+                {/* Articles non barrés : proposition de les garder dans une nouvelle liste, activée automatiquement */}
+                {list.items.length > bought.length && (
+                  <label className="flex items-start gap-2 text-sm mb-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={keepRest}
+                      onChange={(e) => setKeepRest(e.target.checked)}
+                      className="w-4 h-4 mt-0.5 accent-brick shrink-0"
+                    />
+                    <span>
+                      Créer la liste <strong>« Reste {list.name} »</strong> avec{' '}
+                      {list.items.length - bought.length === 1
+                        ? "l'article non barré"
+                        : `les ${list.items.length - bought.length} articles non barrés`}{' '}
+                      (elle deviendra la liste active)
+                    </span>
+                  </label>
+                )}
+                <div className="mb-5" />
                 <div className="flex flex-wrap items-center gap-4">
                   <button
                     autoFocus
                     onClick={() => {
                       setConfirmingId(null);
-                      validateList(list);
+                      validateList(list, keepRest);
+                      setKeepRest(true);
                     }}
                     className="btn-hand"
                   >
