@@ -7,12 +7,12 @@ import BudgetSettings from '@/components/settings/BudgetSettings';
 export default function ProfilePage() {
   return (
     <div>
-      <h1 className="title-hand text-4xl mb-6">Profil</h1>
+      <h1 className="title-hand text-3xl sm:text-4xl mb-4">Profil</h1>
 
-      <h2 className="title-hand text-3xl mb-3">Ma position</h2>
+      <h2 className="title-hand text-2xl sm:text-3xl mb-2">Ma position</h2>
       <LocationSettings />
 
-      <h2 className="title-hand text-3xl mt-10 mb-3">Budget</h2>
+      <h2 className="title-hand text-2xl sm:text-3xl mt-8 mb-2">Budget</h2>
       <BudgetSettings />
     </div>
   );

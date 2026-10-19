@@ -615,8 +615,7 @@ export default function CoursePage() {
       {/* En-tête de la page */}
       <h1 className="title-hand text-3xl mb-1">Mieux gérer son budget,</h1>
       <h1 className="title-hand text-3xl mb-2">et tout sela en une course.</h1>
-      <p className="mb-5 opacity-70">Proposition de course.</p>
-
+     
       {/* ----- LA LISTE DE COURSES, présentée comme un ticket de caisse, centrée sur la page ----- */}
       <div className="max-w-xl mx-auto">
           {/* Pendant le chargement de la liste active : le hamster qui court dans sa roue */}

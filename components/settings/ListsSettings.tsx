@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { ChevronRight, Trash2 } from 'lucide-react';
+import { ChevronRight, Pencil, Trash2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { formatQuantity, quantityRule } from '@/lib/quantity';
 import AddToListForm from '@/components/AddToListForm';
@@ -10,6 +10,7 @@ import { deleteList as deleteListCascade } from '@/lib/deletions';
 import { listTotal, saveListTotal } from '@/lib/lists';
 import Modal from '@/components/Modal';
 import NewListForm from '@/components/settings/NewListForm';
+import { EditActions, IconButton, RowList } from '@/components/settings/ui';
 
 // Une liste de courses avec ses articles (seulement ce qu'il faut pour cet onglet)
 type ListRow = {
@@ -139,7 +140,7 @@ export default function ListsSettings() {
   return (
     <div>
       {confirmDialog}
-      <p className="opacity-70 mb-4">
+      <p className="text-sm opacity-70 mb-4">
         Prépare tes listes à l&apos;avance, puis active celle du jour : c&apos;est elle qui s&apos;affiche sur la page Course.
       </p>
 
@@ -157,101 +158,92 @@ export default function ListsSettings() {
         </Modal>
       )}
 
-      <ul className="space-y-3">
-        {lists.length === 0 && <p className="opacity-60">Aucune liste pour le moment.</p>}
+      {/* LISTES : une ligne par liste (dépliable pour voir et ajouter ses articles),
+          avec le bouton Activer / Désactiver et les icônes renommer / supprimer */}
+      <RowList empty={lists.length === 0 ? 'Aucune liste pour le moment.' : undefined}>
         {lists.map((list) => {
           const open = openId === list.id;
           const total = listTotal(list.items);
           return (
-            <li key={list.id} className={`card ${list.is_active ? 'border-herb' : ''}`}>
-              <span className="tape" />
-
-              {/* EN-TÊTE : libellé (cliquable pour déplier), état, résumé et actions */}
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                {renamingId === list.id ? (
-                  <span className="flex flex-wrap items-center gap-3">
-                    <input
-                      autoFocus
-                      value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && saveRename(list.id)}
-                      className="input-hand"
-                    />
-                    <button onClick={() => saveRename(list.id)} className="btn-hand">
-                      Enregistrer
+            <li key={list.id} className={list.is_active ? 'bg-herb/10' : ''}>
+              {renamingId === list.id ? (
+                // RENOMMAGE, dans la ligne
+                <div className="px-4 py-3 space-y-3">
+                  <label className="field-label">Libellé de la liste</label>
+                  <input
+                    autoFocus
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && saveRename(list.id)}
+                    className="input-hand w-full"
+                  />
+                  <EditActions onSave={() => saveRename(list.id)} onCancel={() => setRenamingId(null)} />
+                </div>
+              ) : (
+                <div className="pl-2 pr-4 py-2">
+                  {/* Ligne 1 : libellé (un clic déplie la liste), puis renommer / supprimer */}
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => setOpenId(open ? null : list.id)}
+                      aria-expanded={open}
+                      className="flex-1 min-w-0 flex items-center gap-1 text-left"
+                    >
+                      <ChevronRight size={18} className={`shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
+                      <span className="title-hand text-xl truncate">{list.name}</span>
                     </button>
-                    <button onClick={() => setRenamingId(null)} className="btn-ghost">
-                      annuler
-                    </button>
-                  </span>
-                ) : (
-                  <button
-                    onClick={() => setOpenId(open ? null : list.id)}
-                    aria-expanded={open}
-                    className="title-hand text-2xl flex items-center gap-1 text-left"
-                  >
-                    <ChevronRight size={22} className={`shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
-                    {list.name}
+                    <IconButton
+                      label="Renommer"
+                      onClick={() => {
+                        setRenamingId(list.id);
+                        setRenameValue(list.name);
+                      }}
+                    >
+                      <Pencil size={18} />
+                    </IconButton>
+                    <IconButton label="Supprimer" onClick={() => deleteList(list)} danger>
+                      <Trash2 size={18} />
+                    </IconButton>
+                  </div>
+                  {/* Ligne 2 : état et résumé, puis le bouton Activer / Désactiver
+                      (une seule liste active à la fois : c'est elle qui s'affiche sur la page Course) */}
+                  <div className="flex items-center gap-2 pl-6 -mt-1">
                     {list.is_active && (
-                      <span className="ml-2 text-sm font-[family-name:var(--font-type)] text-herb border-2 border-herb rounded px-1.5">
-                        active
-                      </span>
+                      <span className="shrink-0 text-[10px] uppercase text-herb border-2 border-herb rounded px-1">active</span>
                     )}
-                  </button>
-                )}
-                <span className="text-sm opacity-70">
-                  {list.items.length} article(s) — {total.toFixed(2)} €
-                </span>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-4 mt-3">
-                {list.is_active ? (
-                  <button onClick={() => deactivate(list.id)} className="btn-hand">
-                    Désactiver
-                  </button>
-                ) : (
-                  <button onClick={() => activate(list.id)} className="btn-hand">
-                    Activer
-                  </button>
-                )}
-                <button
-                  onClick={() => {
-                    setRenamingId(list.id);
-                    setRenameValue(list.name);
-                  }}
-                  className="btn-ghost"
-                >
-                  renommer
-                </button>
-                <button onClick={() => deleteList(list)} className="btn-ghost">
-                  supprimer
-                </button>
-              </div>
+                    <span className="flex-1 min-w-0 truncate text-xs opacity-60">
+                      {list.items.length} article(s) · {total.toFixed(2)} €
+                    </span>
+                    <button
+                      onClick={() => (list.is_active ? deactivate(list.id) : activate(list.id))}
+                      className={`shrink-0 text-xs uppercase px-2 py-1 rounded border-2 ${
+                        list.is_active ? 'border-herb text-herb' : 'border-ink bg-ink text-paper'
+                      }`}
+                    >
+                      {list.is_active ? 'Désactiver' : 'Activer'}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* ARTICLES DE LA LISTE, visibles quand elle est dépliée */}
               {open && (
-                <div className="mt-4 pt-3 border-t-2 border-dashed border-line">
+                <div className="px-4 pb-4 pt-1 border-t-2 border-dashed border-line">
                   {list.items.length === 0 ? (
-                    <p className="text-sm opacity-60 mb-3">Aucun article dans cette liste.</p>
+                    <p className="text-sm opacity-60 my-3">Aucun article dans cette liste.</p>
                   ) : (
                     <ul className="mb-4 divide-y-2 divide-dashed divide-line text-sm">
                       {list.items.map((item) => (
-                        <li key={item.id} className="flex items-center gap-3 py-1.5">
+                        <li key={item.id} className="flex items-center gap-2 py-1">
                           <span className="flex-1 min-w-0 truncate">{item.ingredient?.name ?? 'Ingrédient supprimé'}</span>
-                          <span className="opacity-70">
+                          <span className="opacity-70 shrink-0">
                             {formatQuantity(item.quantity)} {quantityRule(item.ingredient?.type).unit}
                           </span>
-                          <span className="w-20 text-right">
+                          <span className="w-16 text-right shrink-0">
                             {item.expected_price ? `${item.expected_price.toFixed(2)} €` : 'prix ?'}
                           </span>
-                          <button
-                            onClick={() => removeItem(list, item.id)}
-                            aria-label="Retirer cet article"
-                            title="Retirer"
-                            className="p-1 opacity-60 hover:opacity-100 hover:text-brick"
-                          >
+                          <IconButton label="Retirer cet article" onClick={() => removeItem(list, item.id)} danger>
                             <Trash2 size={16} />
-                          </button>
+                          </IconButton>
                         </li>
                       ))}
                     </ul>
@@ -264,7 +256,7 @@ export default function ListsSettings() {
             </li>
           );
         })}
-      </ul>
+      </RowList>
     </div>
   );
 }

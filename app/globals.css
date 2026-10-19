@@ -55,6 +55,19 @@ body {
     display: none;
   }
 
+  /* Carte qui contient une liste en lignes (paramètres) : les lignes gèrent elles-mêmes leurs marges */
+  .card.card-rows {
+    padding: 0.5rem 0 0;
+  }
+
+  /* Barre d'onglets qui défile horizontalement, sans barre de défilement visible */
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
   /* ----- TICKET DE CAISSE (liste de la page Course) ----- */
 
   /* Papier du ticket : blanc, police machine à écrire, bas découpé en dents de scie */

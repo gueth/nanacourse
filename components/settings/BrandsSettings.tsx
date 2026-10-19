@@ -6,6 +6,7 @@ import type { Brand } from '@/lib/types';
 import CollapsibleForm from '@/components/settings/CollapsibleForm';
 import { deleteBrand } from '@/lib/deletions';
 import { useConfirm } from '@/components/ConfirmDialog';
+import { EditActions, EditFields, RowActions, RowList, SearchBar } from '@/components/settings/ui';
 
 type Props = {
   brands: Brand[];
@@ -89,7 +90,7 @@ export default function BrandsSettings({ brands, onChange }: Props) {
   return (
     <div>
       {confirmDialog}
-      <p className="opacity-70 mb-4">Les marques de tes produits, avec ton avis sur 5.</p>
+      <p className="text-sm opacity-70 mb-4">Les marques de tes produits, avec ton avis sur 5.</p>
 
       {/* Formulaire d'ajout, repliable pour laisser de la place à la liste */}
       <CollapsibleForm title="+ Ajouter une marque" storageKey="settings-brands">
@@ -119,63 +120,51 @@ export default function BrandsSettings({ brands, onChange }: Props) {
       {/* Erreurs (ajout, suppression...) affichées hors du formulaire, visibles même quand il est replié */}
       {errorMessage && <p className="text-sm text-brick mb-4">{errorMessage}</p>}
 
-      <input
-        type="text"
-        placeholder="Rechercher une marque..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        className="input-hand w-full mb-4"
-      />
+      <SearchBar value={search} onChange={setSearch} placeholder="Rechercher une marque..." />
 
-      <ul className="space-y-3">
-        {filtered.length === 0 && <p className="opacity-60">Aucune marque ne correspond à ta recherche.</p>}
+      {/* LISTE : une ligne par marque (nom + avis), avec les icônes modifier / supprimer */}
+      <RowList empty={filtered.length === 0 ? 'Aucune marque ne correspond à ta recherche.' : undefined}>
         {filtered.map((b) => (
-          <li key={b.id} className="card">
-            <span className="tape" />
-            {editingId === b.id ? (
-              // MODE ÉDITION
-              <div className="form-grid">
-                <div>
-                  <label className="field-label">Nom</label>
-                  <input value={editName} onChange={(e) => setEditName(e.target.value)} className="input-hand" />
-                </div>
-                <div>
-                  <label className="field-label">Avis (/5)</label>
-                  <input
-                    value={editRating}
-                    onChange={(e) => setEditRating(e.target.value)}
-                    type="number"
-                    min={0}
-                    max={5}
-                    step="0.5"
-                    className="input-hand w-20"
-                  />
-                </div>
-                <button onClick={() => saveEdit(b.id)} className="btn-hand">
-                  Enregistrer
-                </button>
-                <button onClick={() => setEditingId(null)} className="btn-ghost">
-                  annuler
-                </button>
+          <li key={b.id} className="px-4 py-2">
+            <div className="flex items-center gap-2">
+              <div className="flex-1 min-w-0">
+                <p className="truncate">{b.name}</p>
+                <p className="text-xs text-mustard font-bold">{b.rating != null ? `★ ${b.rating}/5` : 'pas d’avis'}</p>
               </div>
-            ) : (
-              // MODE LECTURE
-              <div className="flex items-center justify-between gap-4">
-                <span className="text-lg">{b.name}</span>
-                <span className="flex items-center gap-4">
-                  <span className="text-mustard font-bold">{b.rating != null ? `${b.rating}/5` : 'pas d’avis'}</span>
-                  <button onClick={() => startEdit(b)} className="btn-ghost">
-                    modifier
-                  </button>
-                  <button onClick={() => handleDelete(b)} className="btn-ghost">
-                    supprimer
-                  </button>
-                </span>
+              <RowActions
+                editing={editingId === b.id}
+                onEdit={() => (editingId === b.id ? setEditingId(null) : startEdit(b))}
+                onDelete={() => handleDelete(b)}
+              />
+            </div>
+            {/* MODIFICATION, dans la ligne */}
+            {editingId === b.id && (
+              <div className="pt-2 pb-3 space-y-3">
+                <EditFields>
+                  <div>
+                    <label className="field-label">Nom</label>
+                    <input value={editName} onChange={(e) => setEditName(e.target.value)} className="input-hand w-full" />
+                  </div>
+                  <div>
+                    <label className="field-label">Avis (/5)</label>
+                    <input
+                      value={editRating}
+                      onChange={(e) => setEditRating(e.target.value)}
+                      type="number"
+                      inputMode="decimal"
+                      min={0}
+                      max={5}
+                      step="0.5"
+                      className="input-hand w-full"
+                    />
+                  </div>
+                </EditFields>
+                <EditActions onSave={() => saveEdit(b.id)} onCancel={() => setEditingId(null)} />
               </div>
             )}
           </li>
         ))}
-      </ul>
+      </RowList>
     </div>
   );
 }

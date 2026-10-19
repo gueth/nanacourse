@@ -17,7 +17,7 @@ const TABS = [
   { id: 'brands', label: 'Marques' },
   { id: 'stores', label: 'Supermarchés' },
   { id: 'ingredients', label: 'Ingrédients' },
-  { id: 'lists', label: 'Listes de courses' }
+  { id: 'lists', label: 'Listes' }
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -87,15 +87,16 @@ function SettingsContent() {
 
   return (
     <div>
-      <h1 className="title-hand text-4xl mb-4">Paramètres</h1>
+      <h1 className="title-hand text-3xl sm:text-4xl mb-3">Paramètres</h1>
 
-      {/* BARRE D'ONGLETS : l'onglet actif est mis en avant */}
-      <div className="flex flex-wrap gap-1 border-b-2 border-ink mb-6">
+      {/* BARRE D'ONGLETS : une seule ligne, qui défile horizontalement sur téléphone ; l'onglet actif est mis en avant */}
+      <div className="flex gap-1 overflow-x-auto no-scrollbar border-b-2 border-ink mb-5 -mx-4 px-4 sm:mx-0 sm:px-0">
         {TABS.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
-            className={`nav-tab ${tab === t.id ? '' : 'opacity-50'}`}
+            aria-current={tab === t.id ? 'page' : undefined}
+            className={`nav-tab shrink-0 whitespace-nowrap ${tab === t.id ? '' : 'opacity-50'}`}
           >
             {t.label}
           </button>

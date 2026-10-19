@@ -9,7 +9,9 @@ import { useConfirm } from '@/components/ConfirmDialog';
 import Modal from '@/components/Modal';
 import PantryScan from '@/components/PantryScan';
 import ReceiptScan from '@/components/ReceiptScan';
-import { Camera, ReceiptText } from 'lucide-react';
+import { Camera, ReceiptText, Trash2, TriangleAlert } from 'lucide-react';
+import { IconButton, RowList, SearchBar } from '@/components/settings/ui';
+import { formatQuantity, quantityRule } from '@/lib/quantity';
 
 type Row = InventoryRow & { ingredient: Ingredient };
 
@@ -86,7 +88,7 @@ export default function InventoryPage() {
 
   const formPage = (
     <div>
-      <h1 className="title-hand text-4xl mb-1">Inventaire</h1>
+      <h1 className="title-hand text-3xl sm:text-4xl mb-1">Inventaire</h1>
       <p className="opacity-70 mb-4">Ce qu&apos;il te reste à la maison.</p>
 
       {/* SCAN DU FRIGO ET DES PLACARDS : désactivé pour l'instant.
@@ -135,53 +137,52 @@ export default function InventoryPage() {
 
   const listPage = (
     <div>
-      <h2 className="title-hand text-4xl mb-1">Ton inventaire</h2>
-      <p className="opacity-70 mb-6">
-        Recherche et gère tes stocks. Un ingrédient épuisé (quantité 0 ou stock faible) réapparaît automatiquement dans
-        la liste de courses et n&apos;est plus affiché ici une fois à 0.
+      <h2 className="title-hand text-3xl sm:text-4xl mb-1">Ton inventaire</h2>
+      <p className="text-sm opacity-70 mb-4">
+        Un ingrédient épuisé (quantité 0 ou stock faible) réapparaît automatiquement dans la liste de courses, et n&apos;est
+        plus affiché ici une fois à 0.
       </p>
 
-      <input
-        type="text"
-        placeholder="Rechercher un ingrédient..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        className="input-hand w-full mb-4"
-      />
+      <SearchBar value={search} onChange={setSearch} placeholder="Rechercher un ingrédient..." />
 
-      <ul className="space-y-3">
-        {filtered.length === 0 && <p className="opacity-60">Aucun ingrédient ne correspond à ta recherche.</p>}
-        {/* Les variantes d'un même produit sont regroupées sous une bannière (ex : Œufs) */}
+      {/* LISTE : une ligne par ingrédient en stock (nom, quantité), avec "stock faible" (⚠) et supprimer.
+          Les variantes d'un même produit sont regroupées sous une ligne (ex : Œufs (3)). */}
+      <RowList empty={filtered.length === 0 ? 'Aucun ingrédient ne correspond à ta recherche.' : undefined}>
         <FamilyList
+          rows
           items={filtered}
           nameOf={(r) => r.ingredient.name}
           renderItem={(r, nested) => {
             const low = r.low_stock;
             return (
-              // Dans une bannière de famille : simple ligne (la bannière fait office de carte) ; seul : carte avec scotch
-              <li
-                key={r.id}
-                className={`flex items-center justify-between ${nested ? 'py-3 px-2' : 'card'} ${low ? 'bg-ink text-paper' : nested ? '' : 'bg-card text-ink'}`}
-              >
-                {!nested && <span className="tape" />}
-                <span className="flex items-center gap-3">
-                  {low && <span className="text-brick font-bold">⚠</span>}
-                  <span className="text-lg">{r.ingredient.name}</span>
-                  <span className={`text-sm ${low ? 'opacity-80' : 'opacity-60'}`}>quantité : {r.quantity}</span>
-                </span>
-                <span className="flex gap-3">
-                  <button onClick={() => toggleLowStock(r.id, r.low_stock)} className="btn-ghost">
-                    {r.low_stock ? 'suffisant' : 'stock faible'}
-                  </button>
-                  <button onClick={() => handleDelete(r)} className="btn-ghost">
-                    supprimer
-                  </button>
-                </span>
+              // Stock faible : ligne teintée et icône ⚠ allumée
+              <li key={r.id} className={`py-2 pr-4 ${nested ? 'pl-10' : 'pl-4'} ${low ? 'bg-brick/10' : ''}`}>
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="truncate">{r.ingredient.name}</p>
+                    <p className={`text-xs ${low ? 'text-brick font-bold' : 'opacity-60'}`}>
+                      {formatQuantity(r.quantity)} {quantityRule(r.ingredient.type).unit}
+                      {low ? ' · stock faible' : ''}
+                    </p>
+                  </div>
+                  <span className="flex items-center shrink-0 -mr-2">
+                    <IconButton
+                      label={low ? 'Marquer comme suffisant' : 'Marquer en stock faible'}
+                      onClick={() => toggleLowStock(r.id, r.low_stock)}
+                      active={low}
+                    >
+                      <TriangleAlert size={18} />
+                    </IconButton>
+                    <IconButton label="Supprimer" onClick={() => handleDelete(r)} danger>
+                      <Trash2 size={18} />
+                    </IconButton>
+                  </span>
+                </div>
               </li>
             );
           }}
         />
-      </ul>
+      </RowList>
     </div>
   );
 

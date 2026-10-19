@@ -78,7 +78,7 @@ export default function BudgetSettings() {
 
   return (
     <div>
-      <p className="opacity-70 mb-4">
+      <p className="text-sm opacity-70 mb-4">
         Fixe la somme à ne pas dépasser sur une période. Chaque course validée est déduite de ce qui reste, puis le budget se
         réactive au début de la période suivante.
       </p>

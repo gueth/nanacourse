@@ -5,6 +5,8 @@ import { supabase } from '@/lib/supabase';
 import { storeLabel } from '@/lib/stores';
 import StoreOptions from '@/components/StoreOptions';
 import type { IngredientPrice, Store } from '@/lib/types';
+import { Trash2 } from 'lucide-react';
+import { IconButton } from '@/components/settings/ui';
 
 type Props = {
   ingredientId: string;
@@ -47,39 +49,54 @@ export default function PriceEditor({ ingredientId, stores, prices, onChange }: 
   }
 
   return (
-    <div className="mt-3 pl-3 border-l-2 border-dashed border-line">
+    <div className="pl-3 border-l-2 border-dashed border-line">
       <p className="field-label mb-1">Prix par magasin</p>
-      <ul className="space-y-1 mb-2 text-sm">
+      {/* Un prix par ligne : magasin, prix modifiable (enregistré en quittant le champ), retrait */}
+      <ul className="mb-3 text-sm">
+        {prices.length === 0 && <li className="opacity-60 py-1">Aucun prix pour l&apos;instant.</li>}
         {prices.map((p) => (
           <li key={p.id} className="flex items-center gap-2">
-            <span className="w-40 truncate">{storeLabel(p.store)}</span>
+            <span className="flex-1 min-w-0 truncate">{storeLabel(p.store)}</span>
             <input
               key={p.price}
               defaultValue={p.price}
               onBlur={(e) => updatePrice(p.id, p.price, e.target.value)}
               type="number"
+              inputMode="decimal"
               step="0.01"
-              className="input-hand w-20 text-mustard font-bold"
+              className="input-hand w-20 text-right text-mustard font-bold"
               title="Modifier le prix"
             />
             <span>€</span>
-            <button onClick={() => removePrice(p.id)} className="btn-ghost text-xs">
-              retirer
-            </button>
+            <IconButton label="Retirer ce prix" onClick={() => removePrice(p.id)} danger>
+              <Trash2 size={16} />
+            </IconButton>
           </li>
         ))}
       </ul>
+      {/* Ajout d'un prix : le magasin sur une ligne, le prix et le bouton sur la suivante */}
       {availableStores.length > 0 && (
-        <div className="flex items-center gap-2 text-sm">
-          <select value={storeId} onChange={(e) => setStoreId(e.target.value)} className="input-hand">
-            <option value="">Magasin...</option>
+        <div className="space-y-2 text-sm">
+          <select value={storeId} onChange={(e) => setStoreId(e.target.value)} className="input-hand w-full">
+            <option value="">Ajouter un prix dans un magasin...</option>
             {/* Magasins regroupés par enseigne */}
             <StoreOptions stores={availableStores} />
           </select>
-          <input value={price} onChange={(e) => setPrice(e.target.value)} type="number" step="0.01" placeholder="prix" className="input-hand w-20" />
-          <button onClick={addPrice} className="btn-ghost">
-            + ajouter
-          </button>
+          <div className="flex items-center gap-3">
+            <input
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              placeholder="prix"
+              className="input-hand w-24"
+            />
+            <span>€</span>
+            <button onClick={addPrice} disabled={!storeId || !price} className="btn-ghost disabled:opacity-40">
+              + ajouter
+            </button>
+          </div>
         </div>
       )}
     </div>

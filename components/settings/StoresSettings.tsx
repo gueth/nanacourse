@@ -9,6 +9,7 @@ import { storeColor, storeLabel } from '@/lib/stores';
 import { deleteChain, deleteStore } from '@/lib/deletions';
 import { useConfirm } from '@/components/ConfirmDialog';
 import FamilyList from '@/components/FamilyList';
+import { EditActions, EditFields, RowActions, RowList, SearchBar } from '@/components/settings/ui';
 
 type Props = {
   stores: Store[];
@@ -190,7 +191,7 @@ export default function StoresSettings({ stores, chains, onChange }: Props) {
   return (
     <div>
       {confirmDialog}
-      <p className="opacity-70 mb-4">Tes enseignes, et les supermarchés où tu fais tes courses, rangés par enseigne.</p>
+      <p className="text-sm opacity-70 mb-4">Tes enseignes, et les supermarchés où tu fais tes courses, rangés par enseigne.</p>
 
       {/* ENSEIGNES : libellé + couleur ; repliable comme les formulaires d'ajout */}
       <CollapsibleForm title={`Enseignes (${chains.length})`} storageKey="settings-chains">
@@ -255,77 +256,60 @@ export default function StoresSettings({ stores, chains, onChange }: Props) {
       {/* Erreurs (ajout, suppression...) affichées hors des formulaires, visibles même quand ils sont repliés */}
       {errorMessage && <p className="text-sm text-brick mb-4">{errorMessage}</p>}
 
-      <input
-        type="text"
-        placeholder="Rechercher une enseigne, un magasin, une adresse..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        className="input-hand w-full mb-4"
-      />
+      <SearchBar value={search} onChange={setSearch} placeholder="Rechercher une enseigne, un magasin..." />
 
-      <ul className="space-y-3">
-        {filtered.length === 0 && <p className="opacity-60">Aucun supermarché ne correspond à ta recherche.</p>}
-        {/* Les magasins d'une même enseigne sont regroupés sous une bannière dépliable (ex : Carrefour (3)) ;
-            sans enseigne = magasin seul. Pendant une recherche, tous les groupes sont ouverts pour voir les résultats. */}
+      {/* LISTE : les magasins d'une même enseigne sont regroupés sous une ligne dépliable (ex : Carrefour (3)) ;
+          sans enseigne = magasin seul. Pendant une recherche, tous les groupes sont ouverts. */}
+      <RowList empty={filtered.length === 0 ? 'Aucun supermarché ne correspond à ta recherche.' : undefined}>
         <FamilyList
+          rows
           items={filtered}
           nameOf={(s) => s.name}
           groupOf={(s) => ({ key: s.chain_id ?? '', label: s.chain?.name ?? '' })}
           collapsible
           forceOpen={!!search.trim()}
           renderItem={(s, nested) => (
-            // Dans une bannière d'enseigne : simple ligne ; seul : carte avec scotch
-            <li key={s.id} className={nested ? 'py-3' : 'card'}>
-              {!nested && <span className="tape" />}
-              {editingId === s.id ? (
-                // MODE ÉDITION
-                <div className="form-grid">
-                  <div>
-                    <label className="field-label">Enseigne</label>
-                    <select value={editChainId} onChange={(e) => setEditChainId(e.target.value)} className="input-hand">
-                      {chainOptions}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="field-label">Nom du magasin</label>
-                    <input value={editName} onChange={(e) => setEditName(e.target.value)} className="input-hand" />
-                  </div>
-                  <div>
-                    <label className="field-label">Adresse</label>
-                    <input value={editAddress} onChange={(e) => setEditAddress(e.target.value)} className="input-hand" />
-                  </div>
-                  <button onClick={() => saveEdit(s)} className="btn-hand">
-                    Enregistrer
-                  </button>
-                  <button onClick={() => setEditingId(null)} className="btn-ghost">
-                    annuler
-                  </button>
+            <li key={s.id} className={`py-2 pr-4 ${nested ? 'pl-10' : 'pl-4'}`}>
+              <div className="flex items-center gap-2">
+                {/* Couleur de l'enseigne */}
+                <span className="w-3 h-3 rounded-full border border-ink shrink-0" style={{ background: storeColor(s) }} />
+                <div className="flex-1 min-w-0">
+                  {/* Dans un groupe, l'enseigne est déjà dans la ligne du groupe : seul le nom du magasin */}
+                  <p className="truncate">{nested ? s.name : storeLabel(s)}</p>
+                  <p className="text-xs opacity-60 truncate">{s.address ?? 'adresse non renseignée'}</p>
                 </div>
-              ) : (
-                // MODE LECTURE : couleur de l'enseigne, enseigne en gras, puis nom du magasin et adresse
-                <div className="flex items-center justify-between gap-4">
-                  <span className="flex items-center gap-3 min-w-0">
-                    <span className="w-3.5 h-3.5 rounded-full border border-ink shrink-0" style={{ background: storeColor(s) }} />
-                    <span className="text-lg">
-                      {s.chain && <strong>{s.chain.name} </strong>}
-                      {s.name}
-                    </span>
-                    {s.address && <span className="text-sm opacity-60 truncate">— {s.address}</span>}
-                  </span>
-                  <span className="flex items-center gap-4">
-                    <button onClick={() => startEdit(s)} className="btn-ghost">
-                      modifier
-                    </button>
-                    <button onClick={() => handleDelete(s)} className="btn-ghost">
-                      supprimer
-                    </button>
-                  </span>
+                <RowActions
+                  editing={editingId === s.id}
+                  onEdit={() => (editingId === s.id ? setEditingId(null) : startEdit(s))}
+                  onDelete={() => handleDelete(s)}
+                />
+              </div>
+              {/* MODIFICATION, dans la ligne */}
+              {editingId === s.id && (
+                <div className="pt-2 pb-3 space-y-3">
+                  <EditFields>
+                    <div>
+                      <label className="field-label">Enseigne</label>
+                      <select value={editChainId} onChange={(e) => setEditChainId(e.target.value)} className="input-hand w-full">
+                        {chainOptions}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="field-label">Nom du magasin</label>
+                      <input value={editName} onChange={(e) => setEditName(e.target.value)} className="input-hand w-full" />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="field-label">Adresse</label>
+                      <input value={editAddress} onChange={(e) => setEditAddress(e.target.value)} className="input-hand w-full" />
+                    </div>
+                  </EditFields>
+                  <EditActions onSave={() => saveEdit(s)} onCancel={() => setEditingId(null)} />
                 </div>
               )}
             </li>
           )}
         />
-      </ul>
+      </RowList>
     </div>
   );
 }

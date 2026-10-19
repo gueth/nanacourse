@@ -21,6 +21,9 @@ type Props<T> = {
   collapsible?: boolean;
   // Force l'ouverture de tous les groupes (ex : pendant une recherche)
   forceOpen?: boolean;
+  // Présentation en lignes, dans une liste déjà encadrée (paramètres) : le groupe est une ligne
+  // dépliable, et ses éléments des lignes en retrait juste en dessous
+  rows?: boolean;
 };
 
 // Regroupe selon groupOf, dans l'ordre d'apparition (un élément sans clé reste seul)
@@ -45,7 +48,8 @@ export default function FamilyList<T>({
   compact = false,
   groupOf,
   collapsible = false,
-  forceOpen = false
+  forceOpen = false,
+  rows = false
 }: Props<T>) {
   // Groupes dépliés (seulement utile si collapsible)
   const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
@@ -63,6 +67,29 @@ export default function FamilyList<T>({
         if (f.items.length === 1) return renderItem(f.items[0], false);
 
         const open = !collapsible || forceOpen || !!openKeys[f.key];
+
+        // Présentation en lignes (paramètres) : une ligne de groupe, puis ses éléments en retrait
+        if (rows) {
+          return (
+            <li key={f.key}>
+              <button
+                type="button"
+                onClick={() => collapsible && toggle(f.key)}
+                aria-expanded={open}
+                className="w-full flex items-center gap-2 px-4 py-3 text-left"
+              >
+                {collapsible && <ChevronRight size={18} className={`shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />}
+                <span className="title-hand text-xl truncate">{f.label}</span>
+                <span className="text-sm opacity-60">({f.items.length})</span>
+              </button>
+              {open && (
+                <ul className="border-t-2 border-dashed border-line divide-y-2 divide-dashed divide-line bg-ink/[0.03]">
+                  {f.items.map((i) => renderItem(i, true))}
+                </ul>
+              )}
+            </li>
+          );
+        }
         const title = (
           <>
             {f.label} <span className={`opacity-60 ${compact ? 'text-sm' : 'text-base'}`}>({f.items.length})</span>

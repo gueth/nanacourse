@@ -82,7 +82,7 @@ export default function LocationSettings() {
 
   return (
     <div>
-      <p className="opacity-70 mb-4">
+      <p className="text-sm opacity-70 mb-4">
         D&apos;où pars-tu faire tes courses ? Cette adresse sert à conseiller un magasin proche quand tu optimises une
         liste. Sans adresse, ou si les meilleurs magasins sont trop loin, c&apos;est le moins cher qui est conseillé.
       </p>

@@ -28,39 +28,39 @@ export function quantityRule(type?: string | null): QuantityRule {
   return { step: 1, min: 1, unit: abbreviateUnit(type) };
 }
 
-// Abréviations des unités, pour qu'elles tiennent dans la colonne Qté (ex : « paquet » -> « paq. »)
+// Abréviations des unités, sans point, pour qu'elles tiennent dans la colonne Qté (ex : « paquet » -> « paq »)
 const UNIT_ABBREVIATIONS: Record<string, string> = {
   piece: 'pce',
   pieces: 'pce',
-  paquet: 'paq.',
-  paquets: 'paq.',
-  conserve: 'cons.',
-  conserves: 'cons.',
-  bouteille: 'bout.',
-  bouteilles: 'bout.',
+  paquet: 'paq',
+  paquets: 'paq',
+  conserve: 'cons',
+  conserves: 'cons',
+  bouteille: 'bout',
+  bouteilles: 'bout',
   boite: 'bte',
   boites: 'bte',
-  sachet: 'sach.',
-  sachets: 'sach.',
-  barquette: 'barq.',
-  barquettes: 'barq.',
-  bocal: 'boc.',
-  bocaux: 'boc.',
-  tranche: 'tr.',
-  tranches: 'tr.',
-  portion: 'port.',
-  portions: 'port.',
-  rouleau: 'roul.',
-  rouleaux: 'roul.'
+  sachet: 'sach',
+  sachets: 'sach',
+  barquette: 'barq',
+  barquettes: 'barq',
+  bocal: 'boc',
+  bocaux: 'boc',
+  tranche: 'tr',
+  tranches: 'tr',
+  portion: 'port',
+  portions: 'port',
+  rouleau: 'roul',
+  rouleaux: 'roul'
 };
 
-// Unité affichée : abréviation connue, sinon les 4 premières lettres suivies d'un point pour un mot plus long
+// Unité affichée : abréviation connue, sinon les 4 premières lettres pour un mot plus long (sans point)
 function abbreviateUnit(type?: string | null) {
   const t = normalizeType(type);
   if (!t) return 'pce';
   if (UNIT_ABBREVIATIONS[t]) return UNIT_ABBREVIATIONS[t];
   const raw = type!.trim();
-  return raw.length > 5 ? `${raw.slice(0, 4)}.` : raw;
+  return raw.length > 5 ? raw.slice(0, 4) : raw;
 }
 
 // Supprime les erreurs d'arrondi des nombres à virgule (ex : 0.30000000000000004 -> 0.3)

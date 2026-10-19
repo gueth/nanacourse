@@ -6,6 +6,7 @@ import type { Category } from '@/lib/types';
 import CollapsibleForm from '@/components/settings/CollapsibleForm';
 import { deleteCategory } from '@/lib/deletions';
 import { useConfirm } from '@/components/ConfirmDialog';
+import { EditActions, EditFields, RowActions, RowList, SearchBar } from '@/components/settings/ui';
 
 type Props = {
   categories: Category[];
@@ -80,7 +81,7 @@ export default function CategoriesSettings({ categories, onChange }: Props) {
   return (
     <div>
       {confirmDialog}
-      <p className="opacity-70 mb-4">Fixe un budget max par catégorie, sur chaque achat.</p>
+      <p className="text-sm opacity-70 mb-4">Fixe un budget max par catégorie, sur chaque achat.</p>
       {errorMessage && <p className="text-sm text-brick mb-4">{errorMessage}</p>}
 
       {/* Formulaire d'ajout, repliable pour laisser de la place à la liste */}
@@ -107,63 +108,51 @@ export default function CategoriesSettings({ categories, onChange }: Props) {
         </form>
       </CollapsibleForm>
 
-      <input
-        type="text"
-        placeholder="Rechercher une catégorie..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        className="input-hand w-full mb-4"
-      />
+      <SearchBar value={search} onChange={setSearch} placeholder="Rechercher une catégorie..." />
 
-      <ul className="space-y-3">
-        {filtered.length === 0 && <p className="opacity-60">Aucune catégorie ne correspond à ta recherche.</p>}
+      {/* LISTE : une ligne par catégorie (nom + budget), avec les icônes modifier / supprimer */}
+      <RowList empty={filtered.length === 0 ? 'Aucune catégorie ne correspond à ta recherche.' : undefined}>
         {filtered.map((c) => (
-          <li key={c.id} className="card">
-            <span className="tape" />
-            {editingId === c.id ? (
-              // MODE ÉDITION
-              <div className="form-grid">
-                <div>
-                  <label className="field-label">Nom</label>
-                  <input value={editName} onChange={(e) => setEditName(e.target.value)} className="input-hand" />
-                </div>
-                <div>
-                  <label className="field-label">Budget max (€)</label>
-                  <input
-                    value={editBudget}
-                    onChange={(e) => setEditBudget(e.target.value)}
-                    type="number"
-                    step="0.01"
-                    className="input-hand w-24"
-                  />
-                </div>
-                <button onClick={() => saveEdit(c.id)} className="btn-hand">
-                  Enregistrer
-                </button>
-                <button onClick={() => setEditingId(null)} className="btn-ghost">
-                  annuler
-                </button>
+          <li key={c.id} className="px-4 py-2">
+            <div className="flex items-center gap-2">
+              <div className="flex-1 min-w-0">
+                <p className="truncate">{c.name}</p>
+                <p className="text-xs text-mustard font-bold">
+                  {c.budget_limit != null ? `budget max ${c.budget_limit} €` : 'pas de budget'}
+                </p>
               </div>
-            ) : (
-              // MODE LECTURE
-              <div className="flex items-center justify-between gap-4">
-                <span className="text-lg">{c.name}</span>
-                <span className="flex items-center gap-4">
-                  <span className="text-mustard font-bold">
-                    {c.budget_limit != null ? `${c.budget_limit} €` : 'pas de budget'}
-                  </span>
-                  <button onClick={() => startEdit(c)} className="btn-ghost">
-                    modifier
-                  </button>
-                  <button onClick={() => handleDelete(c)} className="btn-ghost">
-                    supprimer
-                  </button>
-                </span>
+              <RowActions
+                editing={editingId === c.id}
+                onEdit={() => (editingId === c.id ? setEditingId(null) : startEdit(c))}
+                onDelete={() => handleDelete(c)}
+              />
+            </div>
+            {/* MODIFICATION, dans la ligne */}
+            {editingId === c.id && (
+              <div className="pt-2 pb-3 space-y-3">
+                <EditFields>
+                  <div>
+                    <label className="field-label">Nom</label>
+                    <input value={editName} onChange={(e) => setEditName(e.target.value)} className="input-hand w-full" />
+                  </div>
+                  <div>
+                    <label className="field-label">Budget max (€)</label>
+                    <input
+                      value={editBudget}
+                      onChange={(e) => setEditBudget(e.target.value)}
+                      type="number"
+                      inputMode="decimal"
+                      step="0.01"
+                      className="input-hand w-full"
+                    />
+                  </div>
+                </EditFields>
+                <EditActions onSave={() => saveEdit(c.id)} onCancel={() => setEditingId(null)} />
               </div>
             )}
           </li>
         ))}
-      </ul>
+      </RowList>
     </div>
   );
 }

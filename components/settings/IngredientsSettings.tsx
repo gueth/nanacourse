@@ -11,6 +11,7 @@ import NewIngredientForm from '@/components/NewIngredientForm';
 import CollapsibleForm from '@/components/settings/CollapsibleForm';
 import { deleteIngredient } from '@/lib/deletions';
 import { useConfirm } from '@/components/ConfirmDialog';
+import { EditActions, EditFields, RowActions, RowList, SearchBar } from '@/components/settings/ui';
 
 
 type Props = {
@@ -140,7 +141,7 @@ export default function IngredientsSettings({ ingredients, categories, brands, s
     <div>
       {confirmDialog}
       {errorMessage && <p className="text-sm text-brick mb-4">{errorMessage}</p>}
-      <p className="opacity-70 mb-4">Ajoute un ingrédient ou modifie toutes les informations des existants.</p>
+      <p className="text-sm opacity-70 mb-4">Ajoute un ingrédient, ou modifie les informations et les prix des existants.</p>
 
       {/* AJOUT D'UN NOUVEL INGRÉDIENT, repliable pour laisser de la place à la liste */}
       <CollapsibleForm title="+ Ajouter un ingrédient" storageKey="settings-ingredients" open={addOpen} onOpenChange={setAddOpen}>
@@ -159,15 +160,9 @@ export default function IngredientsSettings({ ingredients, categories, brands, s
         />
       </CollapsibleForm>
 
-      <div className="flex flex-wrap gap-3 mb-4">
-        <input
-          type="text"
-          placeholder="Rechercher un ingrédient..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="input-hand flex-1 min-w-0"
-        />
-        <select value={filterCategoryId} onChange={(e) => setFilterCategoryId(e.target.value)} className="input-hand">
+      {/* RECHERCHE, et filtre par catégorie juste en dessous */}
+      <SearchBar value={search} onChange={setSearch} placeholder="Rechercher un ingrédient...">
+        <select value={filterCategoryId} onChange={(e) => setFilterCategoryId(e.target.value)} className="input-hand w-full text-sm">
           <option value="">Toutes les catégories</option>
           {categories.map((cat) => (
             <option key={cat.id} value={cat.id}>
@@ -175,158 +170,154 @@ export default function IngredientsSettings({ ingredients, categories, brands, s
             </option>
           ))}
         </select>
-      </div>
+      </SearchBar>
 
-      <ul className="space-y-3">
-        {/* Liste vide ou recherche sans résultat : on propose de créer l'ingrédient */}
-        {filtered.length === 0 && (
-          <div className="card">
-            <span className="tape" />
-            <p className="opacity-70 mb-3">
-              {ingredients.length === 0
-                ? "Tu n'as encore aucun ingrédient."
-                : 'Aucun ingrédient ne correspond à ta recherche.'}
-            </p>
-            <button onClick={() => prefillNewIngredient(search.trim())} className="btn-hand">
-              {search.trim() ? `+ Ajouter « ${search.trim()} »` : '+ Ajouter un ingrédient'}
-            </button>
-          </div>
-        )}
-        {/* Les variantes d'un même produit sont regroupées sous une bannière dépliable (ex : Œufs (3)).
-            Pendant une recherche ou un filtre, tous les groupes sont ouverts pour voir les résultats. */}
-        <FamilyList
-          items={filtered}
-          nameOf={(ing) => ing.name}
-          collapsible
-          forceOpen={!!search.trim() || !!filterCategoryId}
-          renderItem={(ing, nested) => (
-            // Dans une bannière de famille : simple ligne ; seul : carte avec scotch
-            <li key={ing.id} className={nested ? 'py-3' : 'card'}>
-              {!nested && <span className="tape" />}
+      {/* Liste vide ou recherche sans résultat : on propose de créer l'ingrédient */}
+      {filtered.length === 0 && (
+        <div className="card">
+          <span className="tape" />
+          <p className="opacity-70 mb-3">
+            {ingredients.length === 0 ? "Tu n'as encore aucun ingrédient." : 'Aucun ingrédient ne correspond à ta recherche.'}
+          </p>
+          <button onClick={() => prefillNewIngredient(search.trim())} className="btn-hand">
+            {search.trim() ? `+ Ajouter « ${search.trim()} »` : '+ Ajouter un ingrédient'}
+          </button>
+        </div>
+      )}
 
-              {/* EN-TÊTE : photo, nom, infos résumées et boutons */}
-              <div className="flex items-center gap-3">
-                {ing.photo_url && (
-                  <img src={ing.photo_url} alt={ing.name} className="w-12 h-12 object-cover rounded border-2 border-ink" />
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className="text-lg">
-                    <strong>{ing.name}</strong>{' '}
-                    <span className="text-sm opacity-60">
-                      ({ing.category?.name ?? 'sans catégorie'}
-                      {ing.type ? ` — ${ing.type}` : ''}
-                      {ing.brand ? ` — ${ing.brand.name}` : ''})
-                    </span>
-                  </p>
-                  {ing.note && <p className="text-sm italic opacity-70">{ing.note}</p>}
-                  {/* PRIX : un par magasin, du moins cher au plus cher (le moins cher en gras), pour une unité du type */}
-                  <p className="text-sm mt-0.5">
-                    {ing.prices.length === 0 ? (
-                      <span className="opacity-60">prix inconnu</span>
-                    ) : (
-                      ing.prices
-                        .slice()
-                        .sort((a, b) => a.price - b.price)
-                        .map((p, i) => (
-                          <span key={p.id} className={i === 0 ? 'font-bold' : 'opacity-70'}>
-                            {i > 0 && ' · '}
-                            {p.price.toFixed(2)} €{ing.type ? ` / ${quantityRule(ing.type).unit}` : ''}
-                            <span className="font-normal opacity-70"> ({storeLabel(p.store)})</span>
-                          </span>
-                        ))
+      {/* LISTE : une ligne par ingrédient (photo, nom, résumé, prix le moins cher), avec modifier / supprimer.
+          Les variantes d'un même produit sont regroupées sous une ligne dépliable (ex : Œufs (3)) ;
+          pendant une recherche ou un filtre, tous les groupes sont ouverts. */}
+      {filtered.length > 0 && (
+        <RowList>
+          <FamilyList
+            rows
+            items={filtered}
+            nameOf={(ing) => ing.name}
+            collapsible
+            forceOpen={!!search.trim() || !!filterCategoryId}
+            renderItem={(ing, nested) => {
+              const editing = editingId === ing.id;
+              // Prix connus, du moins cher au plus cher
+              const prices = ing.prices.slice().sort((x, y) => x.price - y.price);
+              return (
+                <li key={ing.id} className={`py-2 pr-4 ${nested ? 'pl-10' : 'pl-4'}`}>
+                  <div className="flex items-center gap-3">
+                    {ing.photo_url && (
+                      <img src={ing.photo_url} alt="" className="w-10 h-10 object-cover rounded border-2 border-ink shrink-0" />
                     )}
-                  </p>
-                </div>
-                <button onClick={() => (editingId === ing.id ? setEditingId(null) : startEdit(ing))} className="btn-ghost">
-                  {editingId === ing.id ? 'fermer' : 'modifier'}
-                </button>
-                <button onClick={() => handleDelete(ing)} className="btn-ghost">
-                  supprimer
-                </button>
-              </div>
-
-              {/* FORMULAIRE D'ÉDITION, visible seulement pour l'ingrédient sélectionné */}
-              {editingId === ing.id && (
-                <div className="mt-4 pt-3 border-t-2 border-dashed border-line">
-                  <div className="form-grid">
-                    <div>
-                      <label className="field-label">Nom</label>
-                      <input value={form.name} onChange={(e) => setField('name', e.target.value)} className="input-hand" />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold leading-snug line-clamp-2">{ing.name}</p>
+                      {/* Résumé : catégorie · unité · marque */}
+                      <p className="text-xs opacity-60 truncate">
+                        {[ing.category?.name ?? 'sans catégorie', ing.type, ing.brand?.name].filter(Boolean).join(' · ')}
+                      </p>
+                      {/* Prix : le moins cher (avec son magasin), et le nombre d'autres prix connus */}
+                      <p className="text-xs truncate">
+                        {prices.length === 0 ? (
+                          <span className="opacity-60">prix inconnu</span>
+                        ) : (
+                          <>
+                            <strong className="text-mustard">
+                              {prices[0].price.toFixed(2)} €{ing.type ? ` / ${quantityRule(ing.type).unit}` : ''}
+                            </strong>
+                            <span className="opacity-70"> {storeLabel(prices[0].store)}</span>
+                            {prices.length > 1 && <span className="opacity-60"> · +{prices.length - 1} prix</span>}
+                          </>
+                        )}
+                      </p>
+                      {ing.note && <p className="text-xs italic opacity-70 truncate">{ing.note}</p>}
                     </div>
-                    <div>
-                      <label className="field-label">Catégorie</label>
-                      <select value={form.category_id} onChange={(e) => setField('category_id', e.target.value)} className="input-hand">
-                        <option value="">—</option>
-                        {categories.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="field-label">Marque</label>
-                      <select value={form.brand_id} onChange={(e) => setField('brand_id', e.target.value)} className="input-hand">
-                        <option value="">—</option>
-                        {brands.map((b) => (
-                          <option key={b.id} value={b.id}>
-                            {b.name}
-                            {b.rating != null ? ` (${b.rating}/5)` : ''}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="field-label">Type</label>
-                      <input
-                        value={form.type}
-                        onChange={(e) => setField('type', e.target.value)}
-                        list="settings-type-suggestions"
-                        className="input-hand w-32"
-                      />
-                      <datalist id="settings-type-suggestions">
-                        {TYPE_SUGGESTIONS.map((t) => (
-                          <option key={t} value={t} />
-                        ))}
-                      </datalist>
-                    </div>
-                    <div>
-                      <label className="field-label">Note</label>
-                      <input value={form.note} onChange={(e) => setField('note', e.target.value)} className="input-hand w-48" />
-                    </div>
-                    <button onClick={() => saveEdit(ing.id)} className="btn-hand">
-                      Enregistrer
-                    </button>
+                    <RowActions
+                      editing={editing}
+                      onEdit={() => (editing ? setEditingId(null) : startEdit(ing))}
+                      onDelete={() => handleDelete(ing)}
+                    />
                   </div>
 
-                  {/* PHOTO : affichée seulement si l'ingrédient en a une, avec juste "changer" et "supprimer".
-                      Enregistrée immédiatement, indépendamment du bouton "Enregistrer". */}
-                  {ing.photo_url && (
-                    <div className="mt-4 flex flex-wrap items-center gap-4">
-                      {/* Le vrai champ fichier est caché : le bouton "changer" l'ouvre */}
-                      <label className="btn-ghost text-sm cursor-pointer">
-                        changer
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={(e) => e.target.files?.[0] && handlePhotoUpload(ing.id, e.target.files[0])}
-                          className="hidden"
-                        />
-                      </label>
-                      <button onClick={() => removePhoto(ing.id)} className="btn-ghost text-sm">
-                        supprimer
-                      </button>
+                  {/* MODIFICATION, dans la ligne : informations, photo, prix par magasin */}
+                  {editing && (
+                    <div className="pt-2 pb-3 space-y-4">
+                      <EditFields>
+                        <div className="sm:col-span-2">
+                          <label className="field-label">Nom</label>
+                          <input value={form.name} onChange={(e) => setField('name', e.target.value)} className="input-hand w-full" />
+                        </div>
+                        <div>
+                          <label className="field-label">Catégorie</label>
+                          <select value={form.category_id} onChange={(e) => setField('category_id', e.target.value)} className="input-hand w-full">
+                            <option value="">—</option>
+                            {categories.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="field-label">Marque</label>
+                          <select value={form.brand_id} onChange={(e) => setField('brand_id', e.target.value)} className="input-hand w-full">
+                            <option value="">—</option>
+                            {brands.map((b) => (
+                              <option key={b.id} value={b.id}>
+                                {b.name}
+                                {b.rating != null ? ` (${b.rating}/5)` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="field-label">Type (unité)</label>
+                          <input
+                            value={form.type}
+                            onChange={(e) => setField('type', e.target.value)}
+                            list="settings-type-suggestions"
+                            className="input-hand w-full"
+                          />
+                          <datalist id="settings-type-suggestions">
+                            {TYPE_SUGGESTIONS.map((t) => (
+                              <option key={t} value={t} />
+                            ))}
+                          </datalist>
+                        </div>
+                        <div>
+                          <label className="field-label">Note</label>
+                          <input value={form.note} onChange={(e) => setField('note', e.target.value)} className="input-hand w-full" />
+                        </div>
+                      </EditFields>
+                      <EditActions onSave={() => saveEdit(ing.id)} onCancel={() => setEditingId(null)} />
+
+                      {/* PHOTO : affichée seulement si l'ingrédient en a une, avec "changer" et "retirer".
+                          Enregistrée immédiatement, indépendamment du bouton "Enregistrer". */}
+                      {ing.photo_url && (
+                        <div className="flex flex-wrap items-center gap-4">
+                          <span className="field-label mb-0">Photo</span>
+                          {/* Le vrai champ fichier est caché : le lien "changer" l'ouvre */}
+                          <label className="btn-ghost text-sm cursor-pointer">
+                            changer
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => e.target.files?.[0] && handlePhotoUpload(ing.id, e.target.files[0])}
+                              className="hidden"
+                            />
+                          </label>
+                          <button onClick={() => removePhoto(ing.id)} className="btn-ghost text-sm">
+                            retirer
+                          </button>
+                        </div>
+                      )}
+
+                      {/* PRIX PAR MAGASIN : ajout, modification et retrait, enregistrés immédiatement */}
+                      <PriceEditor ingredientId={ing.id} stores={stores} prices={ing.prices} onChange={onChange} />
                     </div>
                   )}
-
-                  {/* PRIX PAR MAGASIN : ajout, modification et retrait, enregistrés immédiatement */}
-                  <PriceEditor ingredientId={ing.id} stores={stores} prices={ing.prices} onChange={onChange} />
-                </div>
-              )}
-            </li>
-          )}
-        />
-      </ul>
+                </li>
+              );
+            }}
+          />
+        </RowList>
+      )}
     </div>
   );
 }
