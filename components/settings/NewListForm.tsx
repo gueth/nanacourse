@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { STORE_SELECT } from '@/lib/stores';
 import { supabase } from '@/lib/supabase';
 import type { IngredientWithRelations } from '@/lib/types';
 import { normalizeQuantity, quantityRule } from '@/lib/quantity';
@@ -29,7 +30,7 @@ export default function NewListForm({ onCreated }: Props) {
   useEffect(() => {
     supabase
       .from('ingredients')
-      .select('*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(*))')
+      .select(`*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
       .order('name')
       .then(({ data, error }) => {
         if (error) console.error(error);

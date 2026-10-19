@@ -8,6 +8,7 @@ import type { Brand, Category, IngredientWithRelations, Store } from '@/lib/type
 import FamilyList from '@/components/FamilyList';
 import PriceEditor from '@/components/PriceEditor';
 import NewIngredientForm from '@/components/NewIngredientForm';
+import CollapsibleForm from '@/components/settings/CollapsibleForm';
 import { deleteIngredient } from '@/lib/deletions';
 import { useConfirm } from '@/components/ConfirmDialog';
 
@@ -48,10 +49,14 @@ export default function IngredientsSettings({ ingredients, categories, brands, s
   const [newIngredientName, setNewIngredientName] = useState('');
   const [formKey, setFormKey] = useState(0);
 
-  // Pré-remplit le formulaire d'ajout avec le texte recherché et remonte en haut de l'onglet
+  // Formulaire d'ajout ouvert ou replié (fermé par défaut, sauf si on l'avait laissé ouvert)
+  const [addOpen, setAddOpen] = useState<boolean | undefined>(undefined);
+
+  // Pré-remplit le formulaire d'ajout avec le texte recherché, l'ouvre et remonte en haut de l'onglet
   function prefillNewIngredient(value: string) {
     setNewIngredientName(value);
     setFormKey((k) => k + 1);
+    setAddOpen(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -137,10 +142,8 @@ export default function IngredientsSettings({ ingredients, categories, brands, s
       {errorMessage && <p className="text-sm text-brick mb-4">{errorMessage}</p>}
       <p className="opacity-70 mb-4">Ajoute un ingrédient ou modifie toutes les informations des existants.</p>
 
-      {/* AJOUT D'UN NOUVEL INGRÉDIENT */}
-      <div className="card">
-        <span className="tape" />
-        <h3 className="title-hand text-2xl mb-3">Ajouter un ingrédient</h3>
+      {/* AJOUT D'UN NOUVEL INGRÉDIENT, repliable pour laisser de la place à la liste */}
+      <CollapsibleForm title="+ Ajouter un ingrédient" storageKey="settings-ingredients" open={addOpen} onOpenChange={setAddOpen}>
         <NewIngredientForm
           key={formKey}
           initialName={newIngredientName}
@@ -154,7 +157,7 @@ export default function IngredientsSettings({ ingredients, categories, brands, s
             onChange();
           }}
         />
-      </div>
+      </CollapsibleForm>
 
       <div className="flex flex-wrap gap-3 mb-4">
         <input

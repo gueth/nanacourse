@@ -17,6 +17,7 @@ type ListRow = {
   name: string;
   estimated_price: number;
   is_active: boolean;
+  store_id?: string | null; // magasin choisi pour la liste
   items: {
     id: string;
     quantity: number;

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { storeLabel } from '@/lib/stores';
+import { storeLabel, STORE_SELECT, storeColor } from '@/lib/stores';
 import type { Store } from '@/lib/types';
 import { SwipePages } from '@/components/SwipePages';
 
@@ -11,7 +11,6 @@ export default function StoresPage() {
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
-  const [color, setColor] = useState('#4b6043');
   const [search, setSearch] = useState('');
 
   const filtered = useMemo(
@@ -20,7 +19,7 @@ export default function StoresPage() {
   );
 
   async function loadStores() {
-    const { data, error } = await supabase.from('stores').select('*').order('name');
+    const { data, error } = await supabase.from('stores').select(STORE_SELECT).order('name');
     if (error) console.error(error);
     else setStores(data);
     setLoading(false);
@@ -28,8 +27,7 @@ export default function StoresPage() {
 
   useEffect(() => {
     supabase
-      .from('stores')
-      .select('*')
+      .from('stores').select(STORE_SELECT)
       .order('name')
       .then(({ data, error }) => {
         if (error) console.error(error);
@@ -41,7 +39,7 @@ export default function StoresPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
-    const { error } = await supabase.from('stores').insert({ name: name.trim(), address: address.trim() || null, color });
+    const { error } = await supabase.from('stores').insert({ name: name.trim(), address: address.trim() || null });
     if (error) return console.error(error);
     setName('');
     setAddress('');
@@ -73,10 +71,6 @@ export default function StoresPage() {
           <label className="field-label">Adresse</label>
           <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="optionnel" className="input-hand w-48" />
         </div>
-        <div>
-          <label className="field-label">Couleur</label>
-          <input value={color} onChange={(e) => setColor(e.target.value)} type="color" className="h-9 w-14 border-2 border-ink rounded" />
-        </div>
         <button type="submit" className="btn-hand">
           Ajouter
         </button>
@@ -103,7 +97,7 @@ export default function StoresPage() {
           <li key={s.id} className="card flex items-center justify-between">
             <span className="tape" />
             <span className="flex items-center gap-3">
-              <span className="w-3.5 h-3.5 rounded-full border border-ink" style={{ background: s.color ?? '#ccc' }} />
+              <span className="w-3.5 h-3.5 rounded-full border border-ink" style={{ background: storeColor(s) }} />
               <span className="text-lg">{storeLabel(s)}</span>
               {s.address && <span className="text-sm opacity-60">— {s.address}</span>}
             </span>

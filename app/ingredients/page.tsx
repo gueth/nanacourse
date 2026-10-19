@@ -7,7 +7,7 @@ import { supabase } from '@/lib/supabase';
 // Lecture gratuite de l'étiquette dans le navigateur (Tesseract.js) et analyse de son texte
 import { readLines } from '@/lib/ocr';
 import { parseLabel } from '@/lib/labelParser';
-import { storeLabel } from '@/lib/stores';
+import { storeLabel, STORE_SELECT } from '@/lib/stores';
 import type { Brand, Category, IngredientWithRelations, Store } from '@/lib/types';
 import PriceEditor from '@/components/PriceEditor';
 import { SwipePages } from '@/components/SwipePages';
@@ -51,11 +51,11 @@ export default function IngredientsPage() {
   async function loadAll() {
     const [{ data: cats }, { data: sts }, { data: brs }, { data: ings, error }] = await Promise.all([
       supabase.from('categories').select('*').order('name'),
-      supabase.from('stores').select('*').order('name'),
+      supabase.from('stores').select(STORE_SELECT).order('name'),
       supabase.from('brands').select('*').order('name'),
       supabase
         .from('ingredients')
-        .select('*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(*))')
+        .select(`*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
         .order('name')
     ]);
     if (error) console.error(error);
@@ -69,11 +69,11 @@ export default function IngredientsPage() {
   useEffect(() => {
     Promise.all([
       supabase.from('categories').select('*').order('name'),
-      supabase.from('stores').select('*').order('name'),
+      supabase.from('stores').select(STORE_SELECT).order('name'),
       supabase.from('brands').select('*').order('name'),
       supabase
         .from('ingredients')
-        .select('*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(*))')
+        .select(`*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
         .order('name')
     ]).then(([{ data: cats }, { data: sts }, { data: brs }, { data: ings, error }]) => {
       if (error) console.error(error);

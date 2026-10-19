@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { storeLabel } from '@/lib/stores';
+import { storeLabel, STORE_SELECT } from '@/lib/stores';
 import type { IngredientWithRelations, Store } from '@/lib/types';
 import { optimizeShoppingList, type ShoppingItem, type OptimizationResult } from '@/lib/optimize';
 import { SwipePages } from '@/components/SwipePages';
@@ -27,9 +27,9 @@ export default function ShoppingListPage() {
     Promise.all([
       supabase
         .from('ingredients')
-        .select('*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(*))')
+        .select(`*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
         .order('name'),
-      supabase.from('stores').select('*'),
+      supabase.from('stores').select(STORE_SELECT),
       supabase.from('inventory').select('ingredient_id, quantity, low_stock')
     ]).then(([{ data: ings }, { data: sts }, { data: inv }]) => {
       const list = (ings as unknown as IngredientWithRelations[]) ?? [];
@@ -183,7 +183,7 @@ export default function ShoppingListPage() {
           <div className="grid sm:grid-cols-2 gap-x-6">
             {result.breakdown.map((b) => (
               <div key={b.store.id} className="card">
-                <span className="tape" style={{ background: `${b.store.color ?? '#c98a2c'}55` }} />
+                <span className="tape" style={{ background: `${b.store.chain?.color ?? '#c98a2c'}55` }} />
                 <p className="title-hand text-2xl mb-2">{storeLabel(b.store)}</p>
                 <ul className="text-sm space-y-1 mb-2">
                   {b.items.map((it) => (

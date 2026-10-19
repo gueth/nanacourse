@@ -31,6 +31,13 @@ export async function deleteStore(id: string): Promise<DbError> {
   return (await supabase.from('stores').delete().eq('id', id)).error;
 }
 
+// ENSEIGNE : ses magasins sont gardés, sans enseigne
+export async function deleteChain(id: string): Promise<DbError> {
+  const { error } = await supabase.from('stores').update({ chain_id: null }).eq('chain_id', id);
+  if (error) return error;
+  return (await supabase.from('chains').delete().eq('id', id)).error;
+}
+
 // INGRÉDIENT : retiré des listes de courses (dont le total est recalculé), de l'inventaire et des prix
 export async function deleteIngredient(id: string): Promise<DbError> {
   // Listes qui contiennent cet ingrédient, pour recalculer leur total ensuite

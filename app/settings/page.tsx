@@ -1,9 +1,10 @@
 'use client';
 
 import { Suspense, useEffect, useState } from 'react';
+import { STORE_SELECT } from '@/lib/stores';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import type { Brand, Category, IngredientWithRelations, Store } from '@/lib/types';
+import type { Brand, Category, Chain, IngredientWithRelations, Store } from '@/lib/types';
 import CategoriesSettings from '@/components/settings/CategoriesSettings';
 import BrandsSettings from '@/components/settings/BrandsSettings';
 import IngredientsSettings from '@/components/settings/IngredientsSettings';
@@ -26,11 +27,13 @@ function fetchAll() {
   return Promise.all([
     supabase.from('categories').select('*').order('name'),
     supabase.from('brands').select('*').order('name'),
-    supabase.from('stores').select('*').order('name'),
+    supabase.from('stores').select(STORE_SELECT).order('name'),
     supabase
       .from('ingredients')
-      .select('*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(*))')
-      .order('name')
+      .select(`*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
+      .order('name'),
+    // Enseignes (libellé + couleur), gérées dans l'onglet Supermarchés
+    supabase.from('chains').select('*').order('name')
   ]);
 }
 
@@ -57,12 +60,14 @@ function SettingsContent() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
+  const [chains, setChains] = useState<Chain[]>([]);
   const [ingredients, setIngredients] = useState<IngredientWithRelations[]>([]);
 
   // CHARGEMENT (ET RECHARGEMENT APRÈS CHAQUE MODIFICATION) DES DONNÉES
   // Range les données reçues dans les états de la page
-  function applyData([{ data: cats }, { data: brs }, { data: sts }, { data: ings, error }]: Awaited<ReturnType<typeof fetchAll>>) {
+  function applyData([{ data: cats }, { data: brs }, { data: sts }, { data: ings, error }, { data: chs }]: Awaited<ReturnType<typeof fetchAll>>) {
     if (error) console.error(error);
+    setChains(chs ?? []);
     setCategories(cats ?? []);
     setBrands(brs ?? []);
     setStores(sts ?? []);
@@ -99,7 +104,7 @@ function SettingsContent() {
 
       {tab === 'categories' && <CategoriesSettings categories={categories} onChange={loadAll} />}
       {tab === 'brands' && <BrandsSettings brands={brands} onChange={loadAll} />}
-      {tab === 'stores' && <StoresSettings stores={stores} onChange={loadAll} />}
+      {tab === 'stores' && <StoresSettings stores={stores} chains={chains} onChange={loadAll} />}
       {/* Les listes chargent elles-mêmes leurs données (avec leurs articles) */}
       {tab === 'lists' && <ListsSettings />}
       {/* Le budget charge lui-même ses réglages et les dépenses de la période */}

@@ -12,12 +12,14 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 // Budget de la période : ce qui reste à dépenser, dépassement, enregistrement des courses validées
 import { fetchBudget, isOverBudget, recordExpense, shortDate, type BudgetState } from '@/lib/budget';
-import { storeLabel } from '@/lib/stores';
+import { storeLabel, STORE_SELECT } from '@/lib/stores';
 // Famille d'un ingrédient (ex : toutes les sortes d'œufs), pour les regrouper sous une bannière
 import { familyKey } from '@/lib/ingredients';
 import FamilyList from '@/components/FamilyList';
 // Cadre affiché au-dessus de la page, et formulaire d'ajout d'un article à la liste
 import Modal from '@/components/Modal';
+// Animation de chargement (hamster dans sa roue)
+import HamsterLoader from '@/components/HamsterLoader';
 import AddToListForm from '@/components/AddToListForm';
 import EditListItemForm from '@/components/EditListItemForm';
 // Cadre de confirmation avant suppression
@@ -83,7 +85,7 @@ type SavedItem = {
     name: string;
     type: string | null; // kg, pièce, paquet... : fixe les quantités possibles
     brand: { name: string } | null;
-    category: { id: string; name: string } | null;
+    category: { id: string; name: string; budget_limit: number | null } | null; // budget max de la catégorie
   } | null;
 };
 
@@ -108,7 +110,7 @@ type SavedList = {
 function fetchActiveLists() {
   return supabase
     .from('shopping_lists')
-    .select('*, items:shopping_list_items(*, ingredient:ingredients(name, type, brand:brands(name), category:categories(id, name)))')
+    .select('*, items:shopping_list_items(*, ingredient:ingredients(name, type, brand:brands(name), category:categories(id, name, budget_limit)))')
     .eq('is_active', true)
     .order('id', { ascending: false });
 }
@@ -217,24 +219,23 @@ export default function CoursePage() {
     // Budget de la période en cours (réglé dans Profil > Budget)
     fetchBudget().then(setBudget);
     supabase
-      .from('stores')
-      .select('*')
+      .from('stores').select(STORE_SELECT)
       .then(({ data }) => setStores(data ?? []));
   }, []);
 
   // Regroupe les articles d'une liste par catégorie, pour les afficher par rayon.
   // Retourne un tableau de groupes : [{ name: 'Fruits', items: [...] }, ...]
   function groupByCategory(items: SavedItem[]) {
-    // Une Map associe une clé (id de catégorie) à un groupe { name, items }.
+    // Une Map associe une clé (id de catégorie) à un groupe { name, budget, items } (budget = budget max de la catégorie).
     // Elle conserve l'ordre d'insertion, donc l'ordre d'apparition des catégories.
-    const groups = new Map<string, { name: string; items: SavedItem[] }>();
+    const groups = new Map<string, { name: string; budget: number | null; items: SavedItem[] }>();
     for (const item of items) {
       // "?." évite une erreur si ingredient ou category est null ;
       // "??" fournit une valeur par défaut dans ce cas.
       const key = item.ingredient?.category?.id ?? 'none';
       const name = item.ingredient?.category?.name ?? 'Sans catégorie';
       // Si le groupe n'existe pas encore, on le crée vide.
-      if (!groups.has(key)) groups.set(key, { name, items: [] });
+      if (!groups.has(key)) groups.set(key, { name, budget: item.ingredient?.category?.budget_limit ?? null, items: [] });
       // On ajoute l'article dans son groupe ("!" dit à TypeScript que le groupe existe forcément).
       groups.get(key)!.items.push(item);
     }
@@ -375,7 +376,7 @@ export default function CoursePage() {
     // On charge en parallèle : les prix des ingrédients de la liste, les magasins et l'inventaire
     const [{ data: prices }, { data: stores }, { data: inv }] = await Promise.all([
       supabase.from('ingredient_prices').select('ingredient_id, store_id, price, available').in('ingredient_id', ingredientIds),
-      supabase.from('stores').select('*'),
+      supabase.from('stores').select(STORE_SELECT),
       supabase.from('inventory').select('ingredient_id, quantity, low_stock')
     ]);
 
@@ -618,20 +619,21 @@ export default function CoursePage() {
 
       {/* ----- LA LISTE DE COURSES, présentée comme un ticket de caisse, centrée sur la page ----- */}
       <div className="max-w-xl mx-auto">
-          {/* Pendant le chargement, ou aucune liste active : un ticket vide avec le message */}
-          {(loading || lists.length === 0) && (
+          {/* Pendant le chargement de la liste active : le hamster qui court dans sa roue */}
+          {loading && (
+            <div className="flex justify-center py-10">
+              <HamsterLoader label="Chargement de ta liste..." />
+            </div>
+          )}
+
+          {/* Aucune liste active : un ticket vide avec le message */}
+          {!loading && lists.length === 0 && (
             <div className="receipt text-center">
-              {loading ? (
-                <p className="opacity-70">IMPRESSION...</p>
-              ) : (
-                <>
-                  <p className="title-hand text-3xl mb-1">Aucune liste active</p>
-                  <p className="mb-4 opacity-70 text-sm">Active une de tes listes, ou crées-en une, dans les paramètres.</p>
-                  <Link href="/settings?tab=lists" className="btn-hand inline-block">
-                    Gérer mes listes
-                  </Link>
-                </>
-              )}
+              <p className="title-hand text-3xl mb-1">Aucune liste active</p>
+              <p className="mb-4 opacity-70 text-sm">Active une de tes listes, ou crées-en une, dans les paramètres.</p>
+              <Link href="/settings?tab=lists" className="btn-hand inline-block">
+                Gérer mes listes
+              </Link>
             </div>
           )}
 
@@ -741,7 +743,16 @@ export default function CoursePage() {
                 {groupByCategory(list.items).map((g) => (
                   <div key={g.name} className="mb-3">
                     {/* Nom de la catégorie */}
-                    <p className="text-xs uppercase tracking-widest opacity-50 mb-0.5">— {g.name} —</p>
+                    {/* Nom de la catégorie, en rouge si le total de ses articles dépasse son budget */}
+                    {(() => {
+                      const groupTotal = g.items.reduce((sum, item) => sum + (realPriceFor(item) ?? 0), 0);
+                      const over = g.budget != null && groupTotal > Number(g.budget);
+                      return (
+                        <p className={`text-xs uppercase tracking-widest mb-0.5 ${over ? 'text-brick font-bold' : 'opacity-50'}`}>
+                          — {g.name} —
+                        </p>
+                      );
+                    })()}
                     <ul className="space-y-1">
                       {/* Les variantes d'un même produit sont regroupées sous une bannière (ex : Œufs) ;
                           l'optimisation garde le moins cher d'une famille */}
@@ -774,7 +785,7 @@ export default function CoursePage() {
                       <>
                         {/* Économie possible trouvée par l'optimisation */}
                         {analysis?.bestStore && (
-                          <p className="receipt-row text-xs sm:text-sm text-herb">
+                          <p className="receipt-row text-sm sm:text-base font-bold text-green-700">
                             <span>Économie</span>
                             <span>
                               {hasMissingPrice ? '> ' : ''}{analysis.savings.toFixed(2)} €
@@ -880,37 +891,11 @@ export default function CoursePage() {
         const total = prices.reduce<number>((sum, p) => sum + (p ?? 0), 0);
         const overBudget = budget ? isOverBudget(total, missingPrices.length > 0, budget) : false;
         const bought = list.items.filter((item) => checkedItems[item.id]);
-        const boughtTotal = bought.reduce((sum, item) => sum + (realPriceFor(item) ?? 0), 0);
         const ready = list.items.length > 0 && missingPrices.length === 0 && !!chosenStore && !overBudget;
         return (
-          <Modal title="Valider la liste" onClose={() => setConfirmingId(null)}>
+          <Modal title="Valider mes achats" onClose={() => setConfirmingId(null)}>
             {ready ? (
               <>
-                {/* Récapitulatif à vérifier avant de valider */}
-                <ul className="text-sm space-y-1 mb-4">
-                  <li className="flex justify-between gap-3">
-                    <span className="opacity-70">Liste</span>
-                    <strong>{list.name}</strong>
-                  </li>
-                  <li className="flex justify-between gap-3">
-                    <span className="opacity-70">Magasin</span>
-                    <strong>{storeLabel(chosenStore!)}</strong>
-                  </li>
-                  <li className="flex justify-between gap-3">
-                    <span className="opacity-70">Articles</span>
-                    <strong>{list.items.length}</strong>
-                  </li>
-                  <li className="flex justify-between gap-3">
-                    <span className="opacity-70">Total de la liste</span>
-                    <strong>{total.toFixed(2)} €</strong>
-                  </li>
-                  <li className="flex justify-between gap-3">
-                    <span className="opacity-70">Achetés (cochés)</span>
-                    <strong>
-                      {bought.length} — {boughtTotal.toFixed(2)} €
-                    </strong>
-                  </li>
-                </ul>
                 {bought.length === 0 && (
                   <p className="text-sm text-brick mb-3">
                     Aucun article n&apos;est coché : rien ne sera ajouté à l&apos;inventaire ni déduit du budget.
@@ -931,8 +916,9 @@ export default function CoursePage() {
                   >
                     Oui, valider
                   </button>
-                  <button onClick={() => setConfirmingId(null)} className="btn-ghost">
-                    annuler
+                  {/* Même forme que "Oui, valider", couleur plus discrète */}
+                  <button onClick={() => setConfirmingId(null)} className="btn-hand bg-line text-ink">
+                    Annuler
                   </button>
                 </div>
               </>
@@ -963,7 +949,7 @@ export default function CoursePage() {
       {/* CADRE D'AJOUT : affiché au-dessus de la page, pour la liste dont on a cliqué le "+".
           Après l'ajout, on ferme le cadre et on recharge les listes pour voir le nouvel article. */}
       {addTo && (
-        <Modal title={`Ajouter à « ${addTo.name} »`} onClose={() => setAddTo(null)}>
+        <Modal title={`Ajouter à la liste en cours`} onClose={() => setAddTo(null)}>
           <AddToListForm
             lists={[addTo]}
             onAdded={() => {

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { storeLabel } from '@/lib/stores';
+import { storeLabel, STORE_SELECT, storeColor } from '@/lib/stores';
 import { applyStoreToList } from '@/lib/lists';
 import type { Store } from '@/lib/types';
 
@@ -31,7 +31,7 @@ export default function StoreChooser({ listId, items, currentStoreId, onChosen }
   useEffect(() => {
     const ingredientIds = Array.from(new Set(items.map((i) => i.ingredient_id)));
     Promise.all([
-      supabase.from('stores').select('*').order('name'),
+      supabase.from('stores').select(STORE_SELECT).order('name'),
       supabase
         .from('ingredient_prices')
         .select('ingredient_id, store_id, price')
@@ -110,7 +110,7 @@ export default function StoreChooser({ listId, items, currentStoreId, onChosen }
                 className={`w-full flex items-center justify-between gap-3 py-2 px-2 text-left hover:bg-paper disabled:opacity-50 ${current ? 'font-bold' : ''}`}
               >
                 <span className="flex items-center gap-2 min-w-0">
-                  <span className="w-3 h-3 rounded-full border border-ink shrink-0" style={{ background: store.color ?? '#ccc' }} />
+                  <span className="w-3 h-3 rounded-full border border-ink shrink-0" style={{ background: storeColor(store) }} />
                   <span className="truncate">
                     {current && '► '}
                     {storeLabel(store)}

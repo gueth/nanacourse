@@ -6,7 +6,7 @@ export default function StoreOptions({ stores }: { stores: Store[] }) {
   const byChain = new Map<string, Store[]>();
   const others: Store[] = [];
   for (const s of stores) {
-    const chain = s.chain?.trim();
+    const chain = s.chain?.name.trim();
     if (!chain) others.push(s);
     else byChain.set(chain, [...(byChain.get(chain) ?? []), s]);
   }

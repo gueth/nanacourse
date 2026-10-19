@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { Brand } from '@/lib/types';
+import CollapsibleForm from '@/components/settings/CollapsibleForm';
 import { deleteBrand } from '@/lib/deletions';
 import { useConfirm } from '@/components/ConfirmDialog';
 
@@ -90,30 +91,33 @@ export default function BrandsSettings({ brands, onChange }: Props) {
       {confirmDialog}
       <p className="opacity-70 mb-4">Les marques de tes produits, avec ton avis sur 5.</p>
 
-      <form onSubmit={handleAdd} className="card form-grid">
-        <span className="tape" />
-        <div>
-          <label className="field-label">Nom</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Bonduelle" className="input-hand" />
-        </div>
-        <div>
-          <label className="field-label">Avis (/5)</label>
-          <input
-            value={rating}
-            onChange={(e) => setRating(e.target.value)}
-            type="number"
-            min={0}
-            max={5}
-            step="0.5"
-            placeholder="4"
-            className="input-hand w-20"
-          />
-        </div>
-        <button type="submit" className="btn-hand">
-          + Ajouter
-        </button>
-        {errorMessage && <p className="text-sm text-brick w-full">{errorMessage}</p>}
-      </form>
+      {/* Formulaire d'ajout, repliable pour laisser de la place à la liste */}
+      <CollapsibleForm title="+ Ajouter une marque" storageKey="settings-brands">
+        <form onSubmit={handleAdd} className="form-grid">
+          <div>
+            <label className="field-label">Nom</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Bonduelle" className="input-hand" />
+          </div>
+          <div>
+            <label className="field-label">Avis (/5)</label>
+            <input
+              value={rating}
+              onChange={(e) => setRating(e.target.value)}
+              type="number"
+              min={0}
+              max={5}
+              step="0.5"
+              placeholder="4"
+              className="input-hand w-20"
+            />
+          </div>
+          <button type="submit" className="btn-hand">
+            + Ajouter
+          </button>
+        </form>
+      </CollapsibleForm>
+      {/* Erreurs (ajout, suppression...) affichées hors du formulaire, visibles même quand il est replié */}
+      {errorMessage && <p className="text-sm text-brick mb-4">{errorMessage}</p>}
 
       <input
         type="text"

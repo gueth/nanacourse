@@ -85,7 +85,7 @@ export async function POST(request: Request) {
     supabase.from('ingredients').select('id, name, type').order('name'),
     supabase.from('brands').select('id, name').order('name'),
     supabase.from('categories').select('id, name').order('name'),
-    supabase.from('stores').select('id, name, chain, address').order('name')
+    supabase.from('stores').select('id, name, address, chain:chains(name)').order('name')
   ]);
   const dbError = ings.error ?? brands.error ?? cats.error ?? stores.error;
   if (dbError) {
@@ -105,7 +105,13 @@ export async function POST(request: Request) {
     list((cats.data ?? []).map((c) => `${c.id} | ${c.name}`)),
     '',
     'Supermarchés connus (identifiant | enseigne | nom | adresse) :',
-    list((stores.data ?? []).map((s) => `${s.id} | ${s.chain ?? '—'} | ${s.name} | ${s.address ?? '—'}`))
+    list(
+      (stores.data ?? []).map((s) => {
+        // Enseigne jointe : objet, ou tableau selon ce que déduit le client Supabase
+        const chain = (Array.isArray(s.chain) ? s.chain[0] : s.chain) as { name: string } | null | undefined;
+        return `${s.id} | ${chain?.name ?? '—'} | ${s.name} | ${s.address ?? '—'}`;
+      })
+    )
   ].join('\n');
 
   const images = await Promise.all(

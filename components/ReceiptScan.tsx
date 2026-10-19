@@ -2,11 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import type { Brand, Category, Ingredient, Store } from '@/lib/types';
+import type { Brand, Category, Ingredient, Store, Chain } from '@/lib/types';
 import { createIngredient, saveIngredientPrice } from '@/lib/ingredients';
 import { addToInventory } from '@/lib/inventory';
 import { recordExpense } from '@/lib/budget';
-import { storeLabel } from '@/lib/stores';
+import { storeLabel, STORE_SELECT, chainIdFor } from '@/lib/stores';
 import { normalizeQuantity, quantityRule, TYPE_SUGGESTIONS } from '@/lib/quantity';
 import StoreOptions from '@/components/StoreOptions';
 import PhotoPicker, { usePhotos } from '@/components/PhotoPicker';
@@ -59,7 +59,7 @@ type StoreDetails = { chain: string; name: string; address: string };
 // (on ne les écrase pas), sinon celles lues sur le reçu (elles complètent le magasin).
 function storeDetails(store: Store | undefined, scanned: StoreDetails): StoreDetails {
   return {
-    chain: store?.chain ?? scanned.chain,
+    chain: store?.chain?.name ?? scanned.chain,
     name: store?.name ?? scanned.name,
     address: store?.address ?? scanned.address
   };
@@ -84,6 +84,8 @@ export default function ReceiptScan({ ingredients, onDone }: Props) {
   const [categories, setCategories] = useState<Category[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
+  // Enseignes connues (une enseigne lue sur le reçu est créée si elle n'existe pas)
+  const [chainList, setChainList] = useState<Chain[]>([]);
 
   // Résultat modifiable
   const [rows, setRows] = useState<ResultRow[]>([]);
@@ -98,11 +100,13 @@ export default function ReceiptScan({ ingredients, onDone }: Props) {
     Promise.all([
       supabase.from('categories').select('*').order('name'),
       supabase.from('brands').select('*').order('name'),
-      supabase.from('stores').select('*').order('name')
-    ]).then(([{ data: cats }, { data: brs }, { data: sts }]) => {
+      supabase.from('stores').select(STORE_SELECT).order('name'),
+      supabase.from('chains').select('*').order('name')
+    ]).then(([{ data: cats }, { data: brs }, { data: sts }, { data: chs }]) => {
       setCategories(cats ?? []);
       setBrands(brs ?? []);
       setStores(sts ?? []);
+      setChainList(chs ?? []);
     });
   }, []);
 
@@ -116,7 +120,13 @@ export default function ReceiptScan({ ingredients, onDone }: Props) {
         photos.map((p) => p.file),
         setProgress
       );
-      const result = parseReceipt(lines, { ingredients, brands, stores, aliases: loadAliases() });
+      const result = parseReceipt(lines, {
+        ingredients,
+        brands,
+        // L'analyse compare les enseignes par leur libellé
+        stores: stores.map((s) => ({ id: s.id, name: s.name, address: s.address, chain: s.chain?.name ?? null })),
+        aliases: loadAliases()
+      });
       if (result.items.length === 0) {
         setStep('pick');
         return setError('Aucun produit lu : reprends la photo bien à plat, nette et éclairée, le ticket en entier dans le cadre.');
@@ -178,8 +188,8 @@ export default function ReceiptScan({ ingredients, onDone }: Props) {
   const storeCompletes = knownStore
     ? [!knownStore.chain && store.chain.trim() && 'enseigne', !knownStore.address && store.address.trim() && 'adresse'].filter(Boolean)
     : [];
-  // Enseignes déjà utilisées, proposées pendant la saisie
-  const chains = Array.from(new Set(stores.map((s) => s.chain).filter((c): c is string => !!c))).sort();
+  // Enseignes connues, proposées pendant la saisie
+  const chains = chainList.map((c) => c.name).sort((a, b) => a.localeCompare(b));
   const total = applied.reduce((sum, r) => sum + (Number(r.unitPrice) || 0) * (Number(r.quantity.replace(',', '.')) || 0), 0);
 
   // ENREGISTREMENT des lignes cochées
@@ -189,16 +199,21 @@ export default function ReceiptScan({ ingredients, onDone }: Props) {
     const failures: string[] = [];
 
     // 1. Le magasin : créé s'il est nouveau, sinon complété avec les informations qui ont changé
-    // (sans nom de magasin, l'enseigne sert de nom)
-    const fields = { chain: store.chain.trim() || null, name: store.name.trim() || store.chain.trim(), address: store.address.trim() || null };
+    // (sans nom de magasin, l'enseigne sert de nom). L'enseigne lue est retrouvée, ou créée si elle est nouvelle.
+    const chainName = store.chain.trim();
+    const chainId = await chainIdFor(chainName, chainList);
+    if (chainName && !chainId) failures.push(`enseigne « ${chainName} »`);
+    const fields = { chain_id: chainId, name: store.name.trim() || chainName, address: store.address.trim() || null };
+    // Libellé du magasin, pour les messages et le budget
+    const label = storeLabel({ name: fields.name, chain: chainName ? { name: chainName } : null });
     let targetStoreId = storeId === NEW ? '' : storeId;
     if (storeId === NEW && fields.name) {
       const { data, error: storeError } = await supabase.from('stores').insert(fields).select().single();
-      if (storeError || !data) failures.push(`magasin « ${storeLabel(fields)} »`);
+      if (storeError || !data) failures.push(`magasin « ${label} »`);
       else targetStoreId = data.id;
     } else if (knownStore) {
       const changes: Record<string, string | null> = {};
-      if ((knownStore.chain ?? '') !== (fields.chain ?? '')) changes.chain = fields.chain;
+      if ((knownStore.chain_id ?? null) !== (fields.chain_id ?? null)) changes.chain_id = fields.chain_id;
       if (fields.name && knownStore.name !== fields.name) changes.name = fields.name;
       if ((knownStore.address ?? '') !== (fields.address ?? '')) changes.address = fields.address;
       if (Object.keys(changes).length > 0) {
@@ -274,7 +289,7 @@ export default function ReceiptScan({ ingredients, onDone }: Props) {
 
     // 5. Le reçu compte dans le budget, si demandé
     if (countInBudget && total > 0) {
-      await recordExpense(total, fields.name ? `Reçu ${storeLabel(fields)}` : 'Reçu');
+      await recordExpense(total, fields.name ? `Reçu ${label}` : 'Reçu');
     }
 
     if (failures.length > 0) {

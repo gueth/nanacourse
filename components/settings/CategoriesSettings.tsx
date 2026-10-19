@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { Category } from '@/lib/types';
+import CollapsibleForm from '@/components/settings/CollapsibleForm';
 import { deleteCategory } from '@/lib/deletions';
 import { useConfirm } from '@/components/ConfirmDialog';
 
@@ -82,27 +83,29 @@ export default function CategoriesSettings({ categories, onChange }: Props) {
       <p className="opacity-70 mb-4">Fixe un budget max par catégorie, sur chaque achat.</p>
       {errorMessage && <p className="text-sm text-brick mb-4">{errorMessage}</p>}
 
-      <form onSubmit={handleAdd} className="card form-grid">
-        <span className="tape" />
-        <div>
-          <label className="field-label">Nom</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Fruits & légumes" className="input-hand" />
-        </div>
-        <div>
-          <label className="field-label">Budget max (€)</label>
-          <input
-            value={budget}
-            onChange={(e) => setBudget(e.target.value)}
-            type="number"
-            step="0.01"
-            placeholder="40"
-            className="input-hand w-24"
-          />
-        </div>
-        <button type="submit" className="btn-hand">
-          + Ajouter
-        </button>
-      </form>
+      {/* Formulaire d'ajout, repliable pour laisser de la place à la liste */}
+      <CollapsibleForm title="+ Ajouter une catégorie" storageKey="settings-categories">
+        <form onSubmit={handleAdd} className="form-grid">
+          <div>
+            <label className="field-label">Nom</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Fruits & légumes" className="input-hand" />
+          </div>
+          <div>
+            <label className="field-label">Budget max (€)</label>
+            <input
+              value={budget}
+              onChange={(e) => setBudget(e.target.value)}
+              type="number"
+              step="0.01"
+              placeholder="40"
+              className="input-hand w-24"
+            />
+          </div>
+          <button type="submit" className="btn-hand">
+            + Ajouter
+          </button>
+        </form>
+      </CollapsibleForm>
 
       <input
         type="text"

@@ -2,59 +2,60 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import StoreOptions from '@/components/StoreOptions';
-import type { Brand, Category, IngredientWithRelations, Store } from '@/lib/types';
-import { createIngredient } from '@/lib/ingredients';
-import { normalizeQuantity, quantityRule } from '@/lib/quantity';
+import type { Brand, Category, IngredientWithRelations } from '@/lib/types';
+import { createIngredient, saveIngredientPrice } from '@/lib/ingredients';
+import { normalizeQuantity, quantityRule, TYPE_SUGGESTIONS } from '@/lib/quantity';
+import { storeLabel, STORE_SELECT } from '@/lib/stores';
 import ScanLabelButton from '@/components/ScanLabelButton';
 import { refreshListTotal } from '@/lib/lists';
 
 type Props = {
-  // Listes en attente dans lesquelles on peut ajouter l'article
-  lists: { id: string; name: string }[];
+  // Listes dans lesquelles on peut ajouter l'article, avec le magasin choisi pour chacune
+  lists: { id: string; name: string; store_id?: string | null }[];
   // Appelée une fois l'article ajouté
   onAdded: () => void;
 };
 
-const TYPE_SUGGESTIONS = ['pièce', 'kg', 'g', 'litre', 'paquet', 'conserve', 'bouteille'];
-
 // Formulaire d'ajout d'un ingrédient à une liste de courses (active ou non).
-// Tous les champs sont modifiables, que l'ingrédient soit nouveau ou déjà connu :
+// Seul le nom est obligatoire, tout le reste est facultatif :
 //  - nouveau nom : l'ingrédient est aussi créé dans la liste des ingrédients ;
 //  - ingrédient connu : ses valeurs sont pré-remplies, et celles qu'on change
-//    (catégorie, marque, type, prix dans le magasin choisi) sont enregistrées sur l'ingrédient.
+//    (catégorie, marque, type) sont enregistrées sur l'ingrédient.
+// Pas de choix de magasin ici : le prix proposé est celui du magasin choisi pour la liste
+// (ligne "Magasin" du ticket), ou, sans magasin, le prix le plus haut connu pour l'ingrédient.
 export default function AddToListForm({ lists, onAdded }: Props) {
   const [ingredients, setIngredients] = useState<IngredientWithRelations[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
-  const [stores, setStores] = useState<Store[]>([]);
+  const [storeName, setStoreName] = useState('');
 
   const [name, setName] = useState('');
   const [quantity, setQuantity] = useState('1');
   const [categoryId, setCategoryId] = useState('');
   const [brandId, setBrandId] = useState('');
   const [type, setType] = useState('');
-  const [storeId, setStoreId] = useState('');
   const [price, setPrice] = useState('');
   // Par défaut : la liste la plus récente (la première, triée par id décroissant)
   const [listId, setListId] = useState(lists[0]?.id ?? '');
+  // Magasin choisi pour la liste visée ('' = aucun)
+  const storeId = lists.find((l) => l.id === listId)?.store_id ?? '';
   const [saving, setSaving] = useState(false);
 
   // Chargement des ingrédients, catégories, marques et magasins à l'ouverture du cadre
   useEffect(() => {
     Promise.all([
-      supabase.from('ingredients').select('*, brand:brands(*), prices:ingredient_prices(*, store:stores(*))').order('name'),
+      supabase.from('ingredients').select(`*, brand:brands(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`).order('name'),
       supabase.from('categories').select('*').order('name'),
       supabase.from('brands').select('*').order('name'),
-      supabase.from('stores').select('*').order('name')
-    ]).then(([{ data: ings, error }, { data: cats }, { data: brs }, { data: sts }]) => {
+      storeId ? supabase.from('stores').select(STORE_SELECT).eq('id', storeId).maybeSingle() : Promise.resolve({ data: null })
+    ]).then(([{ data: ings, error }, { data: cats }, { data: brs }, { data: store }]) => {
       if (error) console.error(error);
       setIngredients((ings as unknown as IngredientWithRelations[]) ?? []);
       setCategories(cats ?? []);
       setBrands(brs ?? []);
-      setStores(sts ?? []);
+      setStoreName(store ? storeLabel(store) : '');
     });
-  }, []);
+  }, [storeId]);
 
   // Ingrédient existant qui porte exactement ce nom (sans tenir compte des majuscules)
   const existing = useMemo(
@@ -65,7 +66,15 @@ export default function AddToListForm({ lists, onAdded }: Props) {
   // Quantités possibles selon le type saisi (kg, pièce, paquet...)
   const rule = quantityRule(type);
 
-  // Quand on choisit un ingrédient connu, on pré-remplit ses informations et son prix le moins cher
+  // Prix proposé pour un ingrédient connu : celui du magasin de la liste s'il est connu,
+  // sinon (aucun magasin, ou prix inconnu dans ce magasin) le plus haut de ses prix
+  function suggestedPrice(ing: IngredientWithRelations) {
+    const inStore = storeId ? ing.prices.find((p) => p.store_id === storeId) : undefined;
+    if (inStore) return inStore.price;
+    return ing.prices.length > 0 ? Math.max(...ing.prices.map((p) => p.price)) : null;
+  }
+
+  // Quand on choisit un ingrédient connu, on pré-remplit ses informations et son prix
   // (tout reste modifiable ensuite)
   function handleNameChange(value: string) {
     setName(value);
@@ -74,20 +83,19 @@ export default function AddToListForm({ lists, onAdded }: Props) {
       setCategoryId(match.category_id ?? '');
       setBrandId(match.brand_id ?? '');
       setType(match.type ?? '');
-    }
-    const cheapest = match?.prices.slice().sort((a, b) => a.price - b.price)[0];
-    if (cheapest) {
-      setStoreId(cheapest.store_id);
-      setPrice(String(cheapest.price));
+      const p = suggestedPrice(match);
+      setPrice(p != null ? String(p) : '');
     }
   }
 
-  // Quand on change de magasin pour un ingrédient connu, on reprend le prix de ce magasin
-  function handleStoreChange(value: string) {
-    setStoreId(value);
-    const p = existing?.prices.find((pr) => pr.store_id === value);
-    if (p) setPrice(String(p.price));
-  }
+  // Origine du prix proposé, affichée sous le champ prix
+  const priceSource = existing
+    ? storeId && existing.prices.some((p) => p.store_id === storeId)
+      ? `prix chez ${storeName || 'le magasin de la liste'}`
+      : existing.prices.length > 0
+        ? 'prix le plus haut connu'
+        : ''
+    : '';
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -120,16 +128,9 @@ export default function AddToListForm({ lists, onAdded }: Props) {
         const { error } = await supabase.from('ingredients').update(changes).eq('id', existing.id);
         if (error) console.error(error);
       }
-      // Prix dans le magasin choisi : ajouté s'il est nouveau, mis à jour s'il a changé
-      const known = existing.prices.find((p) => p.store_id === storeId);
+      // Prix saisi, mémorisé pour le magasin de la liste (s'il y en a un) : ajouté s'il est nouveau, mis à jour sinon
       if (storeId && price) {
-        const { error } = known
-          ? known.price !== unitPrice
-            ? await supabase.from('ingredient_prices').update({ price: unitPrice }).eq('id', known.id)
-            : { error: null }
-          : await supabase
-              .from('ingredient_prices')
-              .insert({ ingredient_id: existing.id, store_id: storeId, price: unitPrice, available: true });
+        const error = await saveIngredientPrice(existing.id, storeId, unitPrice);
         if (error) console.error(error);
       }
     }
@@ -286,16 +287,10 @@ export default function AddToListForm({ lists, onAdded }: Props) {
       </div>
 
       <div>
-        <label className="field-label">Magasin</label>
-        <select value={storeId} onChange={(e) => handleStoreChange(e.target.value)} className="input-hand">
-          <option value="">—</option>
-          {/* Magasins regroupés par enseigne */}
-          <StoreOptions stores={stores} />
-        </select>
-      </div>
-      <div>
-        <label className="field-label">Prix unitaire (€, optionnel)</label>
+        <label className="field-label">Prix unitaire (€)</label>
         <input value={price} onChange={(e) => setPrice(e.target.value)} type="number" step="0.01" placeholder="inconnu" className="input-hand w-24" />
+        {/* D'où vient le prix proposé : magasin de la liste, ou prix le plus haut connu */}
+        {priceSource && <p className="text-xs opacity-60 mt-1">{priceSource}</p>}
       </div>
 
       {/* Choix de la liste, seulement s'il y en a plusieurs en attente */}
@@ -312,6 +307,7 @@ export default function AddToListForm({ lists, onAdded }: Props) {
         </div>
       )}
 
+      <p className="col-span-full text-xs opacity-60">Seul le nom est obligatoire, le reste est facultatif.</p>
       {name.trim() && !existing && (
         <p className="text-sm opacity-70 w-full">« {name.trim()} » n&apos;existe pas encore : il sera aussi ajouté à tes ingrédients.</p>
       )}

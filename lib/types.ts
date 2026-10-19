@@ -4,12 +4,21 @@ export type Category = {
   budget_limit: number | null;
 };
 
+// Enseigne (ex : Carrefour) : un libellé et une couleur, partagés par tous ses magasins
+export type Chain = {
+  id: string;
+  name: string;
+  color: string | null;
+};
+
+// Supermarché : une enseigne (facultative), un nom de magasin et une adresse.
+// "chain" est l'enseigne jointe à la lecture (voir STORE_SELECT dans lib/stores.ts).
 export type Store = {
   id: string;
   name: string;
-  chain: string | null; // enseigne (ex : Carrefour), pour distinguer plusieurs magasins d'une même chaîne
+  chain_id: string | null;
+  chain: Chain | null;
   address: string | null;
-  color: string | null;
   // Position du magasin, calculée une fois à partir de son adresse (voir lib/geo.ts)
   latitude?: number | null;
   longitude?: number | null;
