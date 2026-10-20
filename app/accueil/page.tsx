@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { ArcNav } from '@/components/ArcNav';
 import { DateBanner } from '@/components/DateBanner';
 import { DefiCards, DEFIS_HEIGHT } from '@/components/DefiCards';
+import { MessagesButton } from '@/components/MessagesButton';
 import { CoursesSection, COURSES_HEIGHT, FinanceSection, FINANCE_HEIGHT, SLATE } from '@/components/HomeThemes';
 import { ScaledStage } from '@/components/ScaledStage';
 import { usePageTransition } from '@/components/PageTransitionProvider';
@@ -26,6 +27,7 @@ export default function Accueil() {
   }, [router]);
 
   return (
+    <>
     <ScaledStage height={BANNER_HEIGHT + DEFIS_HEIGHT + FINANCE_HEIGHT + COURSES_HEIGHT}>
      {/* Fond bleu ardoise, le même que la section finances, pour que le haut se fonde avec elle */}
      <div className="relative h-full w-full" style={{ backgroundColor: SLATE }}>
@@ -63,5 +65,9 @@ export default function Accueil() {
           />
     </div>
     </ScaledStage>
+
+    {/* LETTRE FIXÉE EN BAS À DROITE : messagerie de nana, hors de ScaledStage pour rester fixe au défilement */}
+    <MessagesButton />
+    </>
   );
 }

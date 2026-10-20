@@ -21,7 +21,9 @@ export function ScaledStage({ children, height = DESIGN_HEIGHT }: { children: Re
   }, []);
 
   return (
-    <div className="w-full flex justify-center bg-white">
+    // overflow-x-clip : au premier rendu (échelle 1) la scène fait 412 px ; sans ce clip, elle élargirait la page sur un
+    // petit téléphone, et le navigateur agrandirait sa fenêtre de mise en page (et décalerait les éléments fixes)
+    <div className="w-full flex justify-center overflow-x-clip bg-white">
       <div style={{ width: DESIGN_WIDTH * scale, height: height * scale, position: 'relative' }}>
         <div
           style={{

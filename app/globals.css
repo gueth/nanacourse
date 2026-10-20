@@ -663,3 +663,33 @@ body:has(.home-screen) {
   background-color: #fff;
   background-image: none;
 }
+
+/* Page Finances : fond bleu brume jusque dans les zones visibles quand on tire la page au-delà de ses bords */
+html:has(.finance-screen),
+body:has(.finance-screen) {
+  background-color: #e8edf4;
+  background-image: none;
+}
+
+/* Messagerie de nana : fond bleu brume jusque dans les zones visibles au-delà des bords */
+html:has(.messages-screen),
+body:has(.messages-screen) {
+  background-color: #e8edf4;
+  background-image: none;
+}
+/* Arrivée d'un message non lu */
+.msg-in {
+  animation: msgIn 0.35s ease-out both;
+}
+@keyframes msgIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+/* Points de "nana écrit…" */
+.typing-dot {
+  animation: typingDot 1s ease-in-out infinite;
+}
+@keyframes typingDot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
