@@ -7,7 +7,8 @@ import { useEffect, useState } from 'react';
 const DESIGN_WIDTH = 412;
 const DESIGN_HEIGHT = 922;
 
-export function ScaledStage({ children }: { children: React.ReactNode }) {
+// "height" : hauteur de la scène en px de référence, plus grande que l'écran si la page doit défiler
+export function ScaledStage({ children, height = DESIGN_HEIGHT }: { children: React.ReactNode; height?: number }) {
   const [scale, setScale] = useState(1);
 
   useEffect(() => {
@@ -21,11 +22,11 @@ export function ScaledStage({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="w-full flex justify-center bg-white">
-      <div style={{ width: DESIGN_WIDTH * scale, height: DESIGN_HEIGHT * scale, position: 'relative' }}>
+      <div style={{ width: DESIGN_WIDTH * scale, height: height * scale, position: 'relative' }}>
         <div
           style={{
             width: DESIGN_WIDTH,
-            height: DESIGN_HEIGHT,
+            height,
             transform: `scale(${scale})`,
             transformOrigin: 'top left'
           }}

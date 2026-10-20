@@ -1,47 +1,51 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArcNav } from '@/components/ArcNav';
-import { TodoCard } from '@/components/TodoCard';
-import { ProgressBar } from '@/components/ProgressBar';
+import { DateBanner } from '@/components/DateBanner';
+import { DefiCards, DEFIS_HEIGHT } from '@/components/DefiCards';
+import { CoursesSection, COURSES_HEIGHT, FinanceSection, FINANCE_HEIGHT, SLATE } from '@/components/HomeThemes';
 import { ScaledStage } from '@/components/ScaledStage';
 import { usePageTransition } from '@/components/PageTransitionProvider';
 import { ShoppingCart, Wallet, Shirt, Settings } from "lucide-react";
 
-export default function Home() {
+// Vignette (412 x 170 réduite à 380 de large, soit ~157 de haut) avec une marge de 16 sur les côtés
+// et en bas, mais seulement 6 en haut pour la rapprocher du haut de l'écran,
+// + la ligne de cartes "Liste de défis" + les deux sections thématiques
+const BANNER_MARGIN = 16;
+const BANNER_TOP = 6;
+const BANNER_HEIGHT = BANNER_TOP + BANNER_MARGIN + Math.round((170 * (412 - BANNER_MARGIN * 2)) / 412);
+
+export default function Accueil() {
   const router = useRouter();
   const { startTransition } = usePageTransition();
-  const cardRef = useRef<HTMLDivElement>(null);
-  const [cardHeight, setCardHeight] = useState<number>();
-  const [progress, setProgress] = useState(0);
-
-  useEffect(() => {
-    const el = cardRef.current;
-    if (!el) return;
-
-    const observer = new ResizeObserver((entries) => {
-      setCardHeight(entries[0].contentRect.height);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
 
   useEffect(() => {
     router.prefetch('/course');
   }, [router]);
 
   return (
-    <ScaledStage>
-     <div className="relative bg-paper h-full w-full">
-        {/* FOND ECRAN */}
-         <div
-            className="h-full w-full bg-no-repeat rounded-b-3xl" style={{ backgroundImage: "url('/photo_fond_1.jpe')", backgroundPosition: "right top" }}
-        >
+    <ScaledStage height={BANNER_HEIGHT + DEFIS_HEIGHT + FINANCE_HEIGHT + COURSES_HEIGHT}>
+     {/* Fond bleu ardoise, le même que la section finances, pour que le haut se fonde avec elle */}
+     <div className="relative h-full w-full" style={{ backgroundColor: SLATE }}>
+        {/* VIGNETTE DU HAUT : rayures bleues et date du jour */}
+        <div style={{ padding: BANNER_MARGIN, paddingTop: BANNER_TOP }}>
+          <DateBanner />
         </div>
 
-        {/* BARE DE NAVIGATION CIRCULAIRE */}
+        {/* LISTE DE DÉFIS : une ligne de cartes à aile, qui défile horizontalement */}
+        <DefiCards />
+
+        {/* THÈMES QUI SE SUIVENT AU DÉFILEMENT : finances puis courses */}
+        <div>
+          <FinanceSection />
+          <CoursesSection onOpen={() => startTransition('/course')} />
+        </div>
+
+        {/* MENU EN HAUT À DROITE, posé sur la vignette (position recalée sur la vignette réduite) : déploie la navigation circulaire */}
           <ArcNav
+            className="left-[368px] top-[37px]"
             items={[
               { label: "Parametre", href: "/parametre", icon: <Settings size={20} /> },
               { label: "Dressing", href: "/dressing", icon: <Shirt size={20} /> },
@@ -57,24 +61,6 @@ export default function Home() {
               }
             ]}
           />
-
-        {/* BULLE + TO DO LIST, empilées avec 2% de la hauteur du cadre (922px) entre les deux */}
-        <div className="absolute top-[43%] left-1/2 -translate-x-1/2 w-[90%] flex flex-col items-center gap-[18px]">
-          {/* BULLE DE DIALOGUE */}
-          <p className="speech-bubble w-full text-center text-2xl">
-            (soupire) ... ha te revoilà, je te previens on a du pain sur la planche ...
-          </p>
-
-          {/* TO DO LIST + BARRE DE PROGRESSION, côte à côte */}
-          <div className="flex items-start gap-3">
-            <div ref={cardRef} className="w-[320px] sm:w-[420px]">
-              <TodoCard onProgressChange={(torn, total) => setProgress(total === 0 ? 0 : torn / total)} />
-            </div>
-
-            {/* FLEURS DE PROGRESSION : chacune change de couleur à mesure que les tâches sont arrachées */}
-            <ProgressBar progress={progress} height={cardHeight} />
-          </div>
-        </div>
     </div>
     </ScaledStage>
   );

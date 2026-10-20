@@ -3,9 +3,13 @@
 import { createContext, useCallback, useContext, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { PageWipeTransition } from '@/components/PageWipeTransition';
+import { PageFadeTransition } from '@/components/PageFadeTransition';
+
+// "wipe" : barres beige en diagonale ; "fade" : fondu
+type TransitionKind = 'wipe' | 'fade';
 
 type PageTransitionContextValue = {
-  startTransition: (href: string) => void;
+  startTransition: (href: string, kind?: TransitionKind) => void;
 };
 
 const PageTransitionContext = createContext<PageTransitionContextValue | null>(null);
@@ -20,12 +24,12 @@ export function usePageTransition() {
 // sortie des barres joue vraiment par-dessus la page de destination déjà affichée.
 export function PageTransitionProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const [active, setActive] = useState(false);
+  const [active, setActive] = useState<TransitionKind | null>(null);
   const targetRef = useRef<string | null>(null);
 
-  const startTransition = useCallback((href: string) => {
+  const startTransition = useCallback((href: string, kind: TransitionKind = 'wipe') => {
     targetRef.current = href;
-    setActive(true);
+    setActive(kind);
   }, []);
 
   const handleCovered = useCallback(() => {
@@ -33,14 +37,15 @@ export function PageTransitionProvider({ children }: { children: React.ReactNode
   }, [router]);
 
   const handleFinished = useCallback(() => {
-    setActive(false);
+    setActive(null);
     targetRef.current = null;
   }, []);
 
   return (
     <PageTransitionContext.Provider value={{ startTransition }}>
       {children}
-      <PageWipeTransition active={active} onCovered={handleCovered} onFinished={handleFinished} />
+      <PageWipeTransition active={active === 'wipe'} onCovered={handleCovered} onFinished={handleFinished} />
+      <PageFadeTransition active={active === 'fade'} onCovered={handleCovered} onFinished={handleFinished} />
     </PageTransitionContext.Provider>
   );
 }

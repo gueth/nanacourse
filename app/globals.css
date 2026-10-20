@@ -364,6 +364,21 @@ body {
     }
   }
 
+  /* Transition en fondu (page de titre → accueil) : 500ms d'apparition, 150ms opaque,
+     700ms de disparition, soit 1350ms au total (cf. PageFadeTransition.tsx) */
+  @keyframes page-fade {
+    0% {
+      opacity: 0;
+    }
+    37%,
+    48% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+
   /* Fleurs de progression : chaque fleur change de couleur (au lieu d'une barre) à
      mesure que les tâches sont arrachées */
   .flower-shape {
@@ -600,4 +615,51 @@ body {
 @keyframes spoke {
   from { transform: rotate(0); }
   to { transform: rotate(-1turn); }
+}
+
+/* Page de titre : fond bleu poudré et napperon en dentelle */
+.title-page {
+  background-color: #7597c2;
+  background-image: radial-gradient(ellipse at 50% 45%, #8eaed4 0%, #7597c2 55%, #5a7cab 100%);
+}
+.lace-enter {
+  animation: laceEnter 1.2s ease-out both;
+}
+.lace-hint {
+  color: #f4f8fc;
+  animation: laceHint 2.4s ease-in-out 1.2s infinite both;
+}
+@keyframes laceEnter {
+  from { opacity: 0; transform: scale(0.94); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes laceHint {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 0.8; }
+}
+
+/* Menu circulaire de l'accueil : les entrées arrivent en tournoyant comme une toupie autour du bouton */
+.arc-spin-in {
+  animation: arcSpinIn 0.75s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.arc-spin-out {
+  animation: arcSpinOut 0.4s ease-in both;
+}
+@keyframes arcSpinIn {
+  0% { transform: rotate(-540deg) scale(0.1); opacity: 0; }
+  60% { opacity: 1; }
+  80% { transform: rotate(12deg) scale(1.04); }
+  100% { transform: rotate(0deg) scale(1); opacity: 1; }
+}
+@keyframes arcSpinOut {
+  from { transform: rotate(0deg) scale(1); opacity: 1; }
+  to { transform: rotate(360deg) scale(0.1); opacity: 0; }
+}
+
+/* Accueil et page de titre : fond d'écran blanc (au lieu du papier beige des autres pages),
+   y compris dans les zones visibles quand on tire la page au-delà de ses bords sur téléphone */
+html:has(.home-screen),
+body:has(.home-screen) {
+  background-color: #fff;
+  background-image: none;
 }

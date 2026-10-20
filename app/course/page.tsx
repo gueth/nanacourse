@@ -612,8 +612,22 @@ export default function CoursePage() {
 
     // 7. Fin de la validation : on réactive les boutons, on recharge les listes et le budget restant.
     setValidating(null);
-    loadLists();
+    await loadLists();
     fetchBudget().then(setBudget);
+
+    // 8. Tous les articles étaient barrés : la liste est terminée. On demande s'il faut la garder
+    // (désactivée, dans Paramètres > Listes) ou la supprimer avec ses articles.
+    if (list.items.length > 0 && list.items.every((item) => checkedItems[item.id])) {
+      const remove = await confirm(
+        'Liste terminée',
+        `Tous les articles de « ${list.name} » ont été achetés. Veux-tu garder la liste (désactivée, dans Paramètres › Listes) ou la supprimer ?`,
+        { confirm: 'Supprimer la liste', cancel: 'Garder la liste' }
+      );
+      if (remove) {
+        const error = await deleteListCascade(list.id);
+        if (error) console.error(error);
+      }
+    }
   }
 
   // Une ligne d'article de la liste (case "acheté", nom, optimisation, prix, suppression)

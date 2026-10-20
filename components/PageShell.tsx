@@ -18,7 +18,8 @@ export function PageHeaderActions({ children }: { children: ReactNode }) {
 export function PageShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const isHome = pathname === "/";
+  // Pages plein écran (sans le lien "← Retour") : page de titre et accueil
+  const isHome = pathname === "/" || pathname === "/accueil";
   // Élément de l'emplacement des actions (connu une fois affiché, via "ref")
   const [slot, setSlot] = useState<HTMLElement | null>(null);
 
@@ -28,7 +29,7 @@ export function PageShell({ children }: { children: React.ReactNode }) {
   if (isHome) {
     return (
       <PageTransitionProvider>
-        <main className="bg-white">{children}</main>
+        <main className="home-screen bg-white">{children}</main>
       </PageTransitionProvider>
     );
   }
