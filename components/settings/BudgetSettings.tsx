@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { fetchBudget, shortDate, type BudgetState } from '@/lib/budget';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 // Partie "Budget" de la page Profil :
 //  - la somme à ne pas dépasser sur une période, et la marge si des prix manquent ;
@@ -11,6 +12,7 @@ import { fetchBudget, shortDate, type BudgetState } from '@/lib/budget';
 //  - le suivi de la période en cours : dépensé, reste, et les courses validées (supprimables en cas d'erreur).
 export default function BudgetSettings() {
   const [budget, setBudget] = useState<BudgetState | null>(null);
+  const [confirm, confirmDialog] = useConfirm();
   const [errorMessage, setErrorMessage] = useState('');
   const [saved, setSaved] = useState(false);
 
@@ -66,6 +68,8 @@ export default function BudgetSettings() {
 
   // SUPPRESSION D'UNE DÉPENSE (ex : course validée par erreur) : son montant redevient disponible
   async function deleteExpense(id: string) {
+    const expense = budget?.expenses.find((e) => e.id === id);
+    if (!(await confirm('Supprimer la dépense', `Supprimer « ${expense?.label ?? 'Course'} » ? Son montant redeviendra disponible dans le budget.`))) return;
     const { error } = await supabase.from('expenses').delete().eq('id', id);
     if (error) return setErrorMessage(error.message);
     fill(await fetchBudget());
@@ -78,6 +82,7 @@ export default function BudgetSettings() {
 
   return (
     <div>
+      {confirmDialog}
       <p className="text-sm opacity-70 mb-4">
         Fixe la somme à ne pas dépasser sur une période. Chaque course validée est déduite de ce qui reste, puis le budget se
         réactive au début de la période suivante.

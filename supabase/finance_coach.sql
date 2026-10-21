@@ -71,21 +71,6 @@ create table if not exists investments (
   created_at timestamptz not null default now()
 );
 
--- Accès depuis l'appli. Supabase active la sécurité au niveau des lignes (RLS) sur les nouvelles tables :
--- sans règle, toute écriture est refusée ("new row violates row-level security policy").
--- L'appli n'a pas de connexion utilisateur et utilise la clé publique (rôle "anon") : on l'autorise donc
--- à lire et écrire ces tables, comme les autres tables de l'appli. Ce script peut être relancé sans risque.
-do $$
-declare t text;
-begin
-  foreach t in array array['bank_transactions', 'category_rules', 'budgets', 'planned_expenses', 'finance_goals', 'debts', 'investments']
-  loop
-    execute format('alter table %I enable row level security', t);
-    execute format('drop policy if exists "acces appli" on %I', t);
-    execute format('create policy "acces appli" on %I for all to anon, authenticated using (true) with check (true)', t);
-  end loop;
-end $$;
-
 -- Catégories créées par l'utilisateur pour classer ses opérations (en plus des catégories de base)
 create table if not exists custom_categories (
   id text primary key,                  -- perso_xxxx
@@ -103,3 +88,20 @@ create table if not exists removed_categories (
 -- Lignes du bilan et du compte de résultat calculées par l'import des relevés : recalculées aux imports suivants
 -- (un montant saisi à la main garde auto = false et n'est jamais modifié par l'import)
 alter table finance_lines add column if not exists auto boolean not null default false;
+
+-- Accès depuis l'appli (à garder en fin de fichier, après la création de toutes les tables).
+-- Supabase active la sécurité au niveau des lignes (RLS) sur les nouvelles tables :
+-- sans règle, toute écriture est refusée ("new row violates row-level security policy").
+-- L'appli n'a pas de connexion utilisateur et utilise la clé publique (rôle "anon") : on l'autorise donc
+-- à lire et écrire ces tables, comme les autres tables de l'appli. Ce script peut être relancé sans risque.
+do $$
+declare t text;
+begin
+  foreach t in array array['bank_transactions', 'category_rules', 'budgets', 'planned_expenses', 'finance_goals', 'debts', 'investments',
+                           'custom_categories', 'removed_categories']
+  loop
+    execute format('alter table %I enable row level security', t);
+    execute format('drop policy if exists "acces appli" on %I', t);
+    execute format('create policy "acces appli" on %I for all to anon, authenticated using (true) with check (true)', t);
+  end loop;
+end $$;

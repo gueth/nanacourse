@@ -1,17 +1,17 @@
 'use client';
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { AlertTriangle, FileUp, Repeat, Trash2, X } from 'lucide-react';
+import { useMemo, useState, useSyncExternalStore } from 'react';
+import { latestCached, orThrow, setCachedAll, useCached } from '@/lib/cache';
+import { AlertTriangle, Repeat, Trash2, X } from 'lucide-react';
+import { useConfirm } from '@/components/ConfirmDialog';
 import { formatEuros, monthKey, monthLabel, SECTIONS, shiftMonth } from '@/lib/finance';
-import { parseStatement, readStatementFile, type ParseResult } from '@/lib/bankImport';
-import { readPdfStatement } from '@/lib/bankPdf';
+import Link from 'next/link';
 import {
   addCustomCategory,
   addPlanned,
   byLabel,
   CATEGORIES,
   categoryById,
-  completeFromStatement,
   deleteCategory,
   DEFAULT_CATEGORY_IDS,
   deletePlanned,
@@ -21,7 +21,6 @@ import {
   fetchBudgets,
   fetchPlanned,
   fetchTransactions,
-  importTransactions,
   loadCategories,
   merchantKey,
   monthOf,
@@ -41,7 +40,7 @@ import {
   type PlannedExpense,
   type Transaction
 } from '@/lib/transactions';
-import { describeDbError, syncSavingsAccount } from '@/lib/financePlans';
+import { describeDbError } from '@/lib/financePlans';
 import {
   ErrorNote,
   FIN,
@@ -54,8 +53,14 @@ import {
   SummaryTile
 } from '@/components/finance/FinanceParts';
 
+// Fenêtre d'opérations en mémoire : du mois "from" au mois "to" (inclus)
+type TxWindow = { from: string; to: string; list: Transaction[] };
+const TX_PREFIX = 'finances:operations:';
+
 const noSubscribe = () => () => {};
 const readMonth = () => monthKey(new Date());
+// Mois demandé dans l'adresse (?mois=2026-03), par exemple au retour de la page Relevés
+const readAskedMonth = () => new URLSearchParams(window.location.search).get('mois')?.match(/^\d{4}-\d{2}$/)?.[0] ?? null;
 const MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 
 const lastDay = (period: string) => {
@@ -63,244 +68,6 @@ const lastDay = (period: string) => {
   return `${period}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
 };
 const shortDate = (date: string) => new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
-
-// Import d'un relevé : choix du fichier, aperçu, puis enregistrement
-function ImportPanel({ accounts, onImported }: { accounts: string[]; onImported: (message: string, month?: string) => void }) {
-  const [parsed, setParsed] = useState<(ParseResult & { name: string }) | null>(null);
-  const [account, setAccount] = useState('Compte courant');
-  const [busy, setBusy] = useState(false);
-  const [reading, setReading] = useState(false);
-  const [complete, setComplete] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [help, setHelp] = useState(false);
-
-  async function pick(file: File | undefined) {
-    if (!file) return;
-    setError(null);
-    setReading(true);
-    let result: ParseResult;
-    try {
-      const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
-      result = isPdf ? await readPdfStatement(file) : parseStatement(await readStatementFile(file));
-    } catch (e) {
-      console.error(e);
-      setReading(false);
-      setParsed(null);
-      setError("Ce fichier n'a pas pu être lu. Un PDF protégé par mot de passe ou scanné (une photo du relevé) ne contient pas de texte lisible : télécharge le relevé depuis ton espace client, ou exporte tes opérations en CSV.");
-      return;
-    }
-    setReading(false);
-    if (result.transactions.length === 0) {
-      setParsed(null);
-      setError("Aucune opération reconnue dans ce fichier. Vérifie qu'il s'agit bien d'un relevé de compte en PDF, ou d'un export CSV ou OFX de ta banque.");
-      return;
-    }
-    setParsed({ ...result, name: file.name });
-    // Nom du compte reconnu d'après le titre du relevé (« Livret A », « LEP »...)
-    if (result.summary?.accountName) setAccount(result.summary.accountName);
-  }
-
-  async function confirm() {
-    if (!parsed) return;
-    const name = account.trim() || 'Compte courant';
-    setBusy(true);
-    const { inserted, error: err } = await importTransactions(parsed.transactions, name);
-    if (err) {
-      setBusy(false);
-      return setError(describeDbError(err.message));
-    }
-    const dupes = parsed.transactions.length - inserted;
-    let message = `${inserted} opération${inserted > 1 ? 's' : ''} importée${inserted > 1 ? 's' : ''}${dupes ? `, ${dupes} déjà présente${dupes > 1 ? 's' : ''} ignorée${dupes > 1 ? 's' : ''}` : ''}.`;
-    if (complete) {
-      const done = await completeFromStatement(name, parsed.transactions, parsed.summary);
-      if (done.error) {
-        setBusy(false);
-        return setError(describeDbError(done.error.message));
-      }
-      message += done.filled.length
-        ? ` Compte de résultat mis à jour pour ${done.filled.map(monthLabel).join(', ')}.`
-        : ' Compte de résultat déjà à jour.';
-      if (done.kept) message += ` ${done.kept} ligne${done.kept > 1 ? 's' : ''} saisie${done.kept > 1 ? 's' : ''} à la main gardée${done.kept > 1 ? 's' : ''} telle${done.kept > 1 ? 's' : ''} quelle${done.kept > 1 ? 's' : ''}.`;
-      if (done.balances) message += ` Soldes de fin de mois inscrits au bilan (ligne « ${name} »), sauf là où tu les avais saisis toi-même.`;
-    }
-    // Relevé de livret : la valeur du livret est aussi mise à jour dans les placements
-    if (parsed.summary?.savings && parsed.summary.closing != null && parsed.summary.to) {
-      const { created, error: err3 } = await syncSavingsAccount(name, parsed.summary.closing, parsed.summary.to);
-      message += err3
-        ? ` (Placements non mis à jour : ${describeDbError(err3.message)})`
-        : ` « ${name} » ${created ? 'ajouté aux' : 'mis à jour dans les'} placements.`;
-    }
-    // Mois où tombent le plus d'opérations du relevé : la page s'y place pour les afficher
-    const counts = new Map<string, number>();
-    for (const t of parsed.transactions) counts.set(monthOf(t.date), (counts.get(monthOf(t.date)) ?? 0) + 1);
-    const month = [...counts].sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0]))[0]?.[0];
-    if (month) message += ` Affichage de ${monthLabel(month)}.`;
-    setBusy(false);
-    setParsed(null);
-    onImported(message, month);
-  }
-
-  // Reclasse les opérations restées en « Autres » avec les catégories et mots-clés actuels
-  async function reclassify() {
-    setBusy(true);
-    const { changed, error: err } = await reclassifyOthers();
-    setBusy(false);
-    if (err) return setError(describeDbError(err.message));
-    onImported(changed ? `${changed} opération${changed > 1 ? 's' : ''} « Autres » reclassée${changed > 1 ? 's' : ''}.` : 'Aucune opération « Autres » de plus n’a pu être classée.');
-  }
-
-  const tx = parsed?.transactions ?? [];
-  const dates = tx.map((t) => t.date).sort();
-  const income = tx.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-  const spent = tx.filter((t) => t.amount < 0).reduce((s, t) => s - t.amount, 0);
-  const summary = parsed?.summary;
-  const exchangeFees = tx.filter((t) => t.label.startsWith('COM CHANGE')).reduce((s, t) => s - t.amount, 0);
-  const ownTransfers = tx.filter((t) => t.category === 'virement_interne').length;
-
-  return (
-    <Panel title="Importer un relevé" subtitle="Le fichier est lu sur ton appareil : rien n'est envoyé à ta banque ni à un service extérieur. Seules les opérations sont enregistrées dans ta base.">
-      <ErrorNote message={error} />
-      {!parsed ? (
-        <>
-          <label className="mt-2 flex cursor-pointer flex-col items-center gap-1 rounded-sm border border-dashed px-3 py-5 text-center" style={{ borderColor: FIN.slate, color: FIN.slate }}>
-            <FileUp size={22} />
-            <span className="text-[11px] uppercase tracking-[0.2em]">{reading ? 'Lecture du relevé…' : 'Choisir un relevé PDF, CSV ou OFX'}</span>
-            <input
-              type="file"
-              accept=".pdf,application/pdf,.csv,.ofx,.qfx,.txt,text/csv"
-              className="hidden"
-              disabled={reading}
-              onChange={(e) => {
-                pick(e.target.files?.[0]);
-                e.target.value = '';
-              }}
-            />
-          </label>
-          <div className="mt-2 flex justify-between gap-2">
-            <button type="button" onClick={() => setHelp(!help)} className="text-[10px] underline" style={{ color: FIN.slate }}>
-              Comment obtenir ce fichier ?
-            </button>
-            <button type="button" onClick={reclassify} disabled={busy} className="text-[10px] underline disabled:opacity-40" style={{ color: FIN.slate }}>
-              Reclasser les « Autres »
-            </button>
-          </div>
-          {help && (
-            <p className="mt-1 text-[11px] leading-relaxed" style={{ color: FIN.slate }}>
-              Le plus simple : le <b>relevé de compte mensuel en PDF</b>, tel que ta banque le met à disposition dans ton espace client
-              (rubrique « Relevés » ou « e-Documents »). Tu peux aussi exporter tes opérations au format <b>CSV</b> (ou Excel/tableur)
-              ou <b>OFX</b> (Money/Quicken). Importe tes relevés dans l&apos;ordre que tu veux : un même relevé importé deux fois n&apos;est
-              compté qu&apos;une fois. Évite en revanche de mélanger, pour une même période, le PDF et un export CSV : ils seraient
-              comptés deux fois.
-            </p>
-          )}
-        </>
-      ) : (
-        <div className="mt-2 text-[12px]">
-          <p>
-            <b>{parsed.name}</b> : {tx.length} opérations du {shortDate(summary?.from ?? dates[0])} au{' '}
-            {shortDate(summary?.to ?? dates[dates.length - 1])}
-            {parsed.skipped > 0 && <span style={{ color: FIN.slate }}> ({parsed.skipped} lignes ignorées)</span>}.
-          </p>
-          <p className="mt-1" style={{ color: FIN.slate }}>
-            Entrées <b style={{ color: FIN.sage }}>{formatEuros(income)}</b> · Sorties <b style={{ color: FIN.rose }}>{formatEuros(spent)}</b>
-          </p>
-          {summary && (
-            <ul className="mt-2 space-y-1 text-[11px] leading-relaxed">
-              {summary.opening !== null && summary.closing !== null && (
-                <li>
-                  {summary.accountName && <b>{summary.accountName} · </b>}
-                  Solde : {formatEuros(summary.opening)} → <b>{formatEuros(summary.closing)}</b>
-                  {summary.account && <span style={{ color: FIN.slate }}> · compte {summary.account}</span>}
-                </li>
-              )}
-              {summary.monthEnds.length > 0 && (
-                <li style={{ color: FIN.slate }}>
-                  Soldes de fin de mois : {summary.monthEnds.map((m) => `${monthLabel(m.month)} ${formatEuros(m.balance)}`).join(' · ')}
-                </li>
-              )}
-              {summary.savings && (
-                <li style={{ color: FIN.slate }}>
-                  Compte d&apos;épargne : les virements avec tes autres comptes ne comptent ni en dépense ni en revenu, et sa valeur sera mise à jour
-                  dans tes placements.
-                </li>
-              )}
-              {summary.verified !== null && (
-                <li style={{ color: summary.verified ? FIN.sage : FIN.rose }}>
-                  {summary.verified
-                    ? '✓ Toutes les opérations ont été retrouvées : les totaux et les soldes correspondent au relevé.'
-                    : '⚠ Les totaux ne correspondent pas au relevé : quelques opérations ont pu être mal lues. Vérifie-les après l’import.'}
-                </li>
-              )}
-              {exchangeFees > 0 && (
-                <li style={{ color: FIN.rose }}>
-                  Frais de change sur tes paiements à l&apos;étranger : <b>{formatEuros(exchangeFees)}</b>, mis à part dans « Frais bancaires ».
-                </li>
-              )}
-              {ownTransfers > 0 && (
-                <li style={{ color: FIN.slate }}>
-                  {ownTransfers} virement{ownTransfers > 1 ? 's' : ''} à ton nom, compté{ownTransfers > 1 ? 's' : ''} comme mouvement entre tes comptes (ni dépense ni revenu).
-                </li>
-              )}
-            </ul>
-          )}
-          <ul className="mt-2 space-y-0.5 text-[11px]" style={{ color: FIN.slate }}>
-            {tx.slice(0, 4).map((t) => (
-              <li key={t.importKey} className="flex justify-between gap-2">
-                <span className="truncate">
-                  {shortDate(t.date)} · {t.label}
-                </span>
-                <span>{formatEuros(t.amount)}</span>
-              </li>
-            ))}
-          </ul>
-          <label className="mt-3 flex flex-col gap-0.5">
-            <span className="text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
-              Compte concerné
-            </span>
-            <input
-              value={account}
-              onChange={(e) => setAccount(e.target.value)}
-              list="accounts"
-              className="rounded-sm border bg-white px-2 py-1 text-[13px] outline-none"
-              style={{ borderColor: FIN.line }}
-            />
-            <datalist id="accounts">
-              {accounts.map((a) => (
-                <option key={a} value={a} />
-              ))}
-            </datalist>
-          </label>
-          <p className="mt-1 text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
-            Si tu importes plusieurs comptes (courant, livret…), les virements de l&apos;un à l&apos;autre sont repérés et ne sont
-            comptés ni en dépense ni en revenu.
-          </p>
-          <label className="mt-3 flex items-start gap-2 text-[11px] leading-relaxed">
-            <input type="checkbox" checked={complete} onChange={(e) => setComplete(e.target.checked)} className="mt-0.5" />
-            <span>
-              Compléter automatiquement le <b>compte de résultat</b>
-              {summary?.closing != null && (
-                <>
-                  {' '}
-                  et le <b>bilan</b> (solde du compte au {shortDate(summary.to ?? dates[dates.length - 1])})
-                </>
-              )}{' '}
-              de chaque mois concerné ({[...new Set(dates.map(monthOf))].map(monthLabel).join(', ')}), même s&apos;il n&apos;est pas
-              celui affiché, avec toutes les opérations connues de chaque mois (même venues d&apos;un autre relevé). Les montants que tu as saisis à la main ne sont jamais modifiés.
-            </span>
-          </label>
-          <div className="mt-3 flex gap-2">
-            <FinButton onClick={confirm} disabled={busy}>
-              {busy ? 'Import…' : 'Importer'}
-            </FinButton>
-            <FinButton outline onClick={() => setParsed(null)}>
-              Annuler
-            </FinButton>
-          </div>
-        </div>
-      )}
-    </Panel>
-  );
-}
 
 const OTHER_IDS = DEFAULT_CATEGORY_IDS;
 const NEW_CATEGORY = '__nouvelle';
@@ -433,9 +200,10 @@ function CategoriesPanel({ onChanged }: { onChanged: (message: string) => void }
   const [error, setError] = useState<string | null>(null);
   const all = [...CATEGORIES].sort(byLabel);
   const removed = removedBaseCategories();
+  const [confirm, confirmDialog] = useConfirm();
 
   async function remove(c: Category) {
-    if (!window.confirm(`Supprimer la catégorie « ${c.label} » ? Ses opérations iront dans « Autres dépenses » ou « Autres entrées ».`)) return;
+    if (!(await confirm('Supprimer la catégorie', `Supprimer la catégorie « ${c.label} » ? Ses opérations iront dans « Autres dépenses » ou « Autres entrées ».`))) return;
     const err = await deleteCategory(c);
     if (err) return setError(describeDbError(err.message));
     onChanged(`Catégorie « ${c.label} » supprimée : ses opérations sont maintenant dans « Autres ».`);
@@ -449,6 +217,7 @@ function CategoriesPanel({ onChanged }: { onChanged: (message: string) => void }
 
   return (
     <Panel title="Catégories" subtitle="Ajoute tes propres catégories ou supprime celles qui ne te servent pas. Les opérations d'une catégorie supprimée vont dans « Autres », qui ne se supprime pas.">
+      {confirmDialog}
       <ErrorNote message={error} />
       {open && (
         <ul className="mb-2 divide-y text-[12px]" style={{ borderColor: FIN.mist }}>
@@ -548,38 +317,57 @@ function OthersPanel({ items, onClassify }: { items: Transaction[]; onClassify: 
 }
 
 export default function BudgetPage() {
+  const [confirm, confirmDialog] = useConfirm();
   const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
   const [offset, setOffset] = useState(0);
-  const period = currentMonth ? shiftMonth(currentMonth, offset) : null;
+  const askedMonth = useSyncExternalStore(noSubscribe, readAskedMonth, () => null);
+  const startMonth = askedMonth ?? currentMonth;
+  const period = startMonth ? shiftMonth(startMonth, offset) : null;
 
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [loaded, setLoaded] = useState<string | null>(null);
-  const [budgets, setBudgets] = useState<Budget[]>([]);
-  const [planned, setPlanned] = useState<PlannedExpense[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
   const [showAll, setShowAll] = useState(false);
   const [editing, setEditing] = useState<string | null>(null); // catégorie dont on modifie la limite
   const [newPlanned, setNewPlanned] = useState<{ label: string; amount: number | null; month: number }>({ label: '', amount: null, month: 1 });
 
-  useEffect(() => {
-    if (!period) return;
-    let cancelled = false;
-    (async () => {
-      const [t, b, p, c] = await Promise.all([fetchTransactions(`${shiftMonth(period, -12)}-01`, lastDay(period)), fetchBudgets(), fetchPlanned(), loadCategories()]);
-      if (cancelled) return;
-      const err = t.error ?? b.error ?? p.error ?? c;
-      setError(err ? describeDbError(err.message) : null);
-      setTransactions(t.transactions);
-      setBudgets(b.budgets);
-      setPlanned(p.planned);
-      setLoaded(period);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [period, reloadKey]);
+  // Données gardées en mémoire entre deux visites (lib/cache) : affichées tout de suite, puis rechargées en arrière-plan.
+  // Opérations : une fenêtre de 13 mois (le mois affiché et les 12 d'avant) par mois affiché.
+  const txQuery = useCached<TxWindow>(period && `${TX_PREFIX}${period}`, async () => {
+    const from = shiftMonth(period!, -12);
+    const { transactions, error } = await fetchTransactions(`${from}-01`, lastDay(period!));
+    return { from, to: period!, list: orThrow(transactions, error) };
+  });
+  const budgetsQuery = useCached('finances:budgets', async () => {
+    const { budgets, error } = await fetchBudgets();
+    return orThrow(budgets, error);
+  });
+  const plannedQuery = useCached('finances:depenses-prevues', async () => {
+    const { planned, error } = await fetchPlanned();
+    return orThrow(planned, error);
+  });
+  // Les catégories sont rangées dans CATEGORIES (lib/transactions) : la mémoire garde juste le moment du chargement
+  const categoriesQuery = useCached('finances:categories', async () => orThrow(Date.now(), await loadCategories()));
+
+  // En changeant de mois, la fenêtre du mois précédemment affiché contient souvent déjà le nouveau mois :
+  // on l'utilise en attendant la sienne
+  const shownWindow = txQuery.data ?? latestCached<TxWindow>(TX_PREFIX);
+  const loaded = !!period && !!shownWindow && shownWindow.from <= period && period <= shownWindow.to && categoriesQuery.data !== undefined;
+  const transactions = useMemo(() => (loaded ? shownWindow.list : []), [loaded, shownWindow]);
+  const budgets = budgetsQuery.data ?? [];
+  const planned = plannedQuery.data ?? [];
+  const loadError = txQuery.error ?? budgetsQuery.error ?? plannedQuery.error ?? categoriesQuery.error;
+  const shownError = error ?? (loadError && describeDbError(loadError));
+
+  // Les modifications s'appliquent à toutes les fenêtres d'opérations déjà en mémoire (un même mois peut être dans plusieurs)
+  const setTransactions = (update: (ts: Transaction[]) => Transaction[]) => setCachedAll<TxWindow>(TX_PREFIX, (w) => ({ ...w, list: update(w.list) }));
+  const setBudgets = (update: (bs: Budget[]) => Budget[]) => budgetsQuery.setData(update);
+  const setPlanned = (update: (ps: PlannedExpense[]) => PlannedExpense[]) => plannedQuery.setData(update);
+  function reloadAll() {
+    txQuery.reload();
+    budgetsQuery.reload();
+    plannedQuery.reload();
+    categoriesQuery.reload();
+  }
 
   const monthTx = useMemo(() => transactions.filter((t) => period && monthOf(t.date) === period), [transactions, period]);
   const history = useMemo(() => transactions.filter((t) => period && monthOf(t.date) < period), [transactions, period]);
@@ -634,6 +422,7 @@ export default function BudgetPage() {
   }
 
   async function remove(t: Transaction) {
+    if (!(await confirm("Supprimer l'opération", `Supprimer l'opération « ${t.label} » (${formatEuros(t.amount)}) ?`))) return;
     setTransactions((ts) => ts.filter((x) => x.id !== t.id));
     report(await deleteTransaction(t.id));
   }
@@ -675,7 +464,8 @@ export default function BudgetPage() {
         />
       }
     >
-      <ErrorNote message={error} />
+      {confirmDialog}
+      <ErrorNote message={shownError} />
       {notice && (
         <p className="mt-4 flex items-start justify-between gap-2 rounded-sm border px-3 py-2 text-[11px]" style={{ borderColor: FIN.sage, color: FIN.sage, backgroundColor: FIN.paper }}>
           {notice}
@@ -685,27 +475,13 @@ export default function BudgetPage() {
         </p>
       )}
 
-      <ImportPanel
-        accounts={accounts}
-        onImported={(message, month) => {
-          setNotice(message);
-          // Se placer sur le mois du relevé importé
-          if (month && currentMonth) {
-            const [y1, m1] = currentMonth.split('-').map(Number);
-            const [y2, m2] = month.split('-').map(Number);
-            setOffset((y2 - y1) * 12 + (m2 - m1));
-          }
-          setReloadKey((k) => k + 1);
-        }}
-      />
-
-      {loaded !== period ? (
+      {!loaded ? (
         <p className="mt-10 text-center text-[11px] uppercase tracking-[0.3em]" style={{ color: FIN.slate }}>
           Chargement…
         </p>
       ) : monthTx.length === 0 ? (
         <p className="mt-6 text-center text-[12px] leading-relaxed" style={{ color: FIN.slate }}>
-          Aucune opération pour {period && monthLabel(period)}. Importe un relevé qui couvre ce mois-ci.
+          Aucune opération pour {period && monthLabel(period)}. Importe un relevé qui couvre ce mois-ci depuis la page <Link href="/banque/releves" className="underline">Relevés</Link>.
         </p>
       ) : (
         <>
@@ -930,6 +706,7 @@ export default function BudgetPage() {
                   <button
                     type="button"
                     onClick={async () => {
+                      if (!(await confirm('Supprimer la dépense prévue', `Supprimer « ${p.label} » (${formatEuros(p.amount)}) ?`))) return;
                       setPlanned((ps) => ps.filter((x) => x.id !== p.id));
                       report(await deletePlanned(p.id));
                     }}
@@ -990,7 +767,7 @@ export default function BudgetPage() {
       <CategoriesPanel
         onChanged={(message) => {
           setNotice(message);
-          setReloadKey((k) => k + 1);
+          reloadAll();
         }}
       />
     </FinancePage>

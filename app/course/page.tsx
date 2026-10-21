@@ -13,13 +13,14 @@ import { supabase } from '@/lib/supabase';
 // Budget de la période : ce qui reste à dépenser, dépassement, enregistrement des courses validées
 import { fetchBudget, isOverBudget, recordExpense, shortDate, type BudgetState } from '@/lib/budget';
 import { storeLabel, STORE_SELECT } from '@/lib/stores';
+// Mémoire des données entre deux visites : affichées tout de suite, puis rechargées en arrière-plan
+import { useCached } from '@/lib/cache';
+import { useStores } from '@/lib/coursesQueries';
 // Famille d'un ingrédient (ex : toutes les sortes d'œufs), pour les regrouper sous une bannière
 import { familyKey } from '@/lib/ingredients';
 import FamilyList from '@/components/FamilyList';
 // Cadre affiché au-dessus de la page, et formulaire d'ajout d'un article à la liste
 import Modal from '@/components/Modal';
-// Animation de chargement (hamster dans sa roue)
-import HamsterLoader from '@/components/HamsterLoader';
 import AddToListForm from '@/components/AddToListForm';
 import EditListItemForm from '@/components/EditListItemForm';
 // Cadre de confirmation avant suppression
@@ -176,9 +177,17 @@ export default function CoursePage() {
   // Chaque useState renvoie [valeurActuelle, fonctionPourLaModifier].
 
   // Toutes les listes de courses en attente, chargées depuis Supabase.
-  const [lists, setLists] = useState<SavedList[]>([]);
-  // true tant que les données ne sont pas encore arrivées.
-  const [loading, setLoading] = useState(true);
+  // Elles sont gardées en mémoire entre deux visites (lib/cache) : au retour sur la page elles s'affichent
+  // tout de suite, puis sont rechargées en arrière-plan.
+  const listsQuery = useCached('courses:listes-actives', async () => {
+    const { data, error } = await fetchActiveLists();
+    // En cas d'erreur on l'affiche dans la console du navigateur (F12), et la page reste vide.
+    if (error) console.error(error);
+    return data;
+  });
+  const lists = listsQuery.data ?? [];
+  // true tant que les données ne sont pas encore arrivées (seulement à la toute première visite).
+  const loading = listsQuery.data === undefined;
   // Prix réels saisis par l'utilisateur, rangés par id d'article.
   // Exemple : { "abc123": "2.49" }. On garde du texte (string) car c'est ce que renvoie un <input>.
   const [realPrices, setRealPrices] = useState<Record<string, string>>({});
@@ -201,7 +210,8 @@ export default function CoursePage() {
   // Résultat du bouton "Optimiser", rangé par id de liste (absent = pas encore optimisée).
   const [analyses, setAnalyses] = useState<Record<string, ListAnalysis>>({});
   // Budget de la période en cours (réglages + ce qui reste), null tant qu'il n'est pas chargé.
-  const [budget, setBudget] = useState<BudgetState | null>(null);
+  const budgetQuery = useCached('courses:budget', fetchBudget);
+  const budget: BudgetState | null = budgetQuery.data ?? null;
   // id de la liste en cours d'optimisation (pour désactiver son bouton pendant le calcul).
   const [optimizing, setOptimizing] = useState<string | null>(null);
   // Articles dont l'optimisation a été refusée (✗), par liste : ils ne sont plus réoptimisés.
@@ -212,7 +222,7 @@ export default function CoursePage() {
   // Cadre de confirmation avant suppression
   const [confirm, confirmDialog] = useConfirm();
   // Supermarchés, pour afficher le magasin choisi sur chaque liste
-  const [stores, setStores] = useState<Store[]>([]);
+  const stores: Store[] = useStores().data ?? [];
   // Liste dont le cadre de choix du magasin est ouvert (clic sur la ligne "Magasin") ; null = fermé
   const [choosingStoreFor, setChoosingStoreFor] = useState<SavedList | null>(null);
 
@@ -279,32 +289,38 @@ export default function CoursePage() {
   // Charge (ou recharge) la liste de courses active depuis Supabase (une seule liste active à la fois).
   // Utilisée après une validation pour rafraîchir l'affichage.
   async function loadLists() {
-    const { data, error } = await fetchActiveLists();
-    // En cas d'erreur on l'affiche dans la console du navigateur (F12).
-    if (error) console.error(error);
-    // On enregistre les données reçues (ou un tableau vide si rien n'est revenu).
-    // "as unknown as SavedList[]" force TypeScript à considérer les données comme nos types.
-    setLists((data as unknown as SavedList[]) ?? []);
-    // Le chargement est terminé.
-    setLoading(false);
+    // Le budget restant est recalculé en même temps que les listes
+    budgetQuery.reload();
+    await listsQuery.reload();
   }
 
-  // Premier chargement des listes, exécuté UNE seule fois à l'ouverture de la page
-  // (grâce au tableau de dépendances vide [] à la fin).
-  // C'est la même requête que loadLists(), écrite avec .then() au lieu de async/await,
-  // car la fonction passée à useEffect ne peut pas être directement "async".
+  // Retour sur la page (autre onglet, Paramètres, bouton Précédent) : une liste a pu être activée
+  // ou le budget modifié ailleurs, on recharge donc les listes et le budget.
+  const { reload: reloadLists } = listsQuery;
+  const { reload: reloadBudget } = budgetQuery;
   useEffect(() => {
-    fetchActiveLists().then(({ data, error }) => {
-      if (error) console.error(error);
-      setLists((data as unknown as SavedList[]) ?? []);
-      setLoading(false);
-    });
-    // Budget de la période en cours (réglé dans Profil > Budget)
-    fetchBudget().then(setBudget);
-    supabase
-      .from('stores').select(STORE_SELECT)
-      .then(({ data }) => setStores(data ?? []));
-  }, []);
+    function refresh() {
+      if (document.visibilityState !== 'visible') return;
+      reloadLists();
+      reloadBudget();
+    }
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('pageshow', refresh);
+    return () => {
+      document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('pageshow', refresh);
+    };
+  }, [reloadLists, reloadBudget]);
+
+  // Réactivation du budget : à la fin de la période en cours, le budget repart à zéro dépense,
+  // on le recharge donc à ce moment-là (le minuteur est relancé pour la période suivante).
+  useEffect(() => {
+    if (!budget) return;
+    // setTimeout n'accepte pas plus de ~24 jours : au-delà, on recharge plus tôt et on reprogramme
+    const delay = Math.min(Math.max(0, budget.period.end.getTime() - Date.now()) + 1000, 2_000_000_000);
+    const timer = setTimeout(reloadBudget, delay);
+    return () => clearTimeout(timer);
+  }, [budget, reloadBudget]);
 
   // Regroupe les articles d'une liste par catégorie, pour les afficher par rayon.
   // Retourne un tableau de groupes : [{ name: 'Fruits', items: [...] }, ...]
@@ -448,6 +464,7 @@ export default function CoursePage() {
 
   // SUPPRESSION D'UN ARTICLE de la liste, puis mise à jour du total
   async function deleteItem(list: SavedList, item: SavedItem) {
+    if (!(await confirm("Supprimer l'article", `Retirer « ${item.ingredient?.name ?? 'cet article'} » de la liste « ${list.name} » ?`))) return;
     const { error } = await supabase.from('shopping_list_items').delete().eq('id', item.id);
     if (error) return console.error(error);
     await saveListTotal(
@@ -613,7 +630,6 @@ export default function CoursePage() {
     // 7. Fin de la validation : on réactive les boutons, on recharge les listes et le budget restant.
     setValidating(null);
     await loadLists();
-    fetchBudget().then(setBudget);
 
     // 8. Tous les articles étaient barrés : la liste est terminée. On demande s'il faut la garder
     // (désactivée, dans Paramètres > Listes) ou la supprimer avec ses articles.
@@ -786,10 +802,15 @@ export default function CoursePage() {
      
       {/* ----- LA LISTE DE COURSES, présentée comme un ticket de caisse, centrée sur la page ----- */}
       <div className="max-w-xl mx-auto">
-          {/* Pendant le chargement de la liste active : le hamster qui court dans sa roue */}
+          {/* Pendant le chargement de la liste active : « Impression » et trois points qui font la vague */}
           {loading && (
-            <div className="flex justify-center py-10">
-              <HamsterLoader label="Chargement de ta liste..." />
+            <div className="flex items-end justify-center gap-1.5 py-10" role="status" aria-label="Impression de ta liste">
+              <span className="title-hand text-2xl leading-none">Impression</span>
+              <span className="flex gap-1 pb-1" aria-hidden>
+                {[0, 1, 2].map((i) => (
+                  <span key={i} className="typing-dot block h-1.5 w-1.5 rounded-full bg-current" style={{ animationDelay: `${i * 0.15}s` }} />
+                ))}
+              </span>
             </div>
           )}
 

@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ChevronLeft, ChevronRight, Plus, X } from 'lucide-react';
@@ -49,7 +50,8 @@ const FINANCE_PAGES = [
   { href: '/banque/budget', label: 'Budget' },
   { href: '/banque/objectifs', label: 'Objectifs' },
   { href: '/banque/placements', label: 'Placements' },
-  { href: '/banque/dettes', label: 'Dettes' }
+  { href: '/banque/dettes', label: 'Dettes' },
+  { href: '/banque/releves', label: 'Relevés' }
 ];
 
 // Menu des pages Finances, en pastilles
@@ -76,16 +78,19 @@ function FinanceNav() {
 }
 
 // En-tête bleu : retour à l'accueil, titre, menu des pages et, si fourni, choix du mois
+// (avec, à sa droite, un bouton d'action facultatif)
 export function FinanceHeader({
   subtitle = 'bilan · compte de résultat',
   month,
   onPrev,
-  onNext
+  onNext,
+  action
 }: {
   subtitle?: string;
   month?: string;
   onPrev?: () => void;
   onNext?: () => void;
+  action?: React.ReactNode;
 }) {
   return (
     <header className="relative px-4 pb-10 pt-4 text-center" style={{ backgroundColor: FIN.slate, color: FIN.paper }}>
@@ -102,14 +107,19 @@ export function FinanceHeader({
       </div>
       <FinanceNav />
       {month !== undefined && (
-        <div className="mt-4 flex items-center justify-center gap-4">
-          <button type="button" onClick={onPrev} aria-label="Mois précédent" className="rounded-full p-1.5 opacity-80 hover:opacity-100">
-            <ChevronLeft size={20} />
-          </button>
-          <span className="min-w-[150px] text-[13px] uppercase tracking-[0.25em]">{month}</span>
-          <button type="button" onClick={onNext} aria-label="Mois suivant" className="rounded-full p-1.5 opacity-80 hover:opacity-100">
-            <ChevronRight size={20} />
-          </button>
+        // Trois colonnes : le mois reste centré, l'action se place à droite
+        <div className="mt-4 grid grid-cols-[1fr_auto_1fr] items-center">
+          <span />
+          <div className="flex items-center justify-center gap-3">
+            <button type="button" onClick={onPrev} aria-label="Mois précédent" className="rounded-full p-1.5 opacity-80 hover:opacity-100">
+              <ChevronLeft size={20} />
+            </button>
+            <span className="min-w-[140px] text-[13px] uppercase tracking-[0.25em]">{month}</span>
+            <button type="button" onClick={onNext} aria-label="Mois suivant" className="rounded-full p-1.5 opacity-80 hover:opacity-100">
+              <ChevronRight size={20} />
+            </button>
+          </div>
+          <div className="flex justify-end">{action}</div>
         </div>
       )}
       {/* Bas de l'en-tête : petit dôme central, comme les cartes de l'accueil */}
@@ -399,6 +409,42 @@ export function Panel({ title, subtitle, children }: { title: string; subtitle?:
       )}
       {children}
     </section>
+  );
+}
+
+// Fenêtre au-dessus de la page, aux couleurs des Finances.
+// Se ferme avec la croix, la touche Échap ou un clic en dehors du cadre.
+export function FinanceModal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4" style={{ backgroundColor: 'rgba(43,58,85,0.55)' }} onClick={onClose}>
+      {/* stopPropagation : un clic DANS le cadre ne doit pas le fermer */}
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="mt-12 w-full max-w-md rounded-sm border px-4 pb-4 pt-3"
+        style={{ backgroundColor: FIN.paper, borderColor: FIN.line, color: FIN.navy }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <h2 className="text-[32px] leading-tight" style={script}>
+            {title}
+          </h2>
+          <button type="button" onClick={onClose} aria-label="Fermer" className="mt-2 p-1" style={{ color: FIN.slate }}>
+            <X size={20} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
   );
 }
 

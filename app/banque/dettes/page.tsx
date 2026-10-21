@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useMemo, useState, useSyncExternalStore } from 'react';
 import { X } from 'lucide-react';
-import { fetchLinesRange, formatEuros, monthKey, shiftMonth, snapshot } from '@/lib/finance';
-import { addDebt, deleteDebt, describeDbError, fetchDebts, updateDebt, type Debt } from '@/lib/financePlans';
+import { useConfirm } from '@/components/ConfirmDialog';
+import { formatEuros, monthKey, snapshot } from '@/lib/finance';
+import { addDebt, deleteDebt, describeDbError, updateDebt, type Debt } from '@/lib/financePlans';
+import { useDebts, useFinanceLines } from '@/lib/financeQueries';
 import { durationLabel, futureValue, loanSchedule, monthsFromNow, simulateDebts } from '@/lib/financeCalc';
 import { notion } from '@/lib/financeGlossary';
 import { Certainty, ErrorNote, FIN, FinanceHeader, FinancePage, FinButton, NumberField, Panel, SummaryTile } from '@/components/finance/FinanceParts';
@@ -127,28 +129,19 @@ function EarlyRepayment({ debts }: { debts: Debt[] }) {
 }
 
 export default function DebtsPage() {
+  const [confirm, confirmDialog] = useConfirm();
   const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
-  const [debts, setDebts] = useState<Debt[] | null>(null);
-  const [income, setIncome] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  // Données gardées en mémoire entre deux visites (lib/financeQueries) : affichées tout de suite, puis rafraîchies
+  const debtsQuery = useDebts();
+  const linesQuery = useFinanceLines(currentMonth, 12);
+  const debts = debtsQuery.data ?? (debtsQuery.error ? [] : null);
+  const setDebts = debtsQuery.setData;
+  const income = useMemo(() => (currentMonth && linesQuery.data ? snapshot(linesQuery.data, currentMonth).income : 0), [linesQuery.data, currentMonth]);
+  const [actionError, setError] = useState<string | null>(null);
+  const loadError = debtsQuery.error ?? linesQuery.error;
+  const error = actionError ?? (loadError && describeDbError(loadError));
   const [extra, setExtra] = useState<number | null>(100);
   const [draft, setDraft] = useState<{ name: string; principal: number | null; rate: number | null; monthly: number | null } | null>(null);
-
-  useEffect(() => {
-    if (!currentMonth) return;
-    let cancelled = false;
-    (async () => {
-      const [d, l] = await Promise.all([fetchDebts(), fetchLinesRange(shiftMonth(currentMonth, -12), currentMonth)]);
-      if (cancelled) return;
-      const err = d.error ?? l.error;
-      setError(err ? describeDbError(err.message) : null);
-      setDebts(d.debts);
-      setIncome(snapshot(l.lines, currentMonth).income);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [currentMonth]);
 
   function report(err: { message: string } | null) {
     if (err) setError(describeDbError(err.message));
@@ -182,6 +175,7 @@ export default function DebtsPage() {
 
   return (
     <FinancePage header={<FinanceHeader subtitle="crédits · dettes" />}>
+      {confirmDialog}
       <ErrorNote message={error} />
 
       {list.length > 0 && (
@@ -209,6 +203,7 @@ export default function DebtsPage() {
               debt={d}
               onChange={(c) => change(d, c)}
               onDelete={async () => {
+                if (!(await confirm('Supprimer le crédit', `Supprimer « ${d.name} » ?`))) return;
                 setDebts((ds) => ds!.filter((x) => x.id !== d.id));
                 report(await deleteDebt(d.id));
               }}

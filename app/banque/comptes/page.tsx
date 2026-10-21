@@ -1,13 +1,13 @@
 'use client';
 
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useState, useSyncExternalStore } from 'react';
+import { useConfirm } from '@/components/ConfirmDialog';
+import { useGroceriesTotal, useMonthLines } from '@/lib/financeQueries';
 import {
   addLine,
   deleteLine,
-  fetchLines,
   formatEuros,
   GROCERIES,
-  groceriesTotal,
   monthEndLabel,
   monthKey,
   monthLabel,
@@ -45,42 +45,25 @@ const noSubscribe = () => () => {};
 const readMonth = () => monthKey(new Date());
 
 export default function FinancePage() {
+  const [confirm, confirmDialog] = useConfirm();
   const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
   const [offset, setOffset] = useState(0);
   const period = currentMonth ? shiftMonth(currentMonth, offset) : null;
   const [tab, setTab] = useState<Statement>('bilan');
 
-  // Lignes du mois affiché ; "loadedPeriod" indique pour quel mois elles ont été chargées
-  const [lines, setLines] = useState<FinanceLine[]>([]);
-  const [loadedPeriod, setLoadedPeriod] = useState<string | null>(null);
-  // Lignes du mois précédent, pour proposer de les reprendre quand le mois affiché est vide
-  const [previous, setPrevious] = useState<FinanceLine[]>([]);
-  const [groceries, setGroceries] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
+  // Lignes du mois affiché, et du mois précédent (pour proposer de les reprendre quand le mois affiché est vide),
+  // gardées en mémoire entre deux visites (lib/financeQueries) : affichées tout de suite, puis rafraîchies
+  const currentQuery = useMonthLines(period);
+  const previousQuery = useMonthLines(period && shiftMonth(period, -1));
+  const groceriesQuery = useGroceriesTotal(period);
+  const lines = currentQuery.data ?? [];
+  const setLines = currentQuery.setData;
+  const previous = previousQuery.data ?? [];
+  const groceries = groceriesQuery.data ?? 0;
+  const [actionError, setError] = useState<string | null>(null);
+  const error = actionError ?? (currentQuery.error && describeError(currentQuery.error));
 
-  useEffect(() => {
-    if (!period) return;
-    let cancelled = false;
-    (async () => {
-      const [{ lines: current, error: loadError }, { lines: before }, spent] = await Promise.all([
-        fetchLines(period),
-        fetchLines(shiftMonth(period, -1)),
-        groceriesTotal(period)
-      ]);
-      if (cancelled) return;
-      setError(loadError ? describeError(loadError.message) : null);
-      setLines(current);
-      setPrevious(before);
-      setGroceries(spent);
-      setLoadedPeriod(period);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [period, reloadKey]);
-
-  const loading = !period || loadedPeriod !== period;
+  const loading = !period || (currentQuery.data === undefined && !currentQuery.error);
   const t = totals(lines);
   const prev = totals(previous);
   // Variation du patrimoine que le résultat du mois n'explique pas (réévaluations, oublis)
@@ -93,7 +76,7 @@ export default function FinancePage() {
   async function seed(from: FinanceLine[] | null) {
     if (!period) return;
     report(await seedMonth(period, from));
-    setReloadKey((k) => k + 1);
+    currentQuery.reload();
   }
 
   async function add(section: Section) {
@@ -112,6 +95,7 @@ export default function FinancePage() {
   }
 
   async function remove(line: FinanceLine) {
+    if (!(await confirm('Supprimer la ligne', `Supprimer la ligne « ${line.label} » ?`))) return;
     setLines((ls) => ls.filter((l) => l.id !== line.id));
     report(await deleteLine(line.id));
   }
@@ -160,6 +144,7 @@ export default function FinancePage() {
 
   return (
     <div className="finance-screen min-h-dvh pb-16" style={{ backgroundColor: FIN.mist, color: FIN.navy }}>
+      {confirmDialog}
       <FinanceHeader
         month={period ? monthLabel(period) : ''}
         onPrev={() => setOffset((o) => o - 1)}

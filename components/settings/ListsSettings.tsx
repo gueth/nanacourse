@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { ChevronRight, Pencil, Trash2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { formatQuantity, quantityRule } from '@/lib/quantity';
@@ -39,6 +40,7 @@ function fetchLists() {
 //  - en activer UNE à la fois : c'est elle qui s'affiche sur la page Course ;
 //  - les renommer, les désactiver, les supprimer.
 export default function ListsSettings() {
+  const router = useRouter();
   const [lists, setLists] = useState<ListRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState('');
@@ -86,7 +88,8 @@ export default function ListsSettings() {
     loadLists();
   }
 
-  // ACTIVATION : une seule liste active à la fois, donc on désactive d'abord les autres
+  // ACTIVATION : une seule liste active à la fois, donc on désactive d'abord les autres,
+  // puis on part sur la page Course pour voir la liste active
   async function activate(id: string) {
     setErrorMessage('');
     const { error: offError } = await supabase.from('shopping_lists').update({ is_active: false }).eq('is_active', true);
@@ -97,7 +100,7 @@ export default function ListsSettings() {
       .update({ is_active: true, activated_at: new Date().toISOString() })
       .eq('id', id);
     if (error) return showError(error);
-    loadLists();
+    router.push('/course');
   }
 
   // DÉSACTIVATION
@@ -126,6 +129,8 @@ export default function ListsSettings() {
 
   // RETRAIT D'UN ARTICLE, puis mise à jour du total de la liste
   async function removeItem(list: ListRow, itemId: string) {
+    const name = list.items.find((i) => i.id === itemId)?.ingredient?.name ?? 'cet article';
+    if (!(await confirm("Retirer l'article", `Retirer « ${name} » de la liste « ${list.name} » ?`))) return;
     const { error } = await supabase.from('shopping_list_items').delete().eq('id', itemId);
     if (error) return showError(error);
     await saveListTotal(

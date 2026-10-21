@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useMemo, useState, useSyncExternalStore } from 'react';
 import { X } from 'lucide-react';
-import { fetchLinesRange, formatEuros, monthKey, shiftMonth, snapshot, type Snapshot } from '@/lib/finance';
-import { addGoal, deleteGoal, describeDbError, fetchDebts, fetchGoals, updateGoal, type Goal } from '@/lib/financePlans';
+import { useConfirm } from '@/components/ConfirmDialog';
+import { formatEuros, monthKey, snapshot, type Snapshot } from '@/lib/finance';
+import { addGoal, deleteGoal, describeDbError, updateGoal, type Goal } from '@/lib/financePlans';
+import { useDebts, useFinanceLines, useGoals } from '@/lib/financeQueries';
 import { durationLabel, loanPayment, loanSchedule, monthsFromNow, monthsToTarget, realRate, requiredMonthly } from '@/lib/financeCalc';
 import { notion } from '@/lib/financeGlossary';
 import { Certainty, ErrorNote, FIN, FinanceHeader, FinancePage, FinButton, Meter, NumberField, Panel, StatementTabs } from '@/components/finance/FinanceParts';
@@ -251,30 +253,22 @@ function Simulator({ snap, goals, debtMonthly, inflation }: { snap: Snapshot; go
 }
 
 export default function GoalsPage() {
+  const [confirm, confirmDialog] = useConfirm();
   const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
-  const [snap, setSnap] = useState<Snapshot | null>(null);
-  const [goals, setGoals] = useState<Goal[]>([]);
-  const [debtMonthly, setDebtMonthly] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  // Données gardées en mémoire entre deux visites (lib/financeQueries) : affichées tout de suite, puis rafraîchies
+  const linesQuery = useFinanceLines(currentMonth, 12);
+  const goalsQuery = useGoals();
+  const debtsQuery = useDebts();
+  const lines = linesQuery.data;
+  const snap = useMemo(() => (currentMonth && lines ? snapshot(lines, currentMonth) : null), [lines, currentMonth]);
+  const goals = goalsQuery.data ?? [];
+  const setGoals = goalsQuery.setData;
+  const debtMonthly = (debtsQuery.data ?? []).reduce((s, x) => s + x.monthly, 0);
+  const [actionError, setError] = useState<string | null>(null);
+  const loadError = linesQuery.error ?? goalsQuery.error ?? debtsQuery.error;
+  const error = actionError ?? (loadError && describeDbError(loadError));
   const [inflation, setInflation] = useState(0.02);
   const [draft, setDraft] = useState<{ name: string; target: number | null } | null>(null);
-
-  useEffect(() => {
-    if (!currentMonth) return;
-    let cancelled = false;
-    (async () => {
-      const [l, g, d] = await Promise.all([fetchLinesRange(shiftMonth(currentMonth, -12), currentMonth), fetchGoals(), fetchDebts()]);
-      if (cancelled) return;
-      const err = l.error ?? g.error ?? d.error;
-      setError(err ? describeDbError(err.message) : null);
-      setSnap(snapshot(l.lines, currentMonth));
-      setGoals(g.goals);
-      setDebtMonthly(d.debts.reduce((s, x) => s + x.monthly, 0));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [currentMonth]);
 
   function report(err: { message: string } | null) {
     if (err) setError(describeDbError(err.message));
@@ -305,6 +299,7 @@ export default function GoalsPage() {
 
   return (
     <FinancePage header={<FinanceHeader subtitle="objectifs · simulations" />}>
+      {confirmDialog}
       <ErrorNote message={error} />
 
       <Panel title="Tes objectifs" subtitle="Les montants sont en euros d'aujourd'hui : le rendement est corrigé de l'inflation.">
@@ -320,6 +315,7 @@ export default function GoalsPage() {
             inflation={inflation}
             onChange={(c) => change(g, c)}
             onDelete={async () => {
+              if (!(await confirm("Supprimer l'objectif", `Supprimer « ${g.name} » ?`))) return;
               setGoals((gs) => gs.filter((x) => x.id !== g.id));
               report(await deleteGoal(g.id));
             }}

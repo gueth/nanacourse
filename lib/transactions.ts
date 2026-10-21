@@ -305,6 +305,42 @@ export async function importTransactions(parsed: ParsedTransaction[], account: s
   return { inserted, error: null };
 }
 
+// Relevé comparé aux opérations déjà enregistrées sur le même compte et la même période :
+// - new : rien d'enregistré sur cette période, le relevé est nouveau
+// - same : toutes ses opérations sont déjà là, et rien d'autre : relevé déjà importé, rien à retraiter
+// - different : la période est déjà importée mais des opérations divergent (en plus, en moins ou modifiées)
+export type StatementCheck = {
+  status: 'new' | 'same' | 'different';
+  present: number; // opérations du relevé déjà enregistrées
+  added: ParsedTransaction[]; // opérations du relevé absentes de la base
+  removed: Transaction[]; // opérations enregistrées sur la période, absentes du relevé (remplacées si on confirme)
+};
+
+export async function checkStatement(parsed: ParsedTransaction[], account: string, summary?: StatementSummary) {
+  const dates = parsed.map((t) => t.date).sort();
+  const from = [summary?.from, dates[0]].filter(Boolean).sort()[0]!;
+  const to = [summary?.to, dates[dates.length - 1]].filter(Boolean).sort().reverse()[0]!;
+  const { data, error } = await supabase.from('bank_transactions').select('*').eq('account', account).gte('date', from).lte('date', to);
+  if (error) return { check: null, error };
+  const existing = ((data as Transaction[]) ?? []).map(toTransaction);
+  const keys = new Set(parsed.map((t) => `${account}|${t.importKey}`));
+  const existingKeys = new Set(existing.map((e) => e.import_key));
+  const added = parsed.filter((t) => !existingKeys.has(`${account}|${t.importKey}`));
+  const removed = existing.filter((e) => !keys.has(e.import_key));
+  const status: StatementCheck['status'] =
+    existing.length === 0 ? 'new' : added.length === 0 && removed.length === 0 ? 'same' : 'different';
+  return { check: { status, present: parsed.length - added.length, added, removed } as StatementCheck, error: null };
+}
+
+// Efface les anciennes opérations remplacées par un relevé réimporté
+export async function deleteTransactions(ids: string[]) {
+  for (let i = 0; i < ids.length; i += 200) {
+    const { error } = await supabase.from('bank_transactions').delete().in('id', ids.slice(i, i + 200));
+    if (error) return error;
+  }
+  return null;
+}
+
 export async function updateCategory(ids: string[], category: string) {
   const { error } = await supabase.from('bank_transactions').update({ category }).in('id', ids);
   return error;

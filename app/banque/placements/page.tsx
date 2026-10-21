@@ -1,13 +1,14 @@
 'use client';
 
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useMemo, useState, useSyncExternalStore } from 'react';
 import { X } from 'lucide-react';
-import { fetchLinesRange, formatEuros, monthKey, monthLabel, shiftMonth, snapshot } from '@/lib/finance';
+import { useConfirm } from '@/components/ConfirmDialog';
+import { formatEuros, monthKey, monthLabel, snapshot } from '@/lib/finance';
+import { useFinanceLines, useInvestments } from '@/lib/financeQueries';
 import {
   addInvestment,
   deleteInvestment,
   describeDbError,
-  fetchInvestments,
   INVESTMENT_KINDS,
   investmentKind,
   reportInvestments,
@@ -175,29 +176,20 @@ function InvestmentCard({ inv, today, onChange, onDelete }: { inv: Investment; t
 type Draft = { name: string; kind: InvestmentKind; invested: number | null; value: number | null; opened: string };
 
 export default function InvestmentsPage() {
+  const [confirm, confirmDialog] = useConfirm();
   const today = useSyncExternalStore(noSubscribe, readToday, () => null);
   const currentMonth = today ? monthKey(new Date(today)) : null;
-  const [investments, setInvestments] = useState<Investment[] | null>(null);
-  const [essentials, setEssentials] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  // Données gardées en mémoire entre deux visites (lib/financeQueries) : affichées tout de suite, puis rafraîchies
+  const investmentsQuery = useInvestments();
+  const linesQuery = useFinanceLines(currentMonth, 12);
+  const investments = investmentsQuery.data ?? (investmentsQuery.error ? [] : null);
+  const setInvestments = investmentsQuery.setData;
+  const essentials = useMemo(() => (currentMonth && linesQuery.data ? snapshot(linesQuery.data, currentMonth).essentials : 0), [linesQuery.data, currentMonth]);
+  const [actionError, setError] = useState<string | null>(null);
+  const loadError = investmentsQuery.error ?? linesQuery.error;
+  const error = actionError ?? (loadError && describeDbError(loadError));
   const [notice, setNotice] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
-
-  useEffect(() => {
-    if (!currentMonth) return;
-    let cancelled = false;
-    (async () => {
-      const [i, l] = await Promise.all([fetchInvestments(), fetchLinesRange(shiftMonth(currentMonth, -12), currentMonth)]);
-      if (cancelled) return;
-      const err = i.error ?? l.error;
-      setError(err ? describeDbError(err.message) : null);
-      setInvestments(i.investments);
-      setEssentials(snapshot(l.lines, currentMonth).essentials);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [currentMonth]);
 
   function report(err: { message: string } | null) {
     if (err) setError(describeDbError(err.message));
@@ -268,6 +260,7 @@ export default function InvestmentsPage() {
 
   return (
     <FinancePage header={<FinanceHeader subtitle="placements · rendement" />}>
+      {confirmDialog}
       <ErrorNote message={error} />
 
       {list.length > 0 && (
@@ -295,6 +288,7 @@ export default function InvestmentsPage() {
               today={today}
               onChange={(c) => change(inv, c)}
               onDelete={async () => {
+                if (!(await confirm('Supprimer le placement', `Supprimer « ${inv.name} » ?`))) return;
                 setInvestments((l) => l!.filter((x) => x.id !== inv.id));
                 report(await deleteInvestment(inv.id));
               }}

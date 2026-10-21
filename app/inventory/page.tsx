@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { useCached } from '@/lib/cache';
 import type { Ingredient, InventoryRow } from '@/lib/types';
 import { SwipePages } from '@/components/SwipePages';
 import FamilyList from '@/components/FamilyList';
@@ -24,9 +25,15 @@ function fetchAll() {
 }
 
 export default function InventoryPage() {
-  const [rows, setRows] = useState<Row[]>([]);
-  const [ingredients, setIngredients] = useState<Ingredient[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Inventaire et ingrédients gardés en mémoire entre deux visites (lib/cache) : affichés tout de suite, puis rechargés
+  const query = useCached('courses:inventaire', async () => {
+    const [{ data: inv }, { data: ings }] = await fetchAll();
+    return { rows: (inv as unknown as Row[]) ?? [], ingredients: (ings as Ingredient[]) ?? [] };
+  });
+  const rows = useMemo(() => query.data?.rows ?? [], [query.data]);
+  const ingredients = query.data?.ingredients ?? [];
+  const loading = query.data === undefined;
+  const loadAll = query.reload;
   const [ingredientId, setIngredientId] = useState('');
   const [quantity, setQuantity] = useState('1');
   const [search, setSearch] = useState('');
@@ -42,21 +49,6 @@ export default function InventoryPage() {
       rows.filter((r) => r.quantity > 0 && r.ingredient.name.toLowerCase().includes(search.trim().toLowerCase())),
     [rows, search]
   );
-
-  async function loadAll() {
-    const [{ data: inv }, { data: ings }] = await fetchAll();
-    setRows((inv as unknown as Row[]) ?? []);
-    setIngredients(ings ?? []);
-    setLoading(false);
-  }
-
-  useEffect(() => {
-    fetchAll().then(([{ data: inv }, { data: ings }]) => {
-      setRows((inv as unknown as Row[]) ?? []);
-      setIngredients(ings ?? []);
-      setLoading(false);
-    });
-  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();

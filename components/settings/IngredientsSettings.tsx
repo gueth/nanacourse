@@ -120,6 +120,7 @@ export default function IngredientsSettings({ ingredients, categories, brands, s
 
   // RETRAIT DE LA PHOTO
   async function removePhoto(ingredientId: string) {
+    if (!(await confirm('Retirer la photo', 'Retirer la photo de cet ingrédient ?', { confirm: 'Retirer' }))) return;
     const { error } = await supabase.from('ingredients').update({ photo_url: null }).eq('id', ingredientId);
     if (error) console.error(error);
     else onChange();

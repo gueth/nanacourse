@@ -7,6 +7,7 @@ import StoreOptions from '@/components/StoreOptions';
 import type { IngredientPrice, Store } from '@/lib/types';
 import { Trash2 } from 'lucide-react';
 import { IconButton } from '@/components/settings/ui';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 type Props = {
   ingredientId: string;
@@ -18,6 +19,7 @@ type Props = {
 export default function PriceEditor({ ingredientId, stores, prices, onChange }: Props) {
   const [storeId, setStoreId] = useState('');
   const [price, setPrice] = useState('');
+  const [confirm, confirmDialog] = useConfirm();
 
   const usedStoreIds = new Set(prices.map((p) => p.store_id));
   const availableStores = stores.filter((s) => !usedStoreIds.has(s.id));
@@ -43,6 +45,8 @@ export default function PriceEditor({ ingredientId, stores, prices, onChange }: 
   }
 
   async function removePrice(id: string) {
+    const p = prices.find((x) => x.id === id);
+    if (!(await confirm('Retirer le prix', `Retirer le prix chez « ${p ? storeLabel(p.store) : 'ce magasin'} » ?`, { confirm: 'Retirer' }))) return;
     const { error } = await supabase.from('ingredient_prices').delete().eq('id', id);
     if (error) console.error(error);
     else onChange();
@@ -50,6 +54,7 @@ export default function PriceEditor({ ingredientId, stores, prices, onChange }: 
 
   return (
     <div className="pl-3 border-l-2 border-dashed border-line">
+      {confirmDialog}
       <p className="field-label mb-1">Prix par magasin</p>
       {/* Un prix par ligne : magasin, prix modifiable (enregistré en quittant le champ), retrait */}
       <ul className="mb-3 text-sm">

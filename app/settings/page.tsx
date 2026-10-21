@@ -1,7 +1,8 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense } from 'react';
 import { STORE_SELECT } from '@/lib/stores';
+import { useCached } from '@/lib/cache';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import type { Brand, Category, Chain, IngredientWithRelations, Store } from '@/lib/types';
@@ -56,34 +57,23 @@ function SettingsContent() {
   function setTab(id: TabId) {
     router.replace(`/settings?tab=${id}`, { scroll: false });
   }
-  const [loading, setLoading] = useState(true);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [brands, setBrands] = useState<Brand[]>([]);
-  const [stores, setStores] = useState<Store[]>([]);
-  const [chains, setChains] = useState<Chain[]>([]);
-  const [ingredients, setIngredients] = useState<IngredientWithRelations[]>([]);
-
   // CHARGEMENT (ET RECHARGEMENT APRÈS CHAQUE MODIFICATION) DES DONNÉES
-  // Range les données reçues dans les états de la page
-  function applyData([{ data: cats }, { data: brs }, { data: sts }, { data: ings, error }, { data: chs }]: Awaited<ReturnType<typeof fetchAll>>) {
+  // Gardées en mémoire entre deux visites (lib/cache) : affichées tout de suite, puis rechargées en arrière-plan
+  const query = useCached('courses:parametres', async () => {
+    const [{ data: cats }, { data: brs }, { data: sts }, { data: ings, error }, { data: chs }] = await fetchAll();
     if (error) console.error(error);
-    setChains(chs ?? []);
-    setCategories(cats ?? []);
-    setBrands(brs ?? []);
-    setStores(sts ?? []);
-    setIngredients((ings as unknown as IngredientWithRelations[]) ?? []);
-    setLoading(false);
-  }
+    return {
+      categories: (cats as Category[]) ?? [],
+      brands: (brs as Brand[]) ?? [],
+      stores: (sts as Store[]) ?? [],
+      chains: (chs as Chain[]) ?? [],
+      ingredients: (ings as unknown as IngredientWithRelations[]) ?? []
+    };
+  });
+  const loadAll = query.reload;
 
-  async function loadAll() {
-    applyData(await fetchAll());
-  }
-
-  useEffect(() => {
-    fetchAll().then(applyData);
-  }, []);
-
-  if (loading) return <p>Chargement...</p>;
+  if (!query.data) return <p>Chargement...</p>;
+  const { categories, brands, stores, chains, ingredients } = query.data;
 
   return (
     <div>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { Check, ChevronDown } from 'lucide-react';
 import {
@@ -8,7 +8,6 @@ import {
   byPeriod,
   creditPayments,
   essentialCharges,
-  fetchLinesRange,
   formatEuros,
   liquidAssets,
   monthKey,
@@ -18,7 +17,8 @@ import {
   totals,
   type FinanceLine
 } from '@/lib/finance';
-import { describeDbError, fetchDebts, fetchGoals, type Debt, type Goal } from '@/lib/financePlans';
+import { describeDbError } from '@/lib/financePlans';
+import { useDebts, useFinanceLines, useGoals } from '@/lib/financeQueries';
 import { futureValue } from '@/lib/financeCalc';
 import { notion, notionOfMonth } from '@/lib/financeGlossary';
 import { Certainty, ErrorNote, FIN, FinanceHeader, FinancePage, Meter, Panel, StatementTabs } from '@/components/finance/FinanceParts';
@@ -99,33 +99,21 @@ function Delta({ value, goodWhenUp = true }: { value: number; goodWhenUp?: boole
 
 export default function HealthPage() {
   const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
-  const [lines, setLines] = useState<FinanceLine[] | null>(null);
-  const [goals, setGoals] = useState<Goal[]>([]);
-  const [debts, setDebts] = useState<Debt[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  // Données gardées en mémoire entre deux visites (lib/financeQueries) : affichées tout de suite, puis rafraîchies
+  const linesQuery = useFinanceLines(currentMonth, 13);
+  const goalsQuery = useGoals();
+  const debtsQuery = useDebts();
+  const lines = linesQuery.data;
+  const goals = goalsQuery.data ?? [];
+  const debts = debtsQuery.data ?? [];
+  const loadError = linesQuery.error ?? goalsQuery.error ?? debtsQuery.error;
+  const error = loadError && describeDbError(loadError);
   const [open, setOpen] = useState<string | null>(null);
   const [rate, setRate] = useState(0.03);
   const [spanId, setSpanId] = useState('4');
   const span = Number(spanId);
 
-  useEffect(() => {
-    if (!currentMonth) return;
-    let cancelled = false;
-    (async () => {
-      const [l, g, d] = await Promise.all([fetchLinesRange(shiftMonth(currentMonth, -13), currentMonth), fetchGoals(), fetchDebts()]);
-      if (cancelled) return;
-      const err = l.error ?? g.error ?? d.error;
-      setError(err ? describeDbError(err.message) : null);
-      setLines(l.lines);
-      setGoals(g.goals);
-      setDebts(d.debts);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [currentMonth]);
-
-  if (!currentMonth || lines === null) {
+  if (!currentMonth || !lines) {
     return (
       <FinancePage header={<FinanceHeader subtitle="ta santé financière" />}>
         <p className="mt-10 text-center text-[11px] uppercase tracking-[0.3em]" style={{ color: FIN.slate }}>
@@ -155,7 +143,7 @@ export default function HealthPage() {
             </li>
             <li>
               Remplis ton <Link href="/banque/comptes" className="underline">compte de résultat</Link>, ou{' '}
-              <Link href="/banque/budget" className="underline">importe un relevé bancaire</Link> pour le calculer automatiquement.
+              <Link href="/banque/releves" className="underline">importe un relevé bancaire</Link> pour le calculer automatiquement.
             </li>
           </ol>
         </Panel>

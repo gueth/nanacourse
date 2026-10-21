@@ -5,9 +5,11 @@ import { supabase } from '@/lib/supabase';
 import { storeLabel, STORE_SELECT, storeColor } from '@/lib/stores';
 import type { Store } from '@/lib/types';
 import { SwipePages } from '@/components/SwipePages';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 export default function StoresPage() {
   const [stores, setStores] = useState<Store[]>([]);
+  const [confirm, confirmDialog] = useConfirm();
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
@@ -47,6 +49,8 @@ export default function StoresPage() {
   }
 
   async function handleDelete(id: string) {
+    const s = stores.find((x) => x.id === id);
+    if (!(await confirm('Supprimer le magasin', `Supprimer « ${s ? storeLabel(s) : 'ce magasin'} » ?`))) return;
     const { error } = await supabase.from('stores').delete().eq('id', id);
     if (error) console.error(error);
     else loadStores();
@@ -110,5 +114,10 @@ export default function StoresPage() {
     </div>
   );
 
-  return <SwipePages pages={[formPage, listPage]} labels={['Ajouter un magasin', 'Liste des magasins']} />;
+  return (
+    <>
+      {confirmDialog}
+      <SwipePages pages={[formPage, listPage]} labels={['Ajouter un magasin', 'Liste des magasins']} />
+    </>
+  );
 }

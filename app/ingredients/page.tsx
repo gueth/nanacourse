@@ -11,10 +11,12 @@ import { storeLabel, STORE_SELECT } from '@/lib/stores';
 import type { Brand, Category, IngredientWithRelations, Store } from '@/lib/types';
 import PriceEditor from '@/components/PriceEditor';
 import { SwipePages } from '@/components/SwipePages';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 
 export default function IngredientsPage() {
   const [ingredients, setIngredients] = useState<IngredientWithRelations[]>([]);
+  const [confirm, confirmDialog] = useConfirm();
   const [categories, setCategories] = useState<Category[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
@@ -158,6 +160,8 @@ export default function IngredientsPage() {
 
   // SUPPRESSION D'UN INGRÉDIENT
   async function handleDelete(id: string) {
+    const name = ingredients.find((i) => i.id === id)?.name ?? 'cet ingrédient';
+    if (!(await confirm("Supprimer l'ingrédient", `Supprimer « ${name} » ?`))) return;
     const { error } = await supabase.from('ingredients').delete().eq('id', id);
     if (error) console.error(error);
     else loadAll();
@@ -369,5 +373,10 @@ export default function IngredientsPage() {
     </div>
   );
 
-  return <SwipePages pages={[formPage, listPage]} labels={['Ajouter un ingrédient', 'Liste des ingrédients']} />;
+  return (
+    <>
+      {confirmDialog}
+      <SwipePages pages={[formPage, listPage]} labels={['Ajouter un ingrédient', 'Liste des ingrédients']} />
+    </>
+  );
 }

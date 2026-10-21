@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
 import { PageTransitionProvider } from "@/components/PageTransitionProvider";
 import { useKeepScreenOn } from "@/lib/wakeLock";
+import { useShakeBell } from "@/lib/shakeBell";
 
 // Emplacement à droite du lien "← Retour", sur la même ligne, où une page peut placer ses actions (ex : un menu)
 const HeaderActionsSlot = createContext<HTMLElement | null>(null);
@@ -27,6 +28,8 @@ export function PageShell({ children }: { children: React.ReactNode }) {
 
   // Le téléphone ne se met pas en veille tant que l'application est affichée
   useKeepScreenOn();
+  // Secouer le téléphone fait tinter une clochette
+  useShakeBell();
 
   if (isHome) {
     return (
