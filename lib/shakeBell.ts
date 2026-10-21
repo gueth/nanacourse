@@ -3,10 +3,10 @@
 import { useEffect } from 'react';
 
 // Secousse : écart d'accélération (m/s²) entre deux mesures, et nombre d'à-coups rapprochés pour la valider.
-// Un simple mouvement de la main ne suffit pas : il faut 2 à-coups francs en moins d'une demi-seconde.
-const SHAKE_THRESHOLD = 15;
-const SHAKE_HITS = 2;
-const SHAKE_WINDOW_MS = 500;
+// Il faut vraiment secouer : 4 à-coups violents en moins d'une seconde (poser ou attraper le téléphone ne suffit pas).
+const SHAKE_THRESHOLD = 30;
+const SHAKE_HITS = 4;
+const SHAKE_WINDOW_MS = 1000;
 // Délai minimal entre deux tintements, pour ne pas sonner en boucle pendant qu'on secoue
 const COOLDOWN_MS = 1200;
 
