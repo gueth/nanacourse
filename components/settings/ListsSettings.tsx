@@ -89,18 +89,18 @@ export default function ListsSettings() {
   }
 
   // ACTIVATION : une seule liste active à la fois, donc on désactive d'abord les autres,
-  // puis on part sur la page Course pour voir la liste active
+  // puis on part sur l'accueil, qui imprime le ticket de la liste active
   async function activate(id: string) {
     setErrorMessage('');
     const { error: offError } = await supabase.from('shopping_lists').update({ is_active: false }).eq('is_active', true);
     if (offError) return showError(offError);
-    // La date d'activation est gardée : elle s'affiche sous le code-barres du ticket (page Course)
+    // La date d'activation est gardée : elle s'affiche sous le code-barres du ticket
     const { error } = await supabase
       .from('shopping_lists')
       .update({ is_active: true, activated_at: new Date().toISOString() })
       .eq('id', id);
     if (error) return showError(error);
-    router.push('/course');
+    router.push('/accueil#ticket');
   }
 
   // DÉSACTIVATION

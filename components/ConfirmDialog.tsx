@@ -13,7 +13,8 @@ type Request = { title: string; message: string; labels?: Labels };
 //   if (!(await confirm('Supprimer ?', 'Cette action est définitive.'))) return;
 //   ... puis afficher {confirmDialog} dans le JSX du composant.
 // Avec des libellés personnalisés, c'est le bouton de refus (le choix prudent) qui a le focus.
-export function useConfirm() {
+// variant "gazette" : cadre au style de l'accueil
+export function useConfirm(variant: 'default' | 'gazette' = 'default') {
   const [request, setRequest] = useState<Request | null>(null);
   // Fonction qui débloque la promesse renvoyée par confirm() avec la réponse
   const resolveRef = useRef<(ok: boolean) => void>(() => {});
@@ -32,7 +33,7 @@ export function useConfirm() {
 
   const custom = !!request?.labels;
   const dialog = request && (
-    <Modal title={request.title} onClose={() => answer(false)}>
+    <Modal title={request.title} onClose={() => answer(false)} variant={variant}>
       <p className="mb-6">{request.message}</p>
       <div className="flex flex-wrap items-center gap-4">
         <button autoFocus={!custom} onClick={() => answer(true)} className="btn-hand bg-brick">

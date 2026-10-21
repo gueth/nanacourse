@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect } from 'react';
+import { PAPER } from '@/components/gazette/Lace';
 
-// Fondu : un voile beige apparaît par-dessus la page, on change de page, puis il s'efface.
+// Fondu (page de titre -> accueil) : un voile couleur papier de l'accueil (gris bleuté, pas le beige du thème)
+// apparaît par-dessus la page, on change de page, puis il s'efface.
 // Doit rester synchronisé avec les paliers de @keyframes page-fade (globals.css).
 const FADE_IN_MS = 500;
 const HOLD_MS = 150; // court palier opaque, laisse à la page suivante le temps de s'afficher
@@ -30,8 +32,8 @@ export function PageFadeTransition({ active, onCovered, onFinished }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-paper pointer-events-none"
-      style={{ animation: `page-fade ${TOTAL_MS}ms ease-in-out both` }}
+      className="fixed inset-0 z-50 pointer-events-none"
+      style={{ backgroundColor: PAPER, animation: `page-fade ${TOTAL_MS}ms ease-in-out both` }}
     />
   );
 }

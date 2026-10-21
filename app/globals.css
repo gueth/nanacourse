@@ -171,6 +171,34 @@ body {
     border-bottom: 1px dotted rgba(43, 33, 24, 0.35);
   }
 
+  /* Ticket teinté de bleu (liste de courses de l'accueil) : mêmes styles, couleurs du thème redéfinies en bleus.
+     Le rouge / vert de l'optimisation (text-red-600, text-green-700) restent, ils ont un sens. */
+  .tint-blue {
+    --color-ink: #1d2b4a;
+    --color-brick: #2f5d9e;
+    --color-line: #a9bcd6;
+    --color-card: #eef3fa;
+    --color-paper: #dfe7f2;
+    color: var(--color-ink);
+  }
+  /* Le ticket reste blanc : seules les couleurs de l'encre changent */
+  .tint-blue .receipt,
+  .tint-blue .receipt::after {
+    background: #fff;
+  }
+  .tint-blue .receipt {
+    box-shadow: 0 6px 14px rgba(29, 43, 74, 0.16);
+  }
+  .tint-blue .receipt .input-hand {
+    border-bottom-color: rgba(29, 43, 74, 0.35);
+  }
+  .tint-blue .btn-hand {
+    box-shadow: 2px 2px 0 0 rgba(29, 43, 74, 0.3);
+  }
+  .tint-blue .btn-hand:hover {
+    box-shadow: 3px 3px 0 0 rgba(29, 43, 74, 0.3);
+  }
+
   .tape {
     position: absolute;
     top: -10px;
@@ -692,4 +720,194 @@ body:has(.messages-screen) {
 @keyframes typingDot {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
   30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* Accueil (gazette) : même gris papier journal jusque dans les zones visibles quand on tire la page au-delà de ses bords */
+html:has(.gazette),
+body:has(.gazette) {
+  background-color: #d6d5d1;
+}
+
+/* Accueil (gazette) : texture de papier par-dessus le gris papier journal (neutre, sans bleu). Grain fin (bruit SVG gris neutre),
+   fibres étirées à l'horizontale, et quelques zones plus claires ou plus foncées comme un papier mal pressé */
+.gazette {
+  background-image:
+    /* Plis de papier froissé : relief en lumière rasante, fondu en « soft-light » sur le gris */
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='700' height='700'%3E%3Cfilter id='c' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='turbulence' baseFrequency='0.0045 0.006' numOctaves='4' seed='5' stitchTiles='stitch'/%3E%3CfeDiffuseLighting lighting-color='%23fff' surfaceScale='7' diffuseConstant='0.72'%3E%3CfeDistantLight azimuth='225' elevation='45'/%3E%3C/feDiffuseLighting%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23c)'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.24 0 0 0 0 0.24 0 0 0 0 0.24 0 0 0 0.17 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.012 0.18' numOctaves='2' seed='7' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.22 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)'/%3E%3C/svg%3E"),
+    radial-gradient(ellipse at 18% 12%, rgba(255, 255, 255, 0.35) 0, transparent 45%),
+    radial-gradient(ellipse at 85% 55%, rgba(105, 105, 105, 0.12) 0, transparent 50%),
+    radial-gradient(ellipse at 30% 90%, rgba(255, 255, 255, 0.25) 0, transparent 40%);
+  background-blend-mode: soft-light, normal, normal, normal, normal, normal, normal, normal;
+}
+
+/* Sommaire de la gazette : feuille qui se déplie vers le bas depuis la ligne du haut (léger rebond en fin de course),
+   puis se replie ; l'ombre du pli s'efface en fin de dépliage et la dentelle du bas apparaît en dernier */
+.sommaire-unfold {
+  animation: sommaireUnfold 0.55s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+.sommaire-fold {
+  animation: sommaireFold 0.32s ease-in both;
+}
+.sommaire-unfold .sommaire-crease {
+  background: linear-gradient(to bottom, rgba(29, 43, 74, 0.04), rgba(29, 43, 74, 0.28));
+  animation: sommaireCrease 0.55s ease-out both;
+}
+.sommaire-fold .sommaire-crease {
+  background: linear-gradient(to bottom, rgba(29, 43, 74, 0.04), rgba(29, 43, 74, 0.28));
+}
+.sommaire-unfold .sommaire-lace {
+  animation: sommaireLace 0.25s ease-out 0.4s both;
+}
+@keyframes sommaireUnfold {
+  0% { transform: perspective(900px) rotateX(-88deg); opacity: 0.4; }
+  65% { transform: perspective(900px) rotateX(7deg); opacity: 1; }
+  100% { transform: perspective(900px) rotateX(0deg); opacity: 1; }
+}
+@keyframes sommaireFold {
+  from { transform: perspective(900px) rotateX(0deg); opacity: 1; }
+  to { transform: perspective(900px) rotateX(-88deg); opacity: 0.3; }
+}
+@keyframes sommaireCrease {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes sommaireLace {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sommaire-unfold,
+  .sommaire-unfold .sommaire-crease,
+  .sommaire-unfold .sommaire-lace,
+  .sommaire-fold {
+    animation: none;
+  }
+  .sommaire-unfold .sommaire-crease {
+    opacity: 0;
+  }
+}
+
+/* Coupon détachable (défis de l'accueil) : coins arrondis, encoches rondes au milieu des petits côtés,
+   et demi-cercles en haut et en bas de la perforation qui sépare le talon (largeur --stub) du coupon */
+.ticket {
+  --stub: 64px;
+  border-radius: 14px;
+  -webkit-mask-image:
+    radial-gradient(circle at 0 50%, transparent 9px, #000 9.5px),
+    radial-gradient(circle at 100% 50%, transparent 9px, #000 9.5px),
+    radial-gradient(circle at var(--stub) 0, transparent 7px, #000 7.5px),
+    radial-gradient(circle at var(--stub) 100%, transparent 7px, #000 7.5px);
+  -webkit-mask-composite: source-in;
+  mask-image:
+    radial-gradient(circle at 0 50%, transparent 9px, #000 9.5px),
+    radial-gradient(circle at 100% 50%, transparent 9px, #000 9.5px),
+    radial-gradient(circle at var(--stub) 0, transparent 7px, #000 7.5px),
+    radial-gradient(circle at var(--stub) 100%, transparent 7px, #000 7.5px);
+  mask-composite: intersect;
+}
+
+/* Impression du ticket de caisse (liste de courses, ouverte depuis l'accueil, cf. ReceiptPrinter.tsx) */
+/* Fente de l'imprimante : barre bleu nuit creusée, d'où sort le ticket */
+.printer-slot {
+  position: relative;
+  z-index: 2;
+  height: 14px;
+  margin-inline: -6px;
+  border-radius: 7px;
+  background: #1d2b4a;
+  box-shadow: inset 0 4px 4px rgba(0, 0, 0, 0.55), 0 2px 3px rgba(29, 43, 74, 0.25);
+}
+/* Le ticket sort du milieu de la fente : tout ce qui est au-dessus reste caché */
+.printer-out {
+  overflow: hidden;
+  margin-top: -7px;
+  padding-top: 7px;
+}
+/* Sortie par à-coups, comme une imprimante thermique (durée et nombre d'à-coups selon la longueur de la liste) */
+.receipt-printing {
+  animation: receipt-print var(--print-ms, 1400ms) steps(var(--print-steps, 20), end) both;
+}
+@keyframes receipt-print {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+/* Arraché d'un coup sec : le ticket est tiré vers le haut puis retombe */
+.receipt-tearing {
+  animation: receipt-tear 350ms ease-out;
+}
+@keyframes receipt-tear {
+  0% {
+    transform: translateY(0);
+  }
+  35% {
+    transform: translateY(-7px) rotate(-0.6deg);
+  }
+  100% {
+    transform: translateY(0) rotate(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .receipt-printing,
+  .receipt-tearing {
+    animation-duration: 1ms;
+  }
+}
+
+/* Cadres (popins) au style de la gazette : papier gris, bleu nuit, double filet, caractères à empattements */
+.modal-gazette {
+  background: #dcdee1;
+  color: #1d2b4a;
+  border: 3px double #1d2b4a;
+  padding: 6px;
+  font-family: var(--font-serif), Georgia, serif;
+  box-shadow: 0 10px 24px rgba(29, 43, 74, 0.3);
+}
+.modal-gazette .modal-gazette-inner {
+  border: 1px dashed #1d2b4a;
+  padding: 1rem;
+}
+.modal-gazette .title-hand,
+.modal-gazette .btn-hand,
+.modal-gazette .btn-ghost,
+.modal-gazette .input-hand,
+.modal-gazette .field-label,
+.modal-gazette select,
+.modal-gazette input {
+  font-family: var(--font-serif), Georgia, serif;
+}
+.modal-gazette .title-hand {
+  color: #1d2b4a;
+}
+.modal-gazette .btn-hand {
+  border-radius: 9999px;
+  padding: 0.45rem 1.25rem;
+  font-size: 0.7rem;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  background-color: #1d2b4a;
+  color: #dcdee1;
+  box-shadow: none;
+}
+.modal-gazette .btn-hand:hover {
+  box-shadow: 0 2px 4px rgba(29, 43, 74, 0.3);
+}
+.modal-gazette .btn-ghost {
+  color: #1d2b4a;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  text-decoration-style: dotted;
+}
+/* Bouton secondaire (« Annuler »...) : contour seulement */
+.modal-gazette .btn-hand.bg-line {
+  background-color: transparent;
+  color: #1d2b4a;
+  border: 1px solid #1d2b4a;
 }

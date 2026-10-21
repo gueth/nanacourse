@@ -21,8 +21,8 @@ export function PageShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   // Pages plein écran (sans le lien "← Retour") : page de titre et accueil
   const isHome = pathname === "/" || pathname === "/accueil";
-  // Pages plein écran qui ont leur propre en-tête et leur propre fond : finances, messagerie
-  const isFullScreen = pathname.startsWith("/banque") || pathname === "/messages";
+  // Pages plein écran qui ont leur propre en-tête et leur propre fond : finances, messagerie, profil
+  const isFullScreen = pathname.startsWith("/banque") || pathname === "/messages" || pathname === "/profile";
   // Élément de l'emplacement des actions (connu une fois affiché, via "ref")
   const [slot, setSlot] = useState<HTMLElement | null>(null);
 

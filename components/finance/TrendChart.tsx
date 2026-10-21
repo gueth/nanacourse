@@ -15,19 +15,25 @@ export function TrendChart({
   series,
   kind,
   format,
-  reference
+  reference,
+  width = 340,
+  height = 150
 }: {
   months: string[]; // AAAA-MM
   series: Series[];
   kind: 'bar' | 'line';
   format: (n: number) => string;
   reference?: { value: number; label: string }; // ligne repère (ex : objectif de 10 %)
+  // Taille du dessin : un graphique placé dans une colonne étroite prend un dessin plus étroit,
+  // pour que ses textes ne soient pas réduits au point d'être illisibles
+  width?: number;
+  height?: number;
 }) {
   const [active, setActive] = useState<number | null>(null);
   const [table, setTable] = useState(false);
 
-  const W = 340;
-  const H = 150;
+  const W = width;
+  const H = height;
   const pad = { top: 12, right: 8, bottom: 22, left: 8 };
   const plotW = W - pad.left - pad.right;
   const plotH = H - pad.top - pad.bottom;

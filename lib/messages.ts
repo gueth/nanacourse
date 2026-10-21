@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import { fetchLines, monthKey } from '@/lib/finance';
+import { formatIssue, gazetteIssue } from '@/lib/gazette';
 
 // Messagerie de nana : des messages de rappel, envoyés à l'ouverture de l'appli quand une
 // règle (plus bas) est remplie, puis lus dans la page /messages comme une conversation.
@@ -45,6 +46,15 @@ const RULES: ((now: Date) => Promise<Reminder | null>)[] = [
     key: 'bienvenue',
     body: "Coucou, c'est nana ! Je t'enverrai ici des petits rappels pour que tu n'oublies rien 🌸"
   }),
+
+  // Nouveau numéro de la gazette (un par jour, sorti à 8 h) : un message par numéro
+  async (now) => {
+    const issue = formatIssue(gazetteIssue(now));
+    return {
+      key: `gazette-${issue}`,
+      body: `Extra, extra ! Le numéro ${issue} de ta gazette vient de sortir 📰 Tes comptes, ta liste de courses et tes défis du jour t'attendent à l'accueil 🌸`
+    };
+  },
 
   // Bilan de compte du mois pas encore rempli (aucun montant saisi) : un rappel par semaine
   async (now) => {

@@ -12,7 +12,7 @@ export const DEFIS_HEIGHT = 190;
 const INK = SLATE;
 
 // Défis d'exemple, en attendant une vraie source de données
-const DEFIS = ['Boire 1,5 L d’eau', 'Marcher 30 min', 'Cuisiner maison', 'Zéro dépense', 'Lire 10 pages'];
+export const DEFIS = ['Boire 1,5 L d’eau', 'Marcher 30 min', 'Cuisiner maison', 'Zéro dépense', 'Lire 10 pages'];
 
 // Carte de 140 x 126 (corps de 116 x 106, presque carré, un peu plus large que haut) : carte pleine
 // couleur papier avec une ombre douce, une piqûre en pointillés qui s'interrompt sous l'aile,

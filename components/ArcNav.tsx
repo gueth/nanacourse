@@ -18,7 +18,16 @@ type MenuState = "closed" | "open" | "closing";
 
 // Bouton menu (placé par le parent) : au clic, les entrées se déploient en arc de cercle
 // autour de lui en tournoyant comme une toupie
-export function ArcNav({ items, className = "" }: { items: NavItem[]; className?: string }) {
+// "buttonClassName" : couleur du bouton menu (blanc par défaut, pour un fond sombre)
+export function ArcNav({
+  items,
+  className = "",
+  buttonClassName = "text-white drop-shadow-[0_1px_2px_rgba(27,42,74,0.55)]"
+}: {
+  items: NavItem[];
+  className?: string;
+  buttonClassName?: string;
+}) {
   const [state, setState] = useState<MenuState>("closed");
   const step = TOTAL_ARC / (items.length - 1);
 
@@ -37,7 +46,7 @@ export function ArcNav({ items, className = "" }: { items: NavItem[]; className?
           onClick={toggle}
           aria-label={state === "open" ? "Fermer le menu" : "Ouvrir le menu"}
           aria-expanded={state === "open"}
-          className="relative z-10 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center text-white drop-shadow-[0_1px_2px_rgba(27,42,74,0.55)]"
+          className={`relative z-10 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center ${buttonClassName}`}
         >
           <span className={`transition-transform duration-500 ${state === "open" ? "rotate-180" : ""}`}>
             {state === "open" ? <X size={28} strokeWidth={2.4} /> : <Menu size={28} strokeWidth={2.4} />}

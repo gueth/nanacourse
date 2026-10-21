@@ -1,5 +1,6 @@
 'use client';
 
+import { fetchBudget } from '@/lib/budget';
 import { must, useCached } from '@/lib/cache';
 import { STORE_SELECT } from '@/lib/stores';
 import { supabase } from '@/lib/supabase';
@@ -7,6 +8,11 @@ import type { Store } from '@/lib/types';
 
 // Données de la partie Courses gardées en mémoire (lib/cache), partagées entre les pages qui en ont besoin :
 // chargées une fois, affichées tout de suite aux visites suivantes, puis rafraîchies en arrière-plan.
+
+// Budget de la période en cours (réglages + ce qui reste), affiché sur l'accueil (réclame et ticket de caisse)
+export function useShoppingBudget() {
+  return useCached('courses:budget', fetchBudget);
+}
 
 // Supermarchés, par ordre alphabétique (liste de courses, magasins, paramètres...)
 export function useStores() {
