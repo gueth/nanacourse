@@ -1,23 +1,25 @@
 'use client';
 
-import { useMemo, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
+import { Check } from 'lucide-react';
 import { Sommaire } from '@/components/gazette/Sommaire';
 import { DEFIS } from '@/components/DefiCards';
 import { DefiCoupons } from '@/components/gazette/DefiCoupons';
 import { MessagesButton } from '@/components/MessagesButton';
-import { openTicket, ReceiptPrinter } from '@/components/gazette/ReceiptPrinter';
+import ShoppingReceipts from '@/components/ShoppingReceipts';
+import { SwipePages } from '@/components/SwipePages';
 import { TrendChart } from '@/components/finance/TrendChart';
 import { Bow, Flourish, LaceEdge, LaceFrame, MIST, NAVY, PAPER, Rosette } from '@/components/gazette/Lace';
-import { GroceryAd } from '@/components/gazette/GroceryAd';
-import { byPeriod, formatEuros, monthKey, monthLabel, monthEndLabel, shiftMonth, totals } from '@/lib/finance';
+import { byPeriod, formatEuros, monthIndicators, monthKey, monthLabel, monthEndLabel, shiftMonth, totals } from '@/lib/finance';
 import { useFinanceLines } from '@/lib/financeQueries';
+import { useParcours } from '@/lib/parcours';
 import { formatIssue, gazetteIssue } from '@/lib/gazette';
 
-// Accueil : la gazette du jour, en bleu nuit sur papier blanc, ornée de dentelle.
-// À la une le bilan et le compte de résultat du dernier mois rempli, puis les graphiques de santé financière,
-// une réclame d'épicerie avec le budget courses, dont le bouton imprime la liste de courses active (ticket de caisse),
-// et les défis en brèves.
+// Accueil : la gazette du jour, en bleu nuit sur papier blanc, ornée de dentelle, sur deux pages que l'on fait glisser.
+// Page de gauche, le journal : à la une le bilan et le compte de résultat du dernier mois rempli, puis les graphiques
+// de santé financière et le parcours vers l'autonomie. Page de droite : le ticket de caisse de la liste de courses
+// active, et les défis en brèves.
 
 const serif = { fontFamily: 'var(--font-serif), Georgia, serif' };
 const blackletter = { fontFamily: 'var(--font-blackletter), serif' };
@@ -134,7 +136,7 @@ function Masthead({ today, onCourse }: { today: Date | null; onCourse: () => voi
           <Sommaire
             top={47}
             entries={[
-              { label: 'Finances', href: '/banque', page: 2 },
+              { label: 'Finances', href: '/banque/comptes', page: 2 },
               {
                 label: 'Courses',
                 href: '/accueil#ticket',
@@ -200,14 +202,20 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
       avgSpent: withIncome.reduce((s, m) => s + m.t.charges, 0) / (withIncome.length || 1),
       best: byResult.length > 1 ? { month: byResult[0].month, resultat: byResult[0].t.resultat } : null,
       worst: byResult.length > 1 ? { month: byResult[byResult.length - 1].month, resultat: byResult[byResult.length - 1].t.resultat } : null,
-      wealth: withWealth.length > 1 ? { fromMonth: first.month, from: first.t.patrimoine, toMonth: last.month, to: last.t.patrimoine } : null
+      wealth: withWealth.length > 1 ? { fromMonth: first.month, from: first.t.patrimoine, toMonth: last.month, to: last.t.patrimoine } : null,
+      // Taux d'épargne moyen, et nombre de mois où le repère de 10 % est atteint
+      avgRate: withIncome.length ? withIncome.reduce((s, m) => s + m.t.resultat / m.t.produits, 0) / withIncome.length : null,
+      aboveTen: withIncome.filter((m) => m.t.resultat / m.t.produits >= 0.1).length
     };
-    return { ref, t: ref ? totals(periods.get(ref)!) : null, months, monthly, health };
+    // Chiffres clés du dernier mois terminé (le mois en cours n'a pas encore son relevé)
+    const lastDone = filled.filter((p) => p < currentMonth).pop() ?? null;
+    const keyFigures = lastDone ? { month: lastDone, ...monthIndicators(lines, lastDone) } : null;
+    return { ref, t: ref ? totals(periods.get(ref)!) : null, months, monthly, health, keyFigures };
   }, [lines, currentMonth]);
 
   if (!news) return <Printing />;
 
-  const { ref, t, months, monthly, health } = news;
+  const { ref, t, months, monthly, health, keyFigures } = news;
   if (!ref || !t) {
     return (
       <article className="mt-5 text-center">
@@ -302,10 +310,42 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
         </div>
       </LaceFrame>
 
-      {/* SANTÉ FINANCIÈRE : les graphiques de la page Santé, sur les six derniers mois terminés */}
+      {/* CHIFFRES CLÉS du dernier mois terminé : patrimoine, réserve, épargne et dividendes */}
+      {keyFigures && (
+        <section className="mt-5">
+          <p className="text-center text-[9px] uppercase tracking-[0.3em]">Les chiffres clés de</p>
+          <p className="text-center text-[22px] leading-none first-letter:uppercase" style={script}>
+            {monthLabel(keyFigures.month)}
+          </p>
+          <div className="mt-2 grid grid-cols-2 gap-2" style={serif}>
+            {[
+              { label: 'Patrimoine net', value: formatEuros(keyFigures.patrimoine), note: `au ${monthEndLabel(keyFigures.month)}` },
+              {
+                label: 'Réserve de sécurité',
+                value: keyFigures.reserve !== null ? `${keyFigures.reserve.toLocaleString('fr-FR', { maximumFractionDigits: 1 })} mois` : '—',
+                note: 'de dépenses (médiane 6 mois)'
+              },
+              {
+                label: "Taux d'épargne",
+                value: keyFigures.savingsRate !== null ? `${Math.round(keyFigures.savingsRate * 100)} %` : '—',
+                note: `${formatEuros(keyFigures.savings)} sur le mois`
+              },
+              { label: 'Dividendes', value: formatEuros(keyFigures.dividends), note: 'et intérêts perçus' }
+            ].map((c) => (
+              <div key={c.label} className="border px-2 py-2 text-center" style={{ borderColor: NAVY }}>
+                <p className="text-[8px] uppercase tracking-[0.2em]">{c.label}</p>
+                <p className="mt-0.5 text-[18px] font-bold leading-tight">{c.value}</p>
+                <p className="text-[9px] italic opacity-80">{c.note}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* SANTÉ FINANCIÈRE : trois graphiques sur les six derniers mois terminés */}
       {/* Comme dans un journal, chaque graphique occupe une partie de la colonne et l'article coule à côté :
-          le premier à droite, le second à gauche */}
-      <Ribbon href="/banque">Santé financière</Ribbon>
+          tantôt à droite, tantôt à gauche */}
+      <Ribbon>Santé financière</Ribbon>
       <div className="mt-3 flow-root text-[12px] leading-relaxed hyphens-auto">
         <Figure side="right" caption="Revenus et dépenses des six derniers mois.">
           <TrendChart
@@ -373,12 +413,85 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
           ) : (
             <>Ton patrimoine net s&apos;affichera ici mois après mois, dès que deux bilans seront remplis.</>
           )}{' '}
-          Il évolue avec ton épargne, tes remboursements de dettes et la valeur de tes placements.{' '}
-          <Link href="/banque" className="italic underline underline-offset-2">
-            Tout le détail en page Santé.
-          </Link>
+          Il évolue avec ton épargne, tes remboursements de dettes et la valeur de tes placements.
         </p>
       </div>
+
+      <div className="mt-4 flow-root text-[12px] leading-relaxed hyphens-auto">
+        <Figure side="right" caption="Part des revenus mise de côté, mois après mois.">
+          <TrendChart
+            months={months}
+            kind="bar"
+            width={200}
+            height={150}
+            format={(n) => `${Math.round(n)} %`}
+            reference={{ value: 10, label: 'repère 10 %' }}
+            series={[{ name: "Taux d'épargne", color: NAVY, values: monthly.map((m) => (m && m.produits > 0 ? (m.resultat / m.produits) * 100 : null)) }]}
+          />
+        </Figure>
+        <p className="text-justify">
+          {health.avgRate !== null ? (
+            <>
+              Tu mets de côté en moyenne <b>{Math.round(health.avgRate * 100)} %</b> de tes revenus.{' '}
+              {health.aboveTen === health.filled
+                ? 'Le repère des 10 % est atteint chaque mois : belle régularité.'
+                : `Le repère des 10 % est atteint ${health.aboveTen} mois sur ${health.filled}.`}
+            </>
+          ) : (
+            <>Ton taux d&apos;épargne s&apos;affichera ici dès qu&apos;un mois de revenus sera rempli.</>
+          )}
+        </p>
+      </div>
+
+      {/* PARCOURS vers l'autonomie financière, validé à partir des chiffres */}
+      <Parcours currentMonth={currentMonth} />
+    </>
+  );
+}
+
+// TON PARCOURS : six étapes vers l'autonomie financière, l'étape en cours mise en avant avec son action
+function Parcours({ currentMonth }: { currentMonth: string }) {
+  const parcours = useParcours(currentMonth, 6);
+  if (!parcours) return null;
+  const { steps, validated, currentStep, coverage } = parcours;
+  return (
+    <>
+      <Ribbon>Ton parcours</Ribbon>
+      <p className="mt-2 text-[12px] italic leading-snug" style={serif}>
+        Six étapes vers l&apos;autonomie financière, validées à partir de tes chiffres.
+      </p>
+      <ol className="mt-3 space-y-3">
+        {steps.map((s, i) => {
+          const isCurrent = i === currentStep;
+          const ok = validated[i];
+          // Objectif atteint, mais une étape précédente n'est pas encore validée
+          const waiting = s.done && !ok;
+          return (
+            <li key={s.title} className="flex gap-3">
+              <span
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-[11px] font-bold"
+                style={ok ? { backgroundColor: NAVY, borderColor: NAVY, color: PAPER } : { borderColor: NAVY, opacity: isCurrent ? 1 : 0.5 }}
+              >
+                {ok ? <Check size={13} /> : i + 1}
+              </span>
+              <div className={ok || isCurrent ? '' : 'opacity-60'}>
+                <p className="text-[13px] font-bold">{s.title}</p>
+                <p className="text-[11px] leading-relaxed">{s.text}</p>
+                {isCurrent && <p className="mt-1 border-l-2 pl-2 text-[11px] italic leading-relaxed" style={{ borderColor: NAVY }}>→ {s.action}</p>}
+                {waiting && <p className="mt-1 text-[10px] italic leading-relaxed opacity-80">Déjà atteint : validé dès que l&apos;étape {currentStep + 1} le sera.</p>}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+      {currentStep === steps.length - 1 && (
+        <div className="mt-3">
+          <div className="h-2 w-full overflow-hidden rounded-full border" style={{ borderColor: NAVY }}>
+            <div className="h-full" style={{ width: `${Math.min(100, coverage * 100)}%`, backgroundColor: NAVY }} />
+          </div>
+          <p className="mt-1 text-[10px] italic">Revenus passifs : {Math.round(coverage * 100)} % de tes dépenses</p>
+        </div>
+      )}
     </>
   );
 }
@@ -387,39 +500,62 @@ export default function Accueil() {
   const todayKey = useSyncExternalStore(noSubscribe, readToday, () => null);
   const today = useMemo(() => (todayKey ? new Date(todayKey) : null), [todayKey]);
   const currentMonth = today ? monthKey(today) : null;
-  // Les boutons Courses impriment la liste de courses active (ticket de caisse, sous la réclame)
-  const openCourse = openTicket;
+  // Deux pages côte à côte : à gauche le journal, à droite la liste de courses active et les défis
+  const [page, setPage] = useState(0);
+  // Le bouton Courses du sommaire ouvre la page de droite
+  const openCourse = () => setPage(1);
+  // Arrivée par /accueil#ticket (anciens liens de la page Courses, activation d'une liste dans les paramètres) :
+  // on ouvre directement la page de droite, et on retire #ticket de l'adresse
+  useEffect(() => {
+    if (window.location.hash !== '#ticket') return;
+    window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- l'adresse n'est lisible qu'une fois dans le navigateur
+    setPage(1);
+  }, []);
 
+  const footer = (
+    <div className="mt-8">
+      <Flourish width={160} />
+      <p className="mt-2 text-center text-[22px]" style={script}>
+        à demain !
+      </p>
+    </div>
+  );
 
   return (
     <>
       {/* Toute la gazette en caractères à empattements, chiffres alignés (sans chiffres elzéviriens) */}
       <div className="gazette overflow-x-clip pb-4 [font-variant-numeric:lining-nums_tabular-nums]" style={{ backgroundColor: PAPER, color: NAVY, ...serif }}>
         <LaceEdge />
-        <div className="mx-auto max-w-[430px] px-4">
-          <Masthead today={today} onCourse={openCourse} />
+        {/* On passe d'une page à l'autre en glissant le doigt, ou avec les deux points en bas de l'écran */}
+        <SwipePages
+          color={NAVY}
+          page={page}
+          onPageChange={setPage}
+          labels={['Le journal', 'Courses et défis']}
+          pages={[
+            <div key="journal" className="mx-auto max-w-[430px] px-4">
+              <Masthead today={today} onCourse={openCourse} />
 
-          {/* À LA UNE : les comptes du mois, puis la santé financière */}
-          {currentMonth ? <FinanceNews currentMonth={currentMonth} /> : <Printing />}
+              {/* À LA UNE : les comptes du mois, puis la santé financière */}
+              {currentMonth ? <FinanceNews currentMonth={currentMonth} /> : <Printing />}
 
-          {/* COURSES : bandeau de rubrique, puis réclame d'épicerie d'antan ; tous deux impriment le ticket de la liste active */}
-          <Ribbon onClick={openCourse}>Courses</Ribbon>
-          <GroceryAd onOpen={openCourse} />
-          {/* TICKET DE CAISSE : la liste de courses active, imprimée ici à la demande */}
-          <ReceiptPrinter />
+              {footer}
+            </div>,
+            <div key="courses" className="mx-auto max-w-[430px] px-4">
+              {/* COURSES : le ticket de caisse de la liste active (toujours affiché) */}
+              <div id="ticket" className="pt-6">
+                <ShoppingReceipts blue />
+              </div>
 
-          {/* BRÈVES : les défis du jour */}
-          <Ribbon>Les brèves · défis</Ribbon>
-          <DefiCoupons defis={DEFIS} />
+              {/* BRÈVES : les défis du jour */}
+              <Ribbon>Les brèves · défis</Ribbon>
+              <DefiCoupons defis={DEFIS} />
 
-          {/* PIED DE PAGE */}
-          <div className="mt-8">
-            <Flourish width={160} />
-            <p className="mt-2 text-center text-[22px]" style={script}>
-              à demain !
-            </p>
-          </div>
-        </div>
+              {footer}
+            </div>
+          ]}
+        />
       </div>
       <div style={{ backgroundColor: PAPER }}>
         <LaceEdge flip />

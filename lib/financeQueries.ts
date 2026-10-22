@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 import { orThrow, useCached } from '@/lib/cache';
 import { fetchLines, fetchLinesRange, groceriesTotal, shiftMonth } from '@/lib/finance';
+import { countTransactions, fetchBudgets, fetchStatementCoverage, fetchTransactions, loadCategories } from '@/lib/transactions';
 import { fetchDebts, fetchGoals, fetchInvestments } from '@/lib/financePlans';
 
 // Données des pages Finances gardées en mémoire (lib/cache) : partagées entre les pages Santé, Objectifs,
@@ -10,6 +11,22 @@ import { fetchDebts, fetchGoals, fetchInvestments } from '@/lib/financePlans';
 
 // Lignes du bilan et du compte de résultat des "back" derniers mois (et du mois en cours).
 // Une seule requête de 13 mois en arrière sert à toutes les pages ; chacune n'en garde que la période voulue.
+// Comptes suivis par relevés, et ceux qui ont des opérations dans le mois (alerte « relevé pas encore ajouté » du bilan)
+export function useStatementCoverage(period: string | null) {
+  return useCached(period && `finances:releves-du-mois:${period}`, async () => {
+    const { tracked, present, error } = await fetchStatementCoverage(period!);
+    return orThrow({ tracked, present }, error);
+  });
+}
+
+// Nombre d'opérations importées pour un mois (0 : aucun relevé n'a encore été importé pour ce mois)
+export function useMonthOperations(period: string | null) {
+  return useCached(period && `finances:operations-du-mois:${period}`, async () => {
+    const { count, error } = await countTransactions(period!);
+    return orThrow(count, error);
+  });
+}
+
 export function useFinanceLines(currentMonth: string | null, back: number) {
   const query = useCached(currentMonth && `finances:lignes:${currentMonth}`, async () => {
     const { lines, error } = await fetchLinesRange(shiftMonth(currentMonth!, -13), currentMonth!);
@@ -54,5 +71,28 @@ export function useInvestments() {
   return useCached('finances:placements', async () => {
     const { investments, error } = await fetchInvestments();
     return orThrow(investments, error);
+  });
+}
+
+// Limites mensuelles des grandes catégories (Finances > Budget) : même mémoire que la page Budget
+export function useCategoryLimits() {
+  return useCached('finances:budgets', async () => {
+    const { budgets, error } = await fetchBudgets();
+    return orThrow(budgets, error);
+  });
+}
+
+// Catégories personnalisées et supprimées, rangées dans CATEGORIES (lib/transactions) : même mémoire que la page Budget
+export function useCategories() {
+  return useCached('finances:categories', async () => orThrow(Date.now(), await loadCategories()));
+}
+
+// Opérations bancaires d'un mois (AAAA-MM)
+export function useMonthTransactions(month: string | null) {
+  return useCached(month && `finances:operations-du-mois:${month}`, async () => {
+    const [y, m] = month!.split('-').map(Number);
+    const last = new Date(y, m, 0).getDate();
+    const { transactions, error } = await fetchTransactions(`${month}-01`, `${month}-${String(last).padStart(2, '0')}`);
+    return orThrow(transactions, error);
   });
 }

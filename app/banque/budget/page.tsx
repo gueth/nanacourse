@@ -2,31 +2,27 @@
 
 import { useMemo, useState, useSyncExternalStore } from 'react';
 import { latestCached, orThrow, setCachedAll, useCached } from '@/lib/cache';
-import { AlertTriangle, Repeat, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Repeat, X } from 'lucide-react';
 import { useConfirm } from '@/components/ConfirmDialog';
-import { formatEuros, monthKey, monthLabel, SECTIONS, shiftMonth } from '@/lib/finance';
-import Link from 'next/link';
+import { formatEuros, monthKey, monthLabel, shiftMonth } from '@/lib/finance';
 import {
-  addCustomCategory,
   addPlanned,
   byLabel,
   CATEGORIES,
   categoryById,
-  deleteCategory,
+  categoryGroups,
   DEFAULT_CATEGORY_IDS,
   deletePlanned,
-  deleteTransaction,
   detectSubscriptions,
   detectUnusual,
   fetchBudgets,
   fetchPlanned,
   fetchTransactions,
+  groupMembers,
   loadCategories,
   merchantKey,
   monthOf,
   reclassifyOthers,
-  removedBaseCategories,
-  restoreBaseCategories,
   reportToStatement,
   saveBudget,
   saveRule,
@@ -34,13 +30,16 @@ import {
   spendingInsights,
   summarize,
   updateCategory,
+  updateCategoryGroup,
   type Budget,
   type Category,
-  type CustomCategory,
+  type CategoryGroup,
   type PlannedExpense,
   type Transaction
 } from '@/lib/transactions';
 import { describeDbError } from '@/lib/financePlans';
+import { useViewedMonth } from '@/lib/health';
+import { CategoriesPanel, NewCategoryForm } from '@/components/finance/CategoryManager';
 import {
   ErrorNote,
   FIN,
@@ -48,6 +47,7 @@ import {
   FinancePage,
   FinButton,
   Meter,
+  NewMonthCard,
   NumberField,
   Panel,
   SummaryTile
@@ -75,76 +75,14 @@ const NEW_CATEGORY = '__nouvelle';
 // Les « Autres » ne sont proposées que si l'opération y est déjà.
 const choicesFor = (amount: number, current?: string) =>
   CATEGORIES.filter((c) => (!OTHER_IDS.includes(c.id) || c.id === current) && (!c.sign || c.sign === (amount > 0 ? 1 : -1))).sort(byLabel);
-
-// Création d'une catégorie personnelle : nom, sens (dépense ou entrée) et rubrique du compte de résultat où reporter son total
-function NewCategoryForm({ kind: fixedKind, onCreated, onCancel }: { kind?: CustomCategory['kind']; onCreated: (id: string) => void; onCancel: () => void }) {
-  const [label, setLabel] = useState('');
-  const [kind, setKind] = useState<CustomCategory['kind']>(fixedKind ?? 'variable');
-  const [section, setSection] = useState(fixedKind === 'income' ? 'autres_revenus' : 'vie_courante');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const sections = SECTIONS.filter((s) => s.side === (kind === 'income' ? 'produits' : 'charges'));
-  const taken = CATEGORIES.some((c) => c.label.localeCompare(label.trim(), 'fr', { sensitivity: 'base' }) === 0);
-
-  async function create() {
-    if (!label.trim() || taken) return;
-    setBusy(true);
-    const { category, error: err } = await addCustomCategory(label, kind, section);
-    setBusy(false);
-    if (err) return setError(describeDbError(err.message));
-    if (category) onCreated(category.id);
-  }
-
-  return (
-    <div className="mt-1 w-full rounded-sm border px-2 py-2" style={{ borderColor: FIN.gold, backgroundColor: '#fff' }}>
-      <ErrorNote message={error} />
-      <input
-        autoFocus
-        value={label}
-        onChange={(e) => setLabel(e.target.value)}
-        onKeyDown={(e) => e.key === 'Enter' && create()}
-        placeholder="Nom de la catégorie (ex. Animaux)"
-        className="w-full rounded-sm border bg-white px-2 py-1 text-[12px] outline-none"
-        style={{ borderColor: FIN.line }}
-      />
-      {taken && (
-        <p className="mt-0.5 text-[10px]" style={{ color: FIN.rose }}>
-          Cette catégorie existe déjà.
-        </p>
-      )}
-      <div className="mt-1.5 grid grid-cols-2 gap-2">
-        <select
-          value={kind}
-          disabled={!!fixedKind}
-          onChange={(e) => {
-            const k = e.target.value as CustomCategory['kind'];
-            setKind(k);
-            setSection(k === 'income' ? 'autres_revenus' : 'vie_courante');
-          }}
-          className="rounded-sm border bg-white px-1 py-1 text-[11px]"
-          style={{ borderColor: FIN.line }}
-        >
-          <option value="variable">Dépense</option>
-          <option value="income">Entrée d&apos;argent</option>
-        </select>
-        <select value={section} onChange={(e) => setSection(e.target.value)} className="rounded-sm border bg-white px-1 py-1 text-[11px]" style={{ borderColor: FIN.line }} aria-label="Rubrique du compte de résultat">
-          {sections.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.title}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="mt-2 flex gap-2">
-        <FinButton onClick={create} disabled={busy || !label.trim() || taken}>
-          Créer
-        </FinButton>
-        <FinButton outline onClick={onCancel}>
-          Annuler
-        </FinButton>
-      </div>
-    </div>
-  );
+// Ces catégories rangées par grande catégorie (dans l'ordre alphabétique), celles sans regroupement d'abord
+function groupedChoices(list: Category[]): { group: CategoryGroup | null; list: Category[] }[] {
+  const loose = list.filter((c) => !c.group);
+  const groups = categoryGroups()
+    .map((group) => ({ group, list: list.filter((c) => c.group === group.id) }))
+    .filter((g) => g.list.length > 0)
+    .sort((a, b) => a.group.label.localeCompare(b.group.label, 'fr'));
+  return [...(loose.length ? [{ group: null, list: loose }] : []), ...groups];
 }
 
 // Liste déroulante des catégories (ordre alphabétique), avec en dernier « + Nouvelle catégorie… »
@@ -183,91 +121,25 @@ function CategorySelect({
       style={value ? { borderColor: FIN.line, color: FIN.slate } : { borderColor: FIN.gold, color: FIN.navy }}
     >
       {!value && <option value="">Classer dans…</option>}
-      {choicesFor(amount, value).map((c) => (
-        <option key={c.id} value={c.id}>
-          {c.label}
-        </option>
-      ))}
+      {groupedChoices(choicesFor(amount, value)).map(({ group, list }) =>
+        group ? (
+          <optgroup key={group.id} label={group.label}>
+            {list.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.label}
+              </option>
+            ))}
+          </optgroup>
+        ) : (
+          list.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.label}
+            </option>
+          ))
+        )
+      )}
       <option value={NEW_CATEGORY}>+ Nouvelle catégorie…</option>
     </select>
-  );
-}
-
-// Toutes les catégories, par ordre alphabétique : ajout, suppression (sauf les deux « Autres »), rétablissement des catégories de base
-function CategoriesPanel({ onChanged }: { onChanged: (message: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const [adding, setAdding] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const all = [...CATEGORIES].sort(byLabel);
-  const removed = removedBaseCategories();
-  const [confirm, confirmDialog] = useConfirm();
-
-  async function remove(c: Category) {
-    if (!(await confirm('Supprimer la catégorie', `Supprimer la catégorie « ${c.label} » ? Ses opérations iront dans « Autres dépenses » ou « Autres entrées ».`))) return;
-    const err = await deleteCategory(c);
-    if (err) return setError(describeDbError(err.message));
-    onChanged(`Catégorie « ${c.label} » supprimée : ses opérations sont maintenant dans « Autres ».`);
-  }
-
-  async function restore() {
-    const err = await restoreBaseCategories();
-    if (err) return setError(describeDbError(err.message));
-    onChanged(`${removed.length} catégorie${removed.length > 1 ? 's' : ''} de base rétablie${removed.length > 1 ? 's' : ''}, et les opérations « Autres » reclassées.`);
-  }
-
-  return (
-    <Panel title="Catégories" subtitle="Ajoute tes propres catégories ou supprime celles qui ne te servent pas. Les opérations d'une catégorie supprimée vont dans « Autres », qui ne se supprime pas.">
-      {confirmDialog}
-      <ErrorNote message={error} />
-      {open && (
-        <ul className="mb-2 divide-y text-[12px]" style={{ borderColor: FIN.mist }}>
-          {all.map((c) => (
-            <li key={c.id} className="flex items-center justify-between gap-2 py-1">
-              <span className="min-w-0">
-                {c.label}
-                <span className="text-[10px]" style={{ color: FIN.slate }}>
-                  {' '}
-                  · {c.kind === 'transfer' ? 'virement' : c.kind === 'income' ? 'entrée' : 'dépense'}
-                  {c.custom && ' · perso'}
-                  {DEFAULT_CATEGORY_IDS.includes(c.id) && ' · par défaut'}
-                </span>
-              </span>
-              {!DEFAULT_CATEGORY_IDS.includes(c.id) && (
-                <button type="button" onClick={() => remove(c)} aria-label={`Supprimer ${c.label}`} className="shrink-0 opacity-50 hover:opacity-100" style={{ color: FIN.rose }}>
-                  <X size={14} />
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      {open && removed.length > 0 && (
-        <p className="mb-2 text-[11px]" style={{ color: FIN.slate }}>
-          Supprimées : {removed.map((c) => c.label).join(', ')}.{' '}
-          <button type="button" onClick={restore} className="underline" style={{ color: FIN.gold }}>
-            Les rétablir
-          </button>
-        </p>
-      )}
-      {adding ? (
-        <NewCategoryForm
-          onCancel={() => setAdding(false)}
-          onCreated={(id) => {
-            setAdding(false);
-            onChanged(`Catégorie « ${categoryById(id).label} » créée.`);
-          }}
-        />
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          <FinButton outline onClick={() => setOpen(!open)}>
-            {open ? 'Masquer la liste' : `Voir les ${all.length} catégories`}
-          </FinButton>
-          <FinButton outline onClick={() => setAdding(true)}>
-            + Nouvelle catégorie
-          </FinButton>
-        </div>
-      )}
-    </Panel>
   );
 }
 
@@ -323,6 +195,8 @@ export default function BudgetPage() {
   const askedMonth = useSyncExternalStore(noSubscribe, readAskedMonth, () => null);
   const startMonth = askedMonth ?? currentMonth;
   const period = startMonth ? shiftMonth(startMonth, offset) : null;
+  // La teinte de la partie Finances suit l'état de santé du mois affiché
+  useViewedMonth(period);
 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -384,6 +258,17 @@ export default function BudgetPage() {
     .map((c) => ({ cat: c, spent: summary.byCategory.get(c.id) ?? 0, limit: budgets.find((b) => b.category === c.id)?.monthly_limit ?? null }))
     .filter((r) => r.spent > 0 || r.limit !== null)
     .sort((a, b) => b.spent - a.spent);
+  // Grandes catégories de sorties : total dépensé dans leurs sous-catégories, comparé à leur limite
+  const expenseGroups = categoryGroups()
+    .filter((g) => g.kind === 'expense')
+    .map((group) => ({
+      group,
+      spent: groupMembers(group.id).reduce((sum, c) => sum + (summary.byCategory.get(c.id) ?? 0), 0),
+      rows: expenseCategories.filter((r) => r.cat.group === group.id)
+    }))
+    .filter((g) => g.spent > 0 || g.group.monthly_limit !== null || g.rows.length > 0)
+    .sort((a, b) => b.spent - a.spent);
+  const looseRows = expenseCategories.filter((r) => !r.cat.group || !expenseGroups.some((g) => g.group.id === r.cat.group));
   const unbudgeted = CATEGORIES.filter((c) => c.kind !== 'income' && c.kind !== 'transfer' && !budgets.some((b) => b.category === c.id)).sort(byLabel);
 
   function report(err: { message: string } | null) {
@@ -421,16 +306,49 @@ export default function BudgetPage() {
     setNotice(`« ${key} » sera toujours classé en ${categoryById(t.category).label} (${same.length} autre${same.length > 1 ? 's' : ''} opération${same.length > 1 ? 's' : ''} corrigée${same.length > 1 ? 's' : ''}).`);
   }
 
-  async function remove(t: Transaction) {
-    if (!(await confirm("Supprimer l'opération", `Supprimer l'opération « ${t.label} » (${formatEuros(t.amount)}) ?`))) return;
-    setTransactions((ts) => ts.filter((x) => x.id !== t.id));
-    report(await deleteTransaction(t.id));
+  // Limite mensuelle d'une grande catégorie (null : pas de limite)
+  async function setGroupLimit(group: CategoryGroup, limit: number | null) {
+    setEditing(null);
+    report(await updateCategoryGroup(group.id, { monthly_limit: limit }));
+    categoriesQuery.reload();
   }
 
   async function setLimit(category: string, limit: number | null) {
     setBudgets((bs) => [...bs.filter((b) => b.category !== category), ...(limit ? [{ category, monthly_limit: limit }] : [])]);
     setEditing(null);
     report(await saveBudget(category, limit));
+  }
+
+  function limitRow({ cat, spent, limit }: { cat: Category; spent: number; limit: number | null }) {
+    const ratio = limit ? spent / limit : 0;
+    const color = !limit ? FIN.slate : ratio >= 1 ? FIN.rose : ratio >= 0.8 ? FIN.gold : FIN.sage;
+    return (
+      <li key={cat.id}>
+        <div className="flex items-baseline justify-between gap-2 text-[12px]">
+          <span>{cat.label}</span>
+          <button type="button" onClick={() => setEditing(editing === cat.id ? null : cat.id)} className="text-right" style={{ color }}>
+            {formatEuros(spent)}
+            <span style={{ color: FIN.slate }}>{limit ? ` / ${formatEuros(limit)}` : ' · fixer une limite'}</span>
+          </button>
+        </div>
+        {limit !== null && <Meter value={ratio} color={color} />}
+        {limit !== null && ratio >= 0.8 && (
+          <p className="mt-0.5 text-[10px]" style={{ color }}>
+            {ratio >= 1 ? `Limite dépassée de ${formatEuros(spent - limit)}.` : `Plus que ${formatEuros(limit - spent)} avant la limite.`}
+          </p>
+        )}
+        {editing === cat.id && (
+          <div className="mt-1 flex items-end gap-2">
+            <NumberField label="Limite mensuelle" value={limit} onChange={(n) => setLimit(cat.id, n)} />
+            {limit !== null && (
+              <button type="button" onClick={() => setLimit(cat.id, null)} className="pb-1 text-[10px] underline" style={{ color: FIN.rose }}>
+                Retirer
+              </button>
+            )}
+          </div>
+        )}
+      </li>
+    );
   }
 
   async function addPlannedExpense() {
@@ -460,7 +378,8 @@ export default function BudgetPage() {
           subtitle="budget · opérations"
           month={period ? monthLabel(period) : ''}
           onPrev={() => setOffset((o) => o - 1)}
-          onNext={() => setOffset((o) => o + 1)}
+          onNext={() => period && currentMonth && period < currentMonth && setOffset((o) => o + 1)}
+          canNext={!!period && !!currentMonth && period < currentMonth}
         />
       }
     >
@@ -480,9 +399,8 @@ export default function BudgetPage() {
           Chargement…
         </p>
       ) : monthTx.length === 0 ? (
-        <p className="mt-6 text-center text-[12px] leading-relaxed" style={{ color: FIN.slate }}>
-          Aucune opération pour {period && monthLabel(period)}. Importe un relevé qui couvre ce mois-ci depuis la page <Link href="/banque/releves" className="underline">Relevés</Link>.
-        </p>
+        // Mois sans relevé importé : les Finances retranscrivent le passé, on importe donc son relevé
+        <NewMonthCard period={period!} />
       ) : (
         <>
           <div className="mt-5 grid grid-cols-3 gap-2">
@@ -530,18 +448,22 @@ export default function BudgetPage() {
             </Panel>
           )}
 
-          <Panel title="Budget du mois" subtitle="Fixe une limite par catégorie : la barre passe à l'orange à 80 %, au rouge au-delà.">
+          <Panel title="Budget du mois" subtitle="Fixe une limite par grande catégorie ou par catégorie : la barre passe à l'orange à 80 %, au rouge au-delà.">
             <ul className="space-y-3">
-              {expenseCategories.map(({ cat, spent, limit }) => {
+              {expenseGroups.map(({ group, spent, rows }) => {
+                const limit = group.monthly_limit;
                 const ratio = limit ? spent / limit : 0;
                 const color = !limit ? FIN.slate : ratio >= 1 ? FIN.rose : ratio >= 0.8 ? FIN.gold : FIN.sage;
+                const key = `groupe:${group.id}`;
                 return (
-                  <li key={cat.id}>
-                    <div className="flex items-baseline justify-between gap-2 text-[12px]">
-                      <span>{cat.label}</span>
-                      <button type="button" onClick={() => setEditing(editing === cat.id ? null : cat.id)} className="text-right" style={{ color }}>
+                  <li key={group.id}>
+                    <div className="flex items-baseline justify-between gap-2 text-[12px] font-bold uppercase tracking-[0.05em]">
+                      <span>{group.label}</span>
+                      <button type="button" onClick={() => setEditing(editing === key ? null : key)} className="text-right normal-case tracking-normal" style={{ color }}>
                         {formatEuros(spent)}
-                        <span style={{ color: FIN.slate }}>{limit ? ` / ${formatEuros(limit)}` : ' · fixer une limite'}</span>
+                        <span className="font-normal" style={{ color: FIN.slate }}>
+                          {limit ? ` / ${formatEuros(limit)}` : ' · fixer une limite'}
+                        </span>
                       </button>
                     </div>
                     {limit !== null && <Meter value={ratio} color={color} />}
@@ -550,19 +472,25 @@ export default function BudgetPage() {
                         {ratio >= 1 ? `Limite dépassée de ${formatEuros(spent - limit)}.` : `Plus que ${formatEuros(limit - spent)} avant la limite.`}
                       </p>
                     )}
-                    {editing === cat.id && (
+                    {editing === key && (
                       <div className="mt-1 flex items-end gap-2">
-                        <NumberField label="Limite mensuelle" value={limit} onChange={(n) => setLimit(cat.id, n)} />
+                        <NumberField label={`Limite mensuelle · ${group.label}`} value={limit} onChange={(n) => setGroupLimit(group, n)} />
                         {limit !== null && (
-                          <button type="button" onClick={() => setLimit(cat.id, null)} className="pb-1 text-[10px] underline" style={{ color: FIN.rose }}>
+                          <button type="button" onClick={() => setGroupLimit(group, null)} className="pb-1 text-[10px] underline" style={{ color: FIN.rose }}>
                             Retirer
                           </button>
                         )}
                       </div>
                     )}
+                    {rows.length > 0 && (
+                      <ul className="mt-2 space-y-2 border-l pl-3" style={{ borderColor: FIN.line }}>
+                        {rows.map(limitRow)}
+                      </ul>
+                    )}
                   </li>
                 );
               })}
+              {looseRows.map(limitRow)}
             </ul>
             {unbudgeted.length > 0 && (
               <select
@@ -579,7 +507,7 @@ export default function BudgetPage() {
                 ))}
               </select>
             )}
-            {editing && !expenseCategories.some((r) => r.cat.id === editing) && (
+            {editing && !editing.startsWith('groupe:') && !expenseCategories.some((r) => r.cat.id === editing) && (
               <div className="mt-2">
                 <NumberField label={`Limite · ${categoryById(editing).label}`} value={null} onChange={(n) => setLimit(editing, n)} />
               </div>
@@ -627,9 +555,7 @@ export default function BudgetPage() {
                       <button type="button" onClick={() => alwaysLikeThis(t)} title="Toujours classer ce commerçant ainsi" className="shrink-0 text-[10px] underline" style={{ color: FIN.gold }}>
                         Toujours
                       </button>
-                      <button type="button" onClick={() => remove(t)} aria-label="Supprimer l'opération" className="shrink-0 opacity-50 hover:opacity-100" style={{ color: FIN.rose }}>
-                        <Trash2 size={13} />
-                      </button>
+                      {/* Pas de suppression : les opérations viennent uniquement des relevés importés, on ne fait que les classer */}
                     </div>
                   </li>
                 );

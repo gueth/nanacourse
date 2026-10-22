@@ -9,6 +9,8 @@ import AddToListForm from '@/components/AddToListForm';
 import { useConfirm } from '@/components/ConfirmDialog';
 import { deleteList as deleteListCascade } from '@/lib/deletions';
 import { listTotal, saveListTotal } from '@/lib/lists';
+import { budgetFor, describeBudgetError } from '@/lib/budget';
+import { useShoppingBudgets } from '@/lib/coursesQueries';
 import Modal from '@/components/Modal';
 import NewListForm from '@/components/settings/NewListForm';
 import { EditActions, IconButton, RowList } from '@/components/settings/ui';
@@ -20,6 +22,7 @@ type ListRow = {
   estimated_price: number;
   is_active: boolean;
   store_id?: string | null; // magasin choisi pour la liste
+  budget_id?: string | null; // budget dont dépend la liste (aucun = le premier budget)
   items: {
     id: string;
     quantity: number;
@@ -46,6 +49,8 @@ export default function ListsSettings() {
   const [errorMessage, setErrorMessage] = useState('');
   // Cadre de confirmation avant suppression
   const [confirm, confirmDialog] = useConfirm();
+  // Budgets de courses, pour choisir celui de chaque liste
+  const budgets = useShoppingBudgets().data;
 
   // Cadre de création d'une liste (ingrédients à cocher) ouvert ou non
   const [creating, setCreating] = useState(false);
@@ -108,6 +113,18 @@ export default function ListsSettings() {
     const { error } = await supabase.from('shopping_lists').update({ is_active: false }).eq('id', id);
     if (error) return showError(error);
     loadLists();
+  }
+
+  // BUDGET DE LA LISTE : celui dont son prix sera déduit à la validation
+  async function changeBudget(id: string, budgetId: string) {
+    setErrorMessage('');
+    setLists((ls) => ls.map((l) => (l.id === id ? { ...l, budget_id: budgetId } : l)));
+    const { error } = await supabase.from('shopping_lists').update({ budget_id: budgetId }).eq('id', id);
+    if (error) {
+      console.error(error);
+      setErrorMessage(describeBudgetError(error));
+      loadLists();
+    }
   }
 
   // RENOMMAGE (changement de libellé)
@@ -227,6 +244,23 @@ export default function ListsSettings() {
                       {list.is_active ? 'Désactiver' : 'Activer'}
                     </button>
                   </div>
+                  {/* Ligne 3 : budget dont dépend la liste (son prix y sera déduit à la validation) */}
+                  {budgets && budgets.length > 0 && (
+                    <label className="flex items-center gap-2 pl-6 mt-1 text-xs">
+                      <span className="shrink-0 opacity-60">Budget :</span>
+                      <select
+                        value={budgetFor(budgets, list.budget_id)?.settings.id ?? ''}
+                        onChange={(e) => changeBudget(list.id, e.target.value)}
+                        className="input-hand min-w-0 flex-1 py-0.5 text-xs"
+                      >
+                        {budgets.map((b) => (
+                          <option key={b.settings.id} value={b.settings.id}>
+                            {b.settings.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                 </div>
               )}
 

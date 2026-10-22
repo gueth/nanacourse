@@ -3,15 +3,19 @@
 import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { ChevronLeft, ChevronRight, Plus, X } from 'lucide-react';
-import { formatEuros, type FinanceLine, type Section } from '@/lib/finance';
+import { AlertTriangle, ChevronLeft, ChevronRight, Plus, X } from 'lucide-react';
+import { formatEuros, monthLabel, type FinanceLine, type Section } from '@/lib/finance';
+import { useFinanceTone } from '@/lib/health';
 
 // Palette de la page Finances : bleu dominant, rehaussé d'or, de vert sauge (ce qui entre / ce que l'on possède)
 // et de vieux rose (ce qui sort / ce que l'on doit)
 export const FIN = {
   navy: '#2b3a55',
   slate: '#4a566b',
-  mist: '#e8edf4',
+  // Fond des pages, et couleur forte (en-tête, onglet actif, boutons pleins) : teintées selon l'état de santé
+  // (variables posées par FinancePage, voir useFinanceTone dans lib/health) ; bleu par défaut
+  mist: 'var(--fin-bg, #e8edf4)',
+  accent: 'var(--fin-accent, #4a566b)',
   paper: '#f8f7f4',
   line: '#c9d2df',
   gold: '#b08d57',
@@ -45,7 +49,6 @@ export function Ornament({ color = FIN.gold, width = 120 }: { color?: string; wi
 
 // Pages de la partie Finances, dans l'ordre du menu
 const FINANCE_PAGES = [
-  { href: '/banque', label: 'Santé' },
   { href: '/banque/comptes', label: 'Bilan' },
   { href: '/banque/budget', label: 'Budget' },
   { href: '/banque/objectifs', label: 'Objectifs' },
@@ -67,7 +70,7 @@ function FinanceNav() {
             key={p.href}
             href={p.href}
             className="shrink-0 rounded-full border px-3 py-1 text-[10px] uppercase tracking-[0.18em]"
-            style={active ? { backgroundColor: FIN.paper, color: FIN.slate, borderColor: FIN.paper } : { borderColor: 'rgba(248,247,244,0.45)' }}
+            style={active ? { backgroundColor: FIN.paper, color: FIN.accent, borderColor: FIN.paper } : { borderColor: 'rgba(248,247,244,0.45)' }}
           >
             {p.label}
           </Link>
@@ -84,16 +87,19 @@ export function FinanceHeader({
   month,
   onPrev,
   onNext,
+  canNext = true,
   action
 }: {
   subtitle?: string;
   month?: string;
   onPrev?: () => void;
   onNext?: () => void;
+  // false : le mois affiché est le mois en cours, on ne peut pas aller plus loin (les Finances retranscrivent le passé)
+  canNext?: boolean;
   action?: React.ReactNode;
 }) {
   return (
-    <header className="relative px-4 pb-10 pt-4 text-center" style={{ backgroundColor: FIN.slate, color: FIN.paper }}>
+    <header className="relative px-4 pb-10 pt-4 text-center" style={{ backgroundColor: FIN.accent, color: FIN.paper }}>
       {/* z-10 : sinon le sous-titre (rendu au-dessus à cause de son opacité) recouvre le lien et bloque le toucher */}
       <Link href="/accueil" className="absolute left-1 top-2 z-10 flex items-center gap-1 px-2 py-2 text-[11px] uppercase tracking-[0.25em] opacity-80">
         <ChevronLeft size={16} /> Accueil
@@ -115,7 +121,7 @@ export function FinanceHeader({
               <ChevronLeft size={20} />
             </button>
             <span className="min-w-[140px] text-[13px] uppercase tracking-[0.25em]">{month}</span>
-            <button type="button" onClick={onNext} aria-label="Mois suivant" className="rounded-full p-1.5 opacity-80 hover:opacity-100">
+            <button type="button" onClick={onNext} disabled={!canNext} aria-label="Mois suivant" className="rounded-full p-1.5 opacity-80 hover:opacity-100 disabled:opacity-20">
               <ChevronRight size={20} />
             </button>
           </div>
@@ -124,7 +130,7 @@ export function FinanceHeader({
       )}
       {/* Bas de l'en-tête : petit dôme central, comme les cartes de l'accueil */}
       <svg className="absolute -bottom-px left-0 w-full" height={18} viewBox="0 0 412 18" preserveAspectRatio="none" aria-hidden>
-        <path d="M0 18 H156 A60 60 0 0 1 256 18 H412 V18Z" fill={FIN.mist} />
+        <path d="M0 18 H156 A60 60 0 0 1 256 18 H412 V18Z" style={{ fill: FIN.mist }} />
       </svg>
     </header>
   );
@@ -160,14 +166,14 @@ export function StatementTabs<T extends string>({
   onChange: (id: T) => void;
 }) {
   return (
-    <div className="flex rounded-full border p-1" style={{ borderColor: FIN.slate, backgroundColor: FIN.paper }}>
+    <div className="flex rounded-full border p-1" style={{ borderColor: FIN.accent, backgroundColor: FIN.paper }}>
       {tabs.map((t) => (
         <button
           key={t.id}
           type="button"
           onClick={() => onChange(t.id)}
           className="flex-1 rounded-full py-2 text-[11px] uppercase tracking-[0.2em] transition-colors"
-          style={t.id === value ? { backgroundColor: FIN.slate, color: FIN.paper } : { color: FIN.slate }}
+          style={t.id === value ? { backgroundColor: FIN.accent, color: FIN.paper } : { color: FIN.slate }}
         >
           {t.label}
         </button>
@@ -203,7 +209,7 @@ export function Ledger({
           <col className="w-[28px]" />
         </colgroup>
         <thead>
-          <tr style={{ backgroundColor: FIN.slate, color: FIN.paper }}>
+          <tr style={{ backgroundColor: FIN.accent, color: FIN.paper }}>
             <th className="px-2 py-1.5 text-left text-[9px] font-normal uppercase tracking-[0.25em]">Poste</th>
             <th className="px-2 py-1.5 text-right text-[9px] font-normal uppercase tracking-[0.25em]">Montant</th>
             <th />
@@ -273,11 +279,13 @@ export function LedgerComputed({
 // Une ligne du tableau : intitulé modifiable, montant modifiable, suppression
 function LineRow({
   line,
+  warning,
   onRename,
   onAmount,
   onDelete
 }: {
   line: FinanceLine;
+  warning?: string | null; // alerte sous l'intitulé (ex. relevé du mois pas encore ajouté)
   onRename: (label: string) => void;
   onAmount: (amount: number) => void;
   onDelete: () => void;
@@ -299,6 +307,12 @@ function LineRow({
           className="w-full bg-transparent px-1 py-1 text-[12px] outline-none focus:bg-white"
           style={{ color: FIN.navy }}
         />
+        {warning && (
+          <p className="flex items-start gap-1 px-1 pb-1 text-[9px] leading-tight" style={{ color: FIN.rose }}>
+            <AlertTriangle size={11} className="mt-px shrink-0" aria-hidden />
+            {warning}
+          </p>
+        )}
       </td>
       <td className="px-1 py-0.5">
         <div className="flex items-baseline gap-0.5">
@@ -340,10 +354,12 @@ export function SectionBlock({
   onRename,
   onAmount,
   onDelete,
+  warningFor,
   children
 }: {
   section: Section;
   lines: FinanceLine[];
+  warningFor?: (line: FinanceLine) => string | null;
   onAdd: () => void;
   onRename: (line: FinanceLine, label: string) => void;
   onAmount: (line: FinanceLine, amount: number) => void;
@@ -357,6 +373,7 @@ export function SectionBlock({
         <LineRow
           key={line.id}
           line={line}
+          warning={warningFor?.(line)}
           onRename={(label) => onRename(line, label)}
           onAmount={(amount) => onAmount(line, amount)}
           onDelete={() => onDelete(line)}
@@ -508,6 +525,37 @@ export function NumberField({
   );
 }
 
+// « du mois de mars 2026 », « du mois d'octobre 2026 »
+export const ofMonth = (period: string) => {
+  const label = monthLabel(period);
+  return /^[aeiouyhàâéèê]/i.test(label) ? `du mois d'${label}` : `du mois de ${label}`;
+};
+
+// Mois sans relevé importé : les Finances retranscrivent ce qui a été fait, on ne remplit donc pas un mois à la main,
+// on importe son relevé de compte
+export function NewMonthCard({ period }: { period: string }) {
+  return (
+    <div className="mt-6 rounded-sm border px-5 py-8 text-center" style={{ backgroundColor: FIN.paper, borderColor: FIN.line }}>
+      <p className="text-[32px] leading-none" style={script}>
+        Nouveau mois
+      </p>
+      <div className="my-3">
+        <Ornament />
+      </div>
+      <p className="text-[11px] leading-relaxed" style={{ color: FIN.slate }}>
+        Aucun relevé n&apos;est encore importé pour {monthLabel(period)}.
+      </p>
+      <Link
+        href="/banque/releves"
+        className="mt-6 block rounded-full py-2.5 text-[11px] uppercase tracking-[0.2em]"
+        style={{ backgroundColor: FIN.accent, color: FIN.paper }}
+      >
+        Importer le relevé {ofMonth(period)}
+      </Link>
+    </div>
+  );
+}
+
 // Bouton principal (plein) ou secondaire (contour)
 export function FinButton({
   children,
@@ -528,7 +576,7 @@ export function FinButton({
       onClick={onClick}
       disabled={disabled}
       className="rounded-full border px-4 py-2 text-[10px] uppercase tracking-[0.2em] disabled:opacity-40"
-      style={outline ? { borderColor: FIN.slate, color: FIN.slate } : { backgroundColor: FIN.slate, borderColor: FIN.slate, color: FIN.paper }}
+      style={outline ? { borderColor: FIN.accent, color: FIN.accent } : { backgroundColor: FIN.accent, borderColor: FIN.accent, color: FIN.paper }}
     >
       {children}
     </button>
@@ -545,10 +593,18 @@ export function ErrorNote({ message }: { message: string | null }) {
   );
 }
 
+// Teinte de la partie Finances selon l'état de santé (rouge, orange, jaune, bleu, vert) : variables CSS
+// lues par FIN.accent et FIN.mist, à poser sur le conteneur de chaque page Finances
+export function useFinanceToneVars() {
+  const tone = useFinanceTone();
+  return { '--fin-accent': tone.dark, '--fin-bg': tone.pale } as React.CSSProperties;
+}
+
 // Fond et largeur communs aux pages Finances
 export function FinancePage({ header, children }: { header: React.ReactNode; children: React.ReactNode }) {
+  const toneVars = useFinanceToneVars();
   return (
-    <div className="finance-screen min-h-dvh pb-16" style={{ backgroundColor: FIN.mist, color: FIN.navy }}>
+    <div className="finance-screen min-h-dvh pb-16 transition-colors duration-700" style={{ ...toneVars, backgroundColor: FIN.mist, color: FIN.navy }}>
       {header}
       <main className="mx-auto max-w-md px-4">{children}</main>
     </div>

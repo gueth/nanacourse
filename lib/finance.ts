@@ -134,11 +134,16 @@ export async function seedMonth(period: string, from: FinanceLine[] | null) {
   return error;
 }
 
-// Lignes d'un mois, après l'avoir rempli avec le modèle s'il était vide (le bilan garde ainsi toutes ses rubriques)
+// Lignes d'un mois, après l'avoir rempli s'il était vide : avec les lignes du mois précédent, à zéro pour le compte de résultat
+// et pour les montants venus des relevés (un solde de compte n'est inscrit que par le relevé du mois), ou à défaut avec le modèle
 export async function fetchOrSeedLines(period: string) {
   const first = await fetchLines(period);
   if (first.error || first.lines.length > 0) return first;
-  const error = await seedMonth(period, null);
+  const before = await fetchLines(shiftMonth(period, -1));
+  const error = await seedMonth(
+    period,
+    before.lines.length > 0 ? before.lines.map((l) => (l.statement === 'resultat' || l.auto ? { ...l, amount: 0, auto: false } : l)) : null
+  );
   return error ? { lines: [] as FinanceLine[], error } : fetchLines(period);
 }
 
@@ -148,11 +153,13 @@ export const importMayWrite = (line: FinanceLine | undefined) => !line || line.a
 
 // Inscrit un montant calculé par l'import sur une ligne d'une rubrique (créée si besoin), sans toucher aux saisies à la main.
 // Sans "replaceAuto", une ligne déjà calculée par un import est gardée aussi (pour une valeur moins sûre, ex. solde en milieu de mois).
-export async function setLineAmount(period: string, sectionId: string, label: string, amount: number, replaceAuto = true) {
+// "force" : le montant vient d'un relevé pour un mois qu'il couvre, il remplace tout ce qui était inscrit (même à la main).
+export async function setLineAmount(period: string, sectionId: string, label: string, amount: number, replaceAuto = true, force = false) {
   const { lines, error } = await fetchOrSeedLines(period);
   if (error) return error;
   const existing = lines.find((l) => l.section === sectionId && l.label.toLowerCase() === label.toLowerCase());
   if (existing) {
+    if (force) return existing.amount === amount && existing.auto ? null : updateLine(existing.id, { amount, auto: true });
     if (!importMayWrite(existing) || (!replaceAuto && existing.amount !== 0)) return null;
     return updateLine(existing.id, { amount, auto: true });
   }
@@ -244,6 +251,34 @@ export function byPeriod(lines: FinanceLine[]) {
   const map = new Map<string, FinanceLine[]>();
   for (const l of lines) map.set(l.period, [...(map.get(l.period) ?? []), l]);
   return map;
+}
+
+// Médiane : la valeur du milieu une fois les nombres rangés (moyenne des deux du milieu s'ils sont en nombre pair).
+// Contrairement à la moyenne, un mois exceptionnel (vacances, grosse réparation) ne la fausse pas.
+export function median(values: number[]) {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+// Les chiffres clés d'un mois terminé (cartes de l'accueil) : patrimoine net, réserve de sécurité (liquidités divisées
+// par la médiane des dépenses des 6 mois jusqu'à ce mois), taux d'épargne du mois, et dividendes et intérêts perçus
+export function monthIndicators(lines: FinanceLine[], month: string) {
+  const periods = byPeriod(lines.filter((l) => l.amount !== 0));
+  const L = periods.get(month) ?? [];
+  const t = totals(L);
+  const six = Array.from({ length: 6 }, (_, i) => shiftMonth(month, -i))
+    .map((p) => (periods.has(p) ? totals(periods.get(p)!).charges : 0))
+    .filter((c) => c > 0);
+  const medianSpent = six.length ? median(six) : t.charges;
+  return {
+    patrimoine: t.patrimoine,
+    reserve: medianSpent > 0 ? liquidAssets(L) / medianSpent : null,
+    savings: t.resultat,
+    savingsRate: t.tauxEpargne,
+    dividends: sum(L.filter((l) => l.section === 'autres_revenus' && /dividende|int[ée]r[êe]t|coupon/i.test(l.label)))
+  };
 }
 
 // Photo de la situation : moyennes des 4 derniers mois terminés (le mois en cours, incomplet, est exclu)

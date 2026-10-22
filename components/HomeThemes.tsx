@@ -134,7 +134,7 @@ export function FinanceSection() {
             Suis tes dépenses, tes comptes et ce qu&apos;il reste pour le mois.
           </p>
           <Link
-            href="/banque"
+            href="/banque/comptes"
             className="mt-6 rounded-full px-6 py-2 text-[11px] uppercase tracking-[0.3em] text-white"
             style={{ backgroundColor: SLATE }}
           >

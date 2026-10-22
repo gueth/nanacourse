@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { ChevronDown, Store as StoreIcon } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import type { Brand, Category, Ingredient, Store, Chain } from '@/lib/types';
 import { createIngredient, saveIngredientPrice } from '@/lib/ingredients';
-import { addToInventory } from '@/lib/inventory';
-import { recordExpense } from '@/lib/budget';
+import { budgetFor, recordExpense, today } from '@/lib/budget';
+import { useShoppingBudgets } from '@/lib/coursesQueries';
 import { storeLabel, STORE_SELECT, chainIdFor } from '@/lib/stores';
 import { normalizeQuantity, quantityRule, TYPE_SUGGESTIONS } from '@/lib/quantity';
 import StoreOptions from '@/components/StoreOptions';
@@ -21,8 +22,13 @@ const NEW = '__new__';
 
 type Props = {
   ingredients: Ingredient[];
-  // Appelée une fois l'inventaire mis à jour
+  // Appelée une fois le reçu enregistré (ingrédients, prix, magasin, budget)
   onDone: () => void;
+  // Budget proposé pour compter le reçu (ex : celui de la liste de courses active) ; sinon le premier budget
+  defaultBudgetId?: string | null;
+  // Le reçu devient la nouvelle liste de courses active (ses articles, quantités et prix) : son prix sera compté
+  // dans le budget à la validation de la liste, et non à l'enregistrement du reçu
+  asActiveList?: boolean;
 };
 
 // Une ligne du reçu, modifiable avant d'être enregistrée
@@ -70,10 +76,10 @@ function storeDetails(store: Store | undefined, scanned: StoreDetails): StoreDet
 //  2. le texte est lu dans le navigateur (gratuit), puis analysé : magasin, produits, quantités, prix, marque ;
 //     les correspondances déjà validées (texte du reçu -> ingrédient) sont reconnues directement ;
 //  3. on vérifie / corrige chaque ligne ;
-//  4. les lignes cochées : quantités ajoutées à l'inventaire, nouveaux ingrédients créés,
-//     informations manquantes des ingrédients connus complétées, prix mémorisés pour ce magasin ;
+//  4. les lignes cochées : nouveaux ingrédients créés, informations des ingrédients connus complétées
+//     ou corrigées, prix mémorisés pour ce magasin (il n'y a plus d'inventaire à mettre à jour) ;
 //     le magasin est créé ou complété (enseigne, nom, adresse lus sur le reçu).
-export default function ReceiptScan({ ingredients, onDone }: Props) {
+export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asActiveList = false }: Props) {
   const { photos, add: addPhotos, remove: removePhoto, error: photoError } = usePhotos(MAX_PHOTOS);
   const [step, setStep] = useState<'pick' | 'analyzing' | 'review' | 'saving'>('pick');
   const [error, setError] = useState('');
@@ -95,6 +101,12 @@ export default function ReceiptScan({ ingredients, onDone }: Props) {
   const [store, setStore] = useState<StoreDetails>({ chain: '', name: '', address: '' });
   // Compter le reçu dans le budget (décoché par défaut : la validation d'une liste le fait déjà)
   const [countInBudget, setCountInBudget] = useState(false);
+  // Budget dans lequel le reçu compte ('' = le premier budget)
+  const budgets = useShoppingBudgets().data;
+  const [budgetId, setBudgetId] = useState(defaultBudgetId ?? '');
+  // Affichage : informations du magasin dépliées, et détails dépliés par ligne (clé de la ligne)
+  const [storeOpen, setStoreOpen] = useState(false);
+  const [openDetails, setOpenDetails] = useState<Record<number, boolean>>({});
 
   useEffect(() => {
     Promise.all([
@@ -135,6 +147,9 @@ export default function ReceiptScan({ ingredients, onDone }: Props) {
       const matchedId = result.store_id ?? (scanned.chain || scanned.name ? NEW : '');
       setScannedStore(scanned);
       setStoreId(matchedId);
+      // Magasin nouveau : ses informations lues sont dépliées, pour être vérifiées
+      setStoreOpen(matchedId === NEW);
+      setOpenDetails({});
       setStore(storeDetails(stores.find((s) => s.id === matchedId), scanned));
       setRows(
         result.items.map((it, key) => ({
@@ -240,10 +255,11 @@ export default function ReceiptScan({ ingredients, onDone }: Props) {
       return createdBrands.get(key)!;
     }
 
-    // 3. Chaque ligne : ingrédient créé ou complété, prix mémorisé, quantité à ajouter au stock
-    const entries: { ingredientId: string; quantity: number }[] = [];
+    // 3. Chaque ligne : ingrédient créé ou complété, et prix mémorisé pour ce magasin
     // Correspondances validées (texte du reçu -> ingrédient), reconnues directement au prochain reçu
     const aliases: { raw: string; ingredientId: string }[] = [];
+    // Articles de la nouvelle liste active (mode asActiveList) : prix de la ligne = prix unitaire x quantité
+    const listItems: { ingredient_id: string; quantity: number; expected_price: number | null; store_id: string | null }[] = [];
     for (const row of applied) {
       const brandId = await brandIdFor(row);
       let id = row.ingredientId;
@@ -272,125 +288,222 @@ export default function ReceiptScan({ ingredients, onDone }: Props) {
         if (priceError) failures.push(`prix de « ${row.name} »`);
       }
 
-      const qty = normalizeQuantity(Number(row.quantity.replace(',', '.')), quantityRule(row.type));
-      entries.push({ ingredientId: id, quantity: qty });
       aliases.push({ raw: row.raw, ingredientId: id });
+      const quantity = normalizeQuantity(Number(row.quantity.replace(',', '.')) || 1, quantityRule(row.type));
+      const unit = Number(row.unitPrice);
+      listItems.push({
+        ingredient_id: id,
+        quantity,
+        expected_price: unit > 0 ? Math.round(unit * quantity * 100) / 100 : null,
+        store_id: targetStoreId || null
+      });
     }
 
     rememberAliases(aliases);
 
-    // 4. Les quantités achetées s'ajoutent au stock
-    const inventoryError = await addToInventory(entries);
-    if (inventoryError) {
-      console.error(inventoryError);
-      setStep('review');
-      return setError(`L'inventaire n'a pas pu être mis à jour : ${inventoryError.message}`);
+    // 4. Mode « liste active » : le reçu devient une liste de courses, activée à la place de l'ancienne
+    if (asActiveList && listItems.length > 0) {
+      const { error: offError } = await supabase.from('shopping_lists').update({ is_active: false }).eq('is_active', true);
+      if (offError) failures.push("désactivation de l'ancienne liste");
+      const listBudget = budgetFor(budgets, budgetId || null)?.settings.id;
+      const { data: created, error: listError } = await supabase
+        .from('shopping_lists')
+        .insert({
+          name: fields.name ? `Reçu ${label}` : 'Reçu',
+          estimated_price: Math.round(total * 100) / 100,
+          is_active: true,
+          activated_at: new Date().toISOString(),
+          date: today(),
+          store_id: targetStoreId || null,
+          ...(listBudget ? { budget_id: listBudget } : {})
+        })
+        .select()
+        .single();
+      if (listError || !created) failures.push('liste de courses du reçu');
+      else {
+        const { error: itemsError } = await supabase.from('shopping_list_items').insert(listItems.map((item) => ({ ...item, shopping_list_id: created.id })));
+        if (itemsError) failures.push('articles de la liste du reçu');
+      }
     }
 
-    // 5. Le reçu compte dans le budget, si demandé
-    if (countInBudget && total > 0) {
-      await recordExpense(total, fields.name ? `Reçu ${label}` : 'Reçu');
+    // 5. Le reçu compte dans le budget choisi, si demandé (pas en mode « liste active » : la validation de la liste le fera)
+    if (!asActiveList && countInBudget && total > 0) {
+      await recordExpense(total, fields.name ? `Reçu ${label}` : 'Reçu', budgetFor(budgets, budgetId || null)?.settings.id);
     }
 
     if (failures.length > 0) {
-      // L'inventaire est à jour, mais certains éléments n'ont pas pu être enregistrés : on le signale
+      // Le reste est enregistré, mais certains éléments n'ont pas pu l'être : on le signale
       setStep('review');
       setRows([]);
-      return setError(`Inventaire mis à jour, mais échec pour : ${failures.join(', ')}.`);
+      return setError(`Reçu enregistré, mais échec pour : ${failures.join(', ')}.`);
     }
     onDone();
   }
 
+  // Étapes du scan, affichées en haut : photos, vérification, enregistrement
+  const stepIndex = step === 'pick' || step === 'analyzing' ? 0 : step === 'review' ? 1 : 2;
+  const stepper = (
+    <ol className="mb-4 grid grid-cols-3 gap-1 text-center text-[10px] uppercase tracking-[0.12em]" aria-label="Étapes du scan">
+      {['Photos', 'Vérification', 'Enregistrement'].map((label, i) => (
+        <li key={label} aria-current={i === stepIndex ? 'step' : undefined} className={i <= stepIndex ? '' : 'opacity-40'}>
+          <span className={`mx-auto mb-1 block h-1.5 rounded-full ${i <= stepIndex ? 'bg-ink' : 'bg-line'}`} />
+          {label}
+        </li>
+      ))}
+    </ol>
+  );
+
   // ----- ÉTAPE 1 : CHOIX DES PHOTOS -----
   if (step === 'pick' || step === 'analyzing') {
+    const analyzing = step === 'analyzing';
     return (
       <div>
-        <p className="opacity-70 mb-4">
-          Prends ton reçu en photo, bien à plat (jusqu&apos;à {MAX_PHOTOS} photos pour un long ticket). Les produits lus te
-          seront proposés avant de mettre à jour l&apos;inventaire, les ingrédients et les prix.
+        {stepper}
+        <p className="mb-3 text-sm opacity-70">
+          Photographie le ticket <strong>bien à plat</strong>, en entier et bien éclairé. Pour un long ticket, prends-le en plusieurs
+          fois (jusqu&apos;à {MAX_PHOTOS} photos).
         </p>
 
-        <PhotoPicker photos={photos} max={MAX_PHOTOS} onAdd={addPhotos} onRemove={removePhoto} disabled={step === 'analyzing'} />
-
-        {(error || photoError) && <p className="text-sm text-brick mb-3">{error || photoError}</p>}
-
-        <button onClick={analyze} disabled={photos.length === 0 || step === 'analyzing'} className="btn-hand">
-          {step === 'analyzing' ? `Lecture du reçu... ${Math.round(progress * 100)} %` : 'Lire le reçu'}
-        </button>
-        {step === 'analyzing' && (
-          <p className="text-sm opacity-70 mt-2">
-            Lecture gratuite sur ton appareil. La première fois, le moteur de lecture se télécharge (quelques Mo).
+        <PhotoPicker photos={photos} max={MAX_PHOTOS} onAdd={addPhotos} onRemove={removePhoto} disabled={analyzing} />
+        {photos.length > 0 && (
+          <p className="-mt-2 mb-3 text-xs opacity-60">
+            {photos.length} / {MAX_PHOTOS} photo{photos.length > 1 ? 's' : ''}
           </p>
+        )}
+
+        {(error || photoError) && <p className="mb-3 text-sm text-brick">{error || photoError}</p>}
+
+        {analyzing ? (
+          // Lecture en cours : barre d'avancement
+          <div role="status" aria-live="polite">
+            <div className="flex items-baseline justify-between text-sm">
+              <span>Lecture du reçu…</span>
+              <b>{Math.round(progress * 100)} %</b>
+            </div>
+            <div className="mt-1 h-2.5 overflow-hidden rounded-full bg-line">
+              <div className="h-full rounded-full bg-ink transition-[width] duration-300" style={{ width: `${Math.round(progress * 100)}%` }} />
+            </div>
+            <p className="mt-2 text-xs opacity-60">
+              Lecture gratuite sur ton téléphone. La première fois, le moteur de lecture se télécharge (quelques Mo).
+            </p>
+          </div>
+        ) : (
+          <button onClick={analyze} disabled={photos.length === 0} className="btn-hand w-full py-3">
+            Lire le reçu
+          </button>
         )}
       </div>
     );
   }
 
   // ----- ÉTAPE 2 : VÉRIFICATION DES PRODUITS LUS -----
+  const toCheck = rows.filter((r) => r.confidence === 'basse').length;
+  const storeTitle = storeId === NEW ? `Nouveau : ${store.name || store.chain || 'magasin'}` : knownStore ? storeLabel(knownStore) : 'Aucun (prix non mémorisés)';
   return (
     <div>
-      {rows.length === 0 && !error && <p className="opacity-70 mb-4">Aucun produit lu sur ce reçu.</p>}
+      {stepper}
+      {rows.length === 0 && !error && <p className="mb-4 opacity-70">Aucun produit lu sur ce reçu.</p>}
 
       {rows.length > 0 && (
         <>
+          {/* Résumé de la lecture */}
+          <p className="mb-3 flex flex-wrap gap-1.5 text-xs">
+            <span className="rounded-full border border-line px-2 py-0.5">
+              {rows.length} produit{rows.length > 1 ? 's' : ''} lu{rows.length > 1 ? 's' : ''}
+            </span>
+            <span className="rounded-full border border-line px-2 py-0.5">{applied.length} à enregistrer</span>
+            {toCheck > 0 && (
+              <span className="rounded-full border border-orange-500 px-2 py-0.5 text-orange-600">
+                {toCheck} à vérifier
+              </span>
+            )}
+          </p>
+
           {/* MAGASIN : les prix lus sont mémorisés pour ce magasin, qui est créé ou complété
-              avec l'enseigne, le nom et l'adresse lus sur le reçu */}
-          <div className="mb-4 pb-4 border-b-2 border-dashed border-line">
-            <label className="field-label">Magasin</label>
-            <select value={storeId} onChange={(e) => changeStore(e.target.value)} className="input-hand w-full mb-3">
-              <option value="">— (prix non mémorisés)</option>
-              <option value={NEW}>+ Nouveau magasin</option>
-              <StoreOptions stores={stores} />
-            </select>
-            {storeId && (
-              <div className="flex flex-wrap items-end gap-3 text-sm">
-                <div className="w-36">
-                  <label className="field-label">Enseigne</label>
-                  <input
-                    value={store.chain}
-                    onChange={(e) => setStore((s) => ({ ...s, chain: e.target.value }))}
-                    list="receipt-chains"
-                    placeholder="Carrefour"
-                    className="input-hand w-full"
-                  />
-                  <datalist id="receipt-chains">
-                    {chains.map((c) => (
-                      <option key={c} value={c} />
-                    ))}
-                  </datalist>
-                </div>
-                <div className="w-40">
-                  <label className="field-label">Nom du magasin</label>
-                  <input
-                    value={store.name}
-                    onChange={(e) => setStore((s) => ({ ...s, name: e.target.value }))}
-                    placeholder="Market Le Puy"
-                    className="input-hand w-full"
-                  />
-                </div>
-                <div className="flex-1 min-w-48">
-                  <label className="field-label">Adresse</label>
-                  <input
-                    value={store.address}
-                    onChange={(e) => setStore((s) => ({ ...s, address: e.target.value }))}
-                    placeholder="optionnel"
-                    className="input-hand w-full"
-                  />
-                </div>
-                {storeCompletes.length > 0 && <span className="text-herb text-xs w-full">complète : {storeCompletes.join(', ')}</span>}
+              avec l'enseigne, le nom et l'adresse lus sur le reçu. Replié pour laisser la place aux produits. */}
+          <div className="mb-4 rounded-sm border-2 border-line">
+            <button
+              type="button"
+              onClick={() => setStoreOpen((o) => !o)}
+              aria-expanded={storeOpen}
+              className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm"
+            >
+              <StoreIcon size={16} className="shrink-0" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-[10px] uppercase tracking-[0.15em] opacity-60">Magasin</span>
+                <span className="block truncate font-bold">{storeTitle}</span>
+              </span>
+              <ChevronDown size={18} className={`shrink-0 transition-transform ${storeOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {storeOpen && (
+              <div className="grid gap-2 border-t-2 border-dashed border-line px-3 pb-3 pt-2 text-sm">
+                <select value={storeId} onChange={(e) => changeStore(e.target.value)} className="input-hand w-full" aria-label="Magasin">
+                  <option value="">— (prix non mémorisés)</option>
+                  <option value={NEW}>+ Nouveau magasin</option>
+                  <StoreOptions stores={stores} />
+                </select>
+                {storeId && (
+                  <>
+                    <label>
+                      <span className="field-label">Enseigne</span>
+                      <input
+                        value={store.chain}
+                        onChange={(e) => setStore((s) => ({ ...s, chain: e.target.value }))}
+                        list="receipt-chains"
+                        placeholder="Carrefour"
+                        className="input-hand w-full"
+                      />
+                    </label>
+                    <datalist id="receipt-chains">
+                      {chains.map((c) => (
+                        <option key={c} value={c} />
+                      ))}
+                    </datalist>
+                    <label>
+                      <span className="field-label">Nom du magasin</span>
+                      <input
+                        value={store.name}
+                        onChange={(e) => setStore((s) => ({ ...s, name: e.target.value }))}
+                        placeholder="Market Le Puy"
+                        className="input-hand w-full"
+                      />
+                    </label>
+                    <label>
+                      <span className="field-label">Adresse</span>
+                      <input
+                        value={store.address}
+                        onChange={(e) => setStore((s) => ({ ...s, address: e.target.value }))}
+                        placeholder="optionnel"
+                        className="input-hand w-full"
+                      />
+                    </label>
+                    {storeCompletes.length > 0 && <span className="text-xs text-herb">complète : {storeCompletes.join(', ')}</span>}
+                  </>
+                )}
               </div>
             )}
           </div>
 
-          <p className="opacity-70 mb-3 text-sm">
-            Vérifie chaque ligne : la quantité <strong>s&apos;ajoute</strong> au stock. Catégorie, marque et unité complètent
-            l&apos;ingrédient. Les lignes peu sûres (en orange) sont décochées.
-          </p>
+          {/* Produits : une carte par ligne du reçu */}
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="text-xs opacity-70">Vérifie chaque produit. Les lignes peu sûres sont décochées.</p>
+            <button
+              type="button"
+              onClick={() => setRows((r) => r.map((row) => ({ ...row, apply: applied.length !== rows.length })))}
+              className="shrink-0 text-xs underline decoration-dotted underline-offset-4"
+            >
+              {applied.length === rows.length ? 'Tout décocher' : 'Tout cocher'}
+            </button>
+          </div>
 
-          <ul className="divide-y-2 divide-dashed divide-line text-sm mb-4">
+          <ul className="mb-4 space-y-2 text-sm">
             {rows.map((row) => {
               const known = ingredients.find((i) => i.id === row.ingredientId);
               const rule = quantityRule(row.type);
+              const low = row.confidence === 'basse';
+              // Détails (catégorie, marque, unité) dépliés d'office pour un nouvel ingrédient
+              const detailsOpen = openDetails[row.key] ?? !row.ingredientId;
+              const lineTotal = (Number(row.unitPrice) || 0) * (Number(row.quantity.replace(',', '.')) || 0);
               // Informations que la ligne va ajouter à un ingrédient connu (champ vide jusque-là)
               const completes = known
                 ? [
@@ -400,103 +513,136 @@ export default function ReceiptScan({ ingredients, onDone }: Props) {
                   ].filter(Boolean)
                 : [];
               return (
-                <li key={row.key} className={`py-3 ${row.confidence === 'basse' ? 'text-orange-500' : ''}`}>
-                  {/* Ligne 1 : case, ingrédient rattaché, quantité, prix unitaire */}
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <input
-                      type="checkbox"
-                      checked={row.apply}
-                      onChange={(e) => updateRow(row.key, { apply: e.target.checked })}
-                      className="w-4 h-4 accent-brick"
-                      aria-label={`Enregistrer ${row.name}`}
-                    />
-                    <select
-                      value={row.ingredientId}
-                      onChange={(e) => changeIngredient(row, e.target.value)}
-                      className="input-hand flex-1 min-w-40"
-                    >
-                      <option value="">+ Nouveau : {row.name}</option>
-                      {ingredients.map((i) => (
-                        <option key={i.id} value={i.id}>
-                          {i.name}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="flex items-center gap-1">
+                <li
+                  key={row.key}
+                  className={`rounded-sm border-2 p-2.5 transition-opacity ${low ? 'border-orange-400 border-l-[6px]' : 'border-line'} ${row.apply ? '' : 'opacity-55'}`}
+                >
+                  {/* Case (grande zone de toucher) et ingrédient rattaché */}
+                  <div className="flex items-start gap-2">
+                    <label className="-m-1 flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center">
                       <input
-                        type="number"
-                        inputMode="decimal"
-                        step={rule.step}
-                        min={0}
-                        value={row.quantity}
-                        onChange={(e) => updateRow(row.key, { quantity: e.target.value })}
-                        className="input-hand w-16 text-right"
-                        aria-label={`Quantité de ${row.name}`}
+                        type="checkbox"
+                        checked={row.apply}
+                        onChange={(e) => updateRow(row.key, { apply: e.target.checked })}
+                        className="h-5 w-5 accent-brick"
+                        aria-label={`Enregistrer ${row.name}`}
                       />
-                      <span className="opacity-60">{rule.unit}</span>
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        inputMode="decimal"
-                        step="0.01"
-                        placeholder="prix ?"
-                        value={row.unitPrice}
-                        onChange={(e) => updateRow(row.key, { unitPrice: e.target.value })}
-                        className="input-hand w-20 text-right"
-                        aria-label={`Prix unitaire de ${row.name}`}
-                      />
-                      <span className="opacity-60">€</span>
-                    </span>
+                    </label>
+                    <div className="min-w-0 flex-1">
+                      <select
+                        value={row.ingredientId}
+                        onChange={(e) => changeIngredient(row, e.target.value)}
+                        className="input-hand w-full font-bold"
+                        aria-label="Ingrédient"
+                      >
+                        <option value="">+ Nouveau : {row.name}</option>
+                        {ingredients.map((i) => (
+                          <option key={i.id} value={i.id}>
+                            {i.name}
+                          </option>
+                        ))}
+                      </select>
+                      {/* Texte imprimé sur le reçu, pour vérifier la lecture */}
+                      <p className="mt-0.5 truncate text-[11px] italic opacity-60">
+                        Lu : « {row.raw} »
+                        {low && <span className="not-italic font-bold text-orange-600"> · à vérifier</span>}
+                      </p>
+                    </div>
                   </div>
 
-                  {/* Ligne 2 : nom (nouvel ingrédient), catégorie, marque, unité */}
-                  <div className="flex flex-wrap items-center gap-2 mt-2 pl-7 text-xs">
-                    {!row.ingredientId && (
-                      <input
-                        value={row.name}
-                        onChange={(e) => updateRow(row.key, { name: e.target.value })}
-                        className="input-hand w-36"
-                        aria-label="Nom du nouvel ingrédient"
-                      />
-                    )}
-                    <select
-                      value={row.categoryId}
-                      onChange={(e) => updateRow(row.key, { categoryId: e.target.value })}
-                      className="input-hand w-36"
-                      aria-label="Catégorie"
-                    >
-                      <option value="">Catégorie —</option>
-                      {categories.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      value={row.brandId}
-                      onChange={(e) => updateRow(row.key, { brandId: e.target.value })}
-                      className="input-hand w-36"
-                      aria-label="Marque"
-                    >
-                      <option value="">Marque —</option>
-                      {row.brandName && <option value={NEW}>+ Nouvelle : {row.brandName}</option>}
-                      {brands.map((b) => (
-                        <option key={b.id} value={b.id}>
-                          {b.name}
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      value={row.type}
-                      onChange={(e) => updateRow(row.key, { type: e.target.value })}
-                      list="receipt-types"
-                      placeholder="unité"
-                      className="input-hand w-24"
-                      aria-label="Unité"
-                    />
-                    {completes.length > 0 && <span className="text-herb">complète : {completes.join(', ')}</span>}
+                  {/* Quantité, prix unitaire et total de la ligne */}
+                  <div className="mt-2 grid grid-cols-[1fr_1fr_auto] items-end gap-2 pl-9">
+                    <label>
+                      <span className="field-label">Quantité</span>
+                      <span className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          step={rule.step}
+                          min={0}
+                          value={row.quantity}
+                          onChange={(e) => updateRow(row.key, { quantity: e.target.value })}
+                          className="input-hand w-full min-w-0 text-right"
+                          aria-label={`Quantité de ${row.name}`}
+                        />
+                        <span className="shrink-0 opacity-60">{rule.unit}</span>
+                      </span>
+                    </label>
+                    <label>
+                      <span className="field-label">Prix unitaire</span>
+                      <span className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.01"
+                          placeholder="?"
+                          value={row.unitPrice}
+                          onChange={(e) => updateRow(row.key, { unitPrice: e.target.value })}
+                          className="input-hand w-full min-w-0 text-right"
+                          aria-label={`Prix unitaire de ${row.name}`}
+                        />
+                        <span className="shrink-0 opacity-60">€</span>
+                      </span>
+                    </label>
+                    <span className="pb-1.5 text-right font-bold">{lineTotal > 0 ? `${lineTotal.toFixed(2)} €` : '—'}</span>
                   </div>
+
+                  {/* Détails de l'ingrédient : nom (nouvel ingrédient), catégorie, marque, unité */}
+                  <button
+                    type="button"
+                    onClick={() => setOpenDetails((d) => ({ ...d, [row.key]: !detailsOpen }))}
+                    aria-expanded={detailsOpen}
+                    className="ml-9 mt-1.5 flex items-center gap-1 py-1 text-xs opacity-70"
+                  >
+                    <ChevronDown size={14} className={`transition-transform ${detailsOpen ? 'rotate-180' : ''}`} />
+                    Catégorie, marque, unité
+                    {completes.length > 0 && <span className="text-herb">· complète : {completes.join(', ')}</span>}
+                  </button>
+                  {detailsOpen && (
+                    <div className="mt-1 grid grid-cols-2 gap-2 pl-9 text-xs">
+                      {!row.ingredientId && (
+                        <label className="col-span-2">
+                          <span className="field-label">Nom du nouvel ingrédient</span>
+                          <input value={row.name} onChange={(e) => updateRow(row.key, { name: e.target.value })} className="input-hand w-full" />
+                        </label>
+                      )}
+                      <select
+                        value={row.categoryId}
+                        onChange={(e) => updateRow(row.key, { categoryId: e.target.value })}
+                        className="input-hand w-full min-w-0"
+                        aria-label="Catégorie"
+                      >
+                        <option value="">Catégorie —</option>
+                        {categories.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={row.brandId}
+                        onChange={(e) => updateRow(row.key, { brandId: e.target.value })}
+                        className="input-hand w-full min-w-0"
+                        aria-label="Marque"
+                      >
+                        <option value="">Marque —</option>
+                        {row.brandName && <option value={NEW}>+ Nouvelle : {row.brandName}</option>}
+                        {brands.map((b) => (
+                          <option key={b.id} value={b.id}>
+                            {b.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        value={row.type}
+                        onChange={(e) => updateRow(row.key, { type: e.target.value })}
+                        list="receipt-types"
+                        placeholder="unité (kg, pièce…)"
+                        className="input-hand col-span-2 w-full"
+                        aria-label="Unité"
+                      />
+                    </div>
+                  )}
                 </li>
               );
             })}
@@ -507,36 +653,74 @@ export default function ReceiptScan({ ingredients, onDone }: Props) {
             ))}
           </datalist>
 
-          <p className="font-bold text-right mb-3">Total des lignes cochées : {total.toFixed(2)} €</p>
-          <label className="flex items-center gap-2 text-sm mb-4 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={countInBudget}
-              onChange={(e) => setCountInBudget(e.target.checked)}
-              className="w-4 h-4 accent-brick"
-            />
-            Compter ce reçu dans le budget (inutile si tu valides aussi la liste de courses correspondante)
-          </label>
+          {asActiveList && (
+            <p className="mb-3 text-sm">
+              Le reçu deviendra ta <strong>nouvelle liste de courses active</strong> (à la place de l&apos;actuelle) : son prix sera
+              compté dans le budget quand tu la valideras.
+            </p>
+          )}
+          {!asActiveList && (
+            <label className="mb-3 flex cursor-pointer items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={countInBudget}
+                onChange={(e) => setCountInBudget(e.target.checked)}
+                className="mt-0.5 h-5 w-5 shrink-0 accent-brick"
+              />
+              <span>
+                Compter ce reçu dans le budget
+                <span className="block text-xs opacity-60">Inutile si tu valides aussi la liste de courses correspondante.</span>
+              </span>
+            </label>
+          )}
+          {/* Budget auquel le reçu est associé (Profil > Budget) : celui du reçu, ou celui de la nouvelle liste active */}
+          {(countInBudget || asActiveList) && budgets && budgets.length > 0 && (
+            <label className="mb-3 block text-sm">
+              <span className="field-label">{asActiveList ? 'Budget de la liste' : 'Budget'}</span>
+              <select
+                value={budgetFor(budgets, budgetId || null)?.settings.id ?? ''}
+                onChange={(e) => setBudgetId(e.target.value)}
+                className="input-hand w-full"
+              >
+                {budgets.map((b) => (
+                  <option key={b.settings.id} value={b.settings.id}>
+                    {b.settings.name} (reste {b.remaining.toFixed(2)} €)
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
         </>
       )}
 
-      {error && <p className="text-sm text-brick mb-3">{error}</p>}
+      {error && <p className="mb-3 text-sm text-brick">{error}</p>}
 
-      <div className="flex flex-wrap items-center gap-4">
+      {/* Barre d'action fixée en bas de l'écran : total et enregistrement, toujours à portée de pouce */}
+      <div className="sticky bottom-0 -mx-1 mt-2 rounded-sm border-t-2 border-line bg-white/90 px-2 pb-3 pt-2 backdrop-blur">
         {rows.length > 0 && (
-          <button onClick={save} disabled={step === 'saving' || applied.length === 0} className="btn-hand">
-            {step === 'saving' ? 'Enregistrement...' : 'Enregistrer'}
-          </button>
+          <p className="mb-2 flex items-baseline justify-between text-sm">
+            <span className="opacity-70">
+              {applied.length} produit{applied.length > 1 ? 's' : ''} coché{applied.length > 1 ? 's' : ''}
+            </span>
+            <b className="text-base">{total.toFixed(2)} €</b>
+          </p>
         )}
-        {rows.length === 0 && error ? (
-          <button onClick={onDone} className="btn-hand">
-            Fermer
-          </button>
-        ) : (
-          <button onClick={() => setStep('pick')} disabled={step === 'saving'} className="btn-ghost">
-            reprendre les photos
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {rows.length > 0 && (
+            <button onClick={save} disabled={step === 'saving' || applied.length === 0} className="btn-hand flex-1 py-3">
+              {step === 'saving' ? 'Enregistrement…' : 'Enregistrer'}
+            </button>
+          )}
+          {rows.length === 0 && error ? (
+            <button onClick={onDone} className="btn-hand flex-1 py-3">
+              Fermer
+            </button>
+          ) : (
+            <button onClick={() => setStep('pick')} disabled={step === 'saving'} className="btn-ghost shrink-0 text-sm">
+              reprendre les photos
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

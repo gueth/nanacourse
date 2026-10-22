@@ -176,7 +176,7 @@ export function describeDbError(message: string) {
   if (/'auto' column|column .*auto/i.test(message)) {
     return "Il manque la colonne « auto » dans la table finance_lines : exécute dans l'éditeur SQL de Supabase la ligne « alter table finance_lines add column if not exists auto boolean not null default false; » (fin du script supabase/finance_coach.sql).";
   }
-  const table = message.match(/(bank_transactions|category_rules|budgets|planned_expenses|finance_goals|debts|finance_lines|investments|custom_categories|removed_categories)/)?.[1];
+  const table = message.match(/(bank_transactions|category_rules|budgets|planned_expenses|finance_goals|debts|finance_lines|investments|custom_categories|removed_categories|category_groups|category_settings)/)?.[1];
   if (table && /(does not exist|schema cache|not find)/i.test(message)) {
     return `La table « ${table} » n'existe pas encore dans Supabase : exécute le script supabase/finance_coach.sql dans l'éditeur SQL.`;
   }

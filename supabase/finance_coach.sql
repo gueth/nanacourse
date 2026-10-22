@@ -85,6 +85,24 @@ create table if not exists removed_categories (
   id text primary key
 );
 
+-- Grandes catégories : elles regroupent des catégories du même sens (sorties ou entrées) et peuvent avoir
+-- une limite mensuelle (somme des dépenses de leurs sous-catégories). Les opérations n'y vont jamais directement.
+create table if not exists category_groups (
+  id text primary key,                   -- groupe_xxxx
+  label text not null,
+  kind text not null default 'expense' check (kind in ('expense', 'income')),
+  monthly_limit numeric,                 -- null : pas de limite
+  created_at timestamptz not null default now()
+);
+
+-- Réglages de chaque catégorie (de base ou personnelle) : sa grande catégorie, et le nom choisi par l'utilisateur.
+-- Supprimer une grande catégorie laisse ses sous-catégories sans regroupement (group_id remis à null).
+create table if not exists category_settings (
+  category text primary key,
+  group_id text references category_groups (id) on delete set null,
+  label text                             -- null : nom d'origine
+);
+
 -- Lignes du bilan et du compte de résultat calculées par l'import des relevés : recalculées aux imports suivants
 -- (un montant saisi à la main garde auto = false et n'est jamais modifié par l'import)
 alter table finance_lines add column if not exists auto boolean not null default false;
@@ -98,7 +116,7 @@ do $$
 declare t text;
 begin
   foreach t in array array['bank_transactions', 'category_rules', 'budgets', 'planned_expenses', 'finance_goals', 'debts', 'investments',
-                           'custom_categories', 'removed_categories']
+                           'custom_categories', 'removed_categories', 'category_groups', 'category_settings']
   loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists "acces appli" on %I', t);

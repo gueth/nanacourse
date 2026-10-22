@@ -27,6 +27,7 @@ export type Category = {
   line?: string; // ligne de cette rubrique
   keywords: string[];
   custom?: boolean; // catégorie créée par l'utilisateur (table custom_categories)
+  group?: string | null; // grande catégorie qui la regroupe (table category_groups), null si elle n'est pas regroupée
 };
 
 // Le mot-clé le plus long (donc le plus précis) l'emporte : "GRAND FRAIS" (courses) passe avant "FRAIS" (frais bancaires) ;
@@ -89,9 +90,27 @@ export const DEFAULT_CATEGORY_IDS = ['autre_depense', 'autre_revenu'];
 
 export type CustomCategory = { id: string; label: string; kind: 'income' | 'variable'; section: string };
 
+// --- Grandes catégories ---
+// Une grande catégorie regroupe des sous-catégories du même sens (sorties ou entrées) et peut avoir une limite
+// mensuelle (somme des dépenses de ses sous-catégories). Les opérations ne vont jamais dans une grande catégorie,
+// seulement dans ses sous-catégories. Tables : category_groups (les grandes catégories) et category_settings
+// (pour chaque catégorie : sa grande catégorie, et un nom choisi par l'utilisateur).
+export type GroupKind = 'expense' | 'income';
+export type CategoryGroup = { id: string; label: string; kind: GroupKind; monthly_limit: number | null };
+type CategorySetting = { category: string; group_id: string | null; label: string | null };
+
+// Sens d'une catégorie, pour la ranger dans une grande catégorie (les virements entre comptes n'en ont pas)
+export const groupKindOf = (c: Category): GroupKind | null => (c.kind === 'transfer' ? null : c.kind === 'income' ? 'income' : 'expense');
+
 const BASE_CATEGORIES = [...CATEGORIES];
 let customCategories: CustomCategory[] = [];
 let removedBase: string[] = [];
+let groups: CategoryGroup[] = [];
+let settings: CategorySetting[] = [];
+
+export const categoryGroups = () => groups;
+// Sous-catégories d'une grande catégorie, par ordre alphabétique
+export const groupMembers = (groupId: string) => CATEGORIES.filter((c) => c.group === groupId).sort(byLabel);
 
 const toCategory = (c: CustomCategory): Category => ({
   id: c.id,
@@ -104,22 +123,100 @@ const toCategory = (c: CustomCategory): Category => ({
   custom: true
 });
 
-// Reconstruit la liste (même tableau, pour que tout le code qui lit CATEGORIES voie le changement)
+// Reconstruit la liste (même tableau, pour que tout le code qui lit CATEGORIES voie le changement),
+// avec le nom choisi et la grande catégorie de chacune
 function rebuildCategories() {
-  CATEGORIES.splice(0, CATEGORIES.length, ...BASE_CATEGORIES.filter((c) => !removedBase.includes(c.id)), ...customCategories.map(toCategory));
+  const all = [...BASE_CATEGORIES.filter((c) => !removedBase.includes(c.id)), ...customCategories.map(toCategory)];
+  CATEGORIES.splice(
+    0,
+    CATEGORIES.length,
+    ...all.map((c) => {
+      const s = settings.find((x) => x.category === c.id);
+      const group = s?.group_id && groups.some((g) => g.id === s.group_id) ? s.group_id : null;
+      return { ...c, label: s?.label || c.label, group };
+    })
+  );
 }
 
 export const removedBaseCategories = () => BASE_CATEGORIES.filter((c) => removedBase.includes(c.id));
 
 export async function loadCategories() {
-  const [custom, removed] = await Promise.all([
+  const [custom, removed, groupRows, settingRows] = await Promise.all([
     supabase.from('custom_categories').select('id, label, kind, section').order('created_at'),
-    supabase.from('removed_categories').select('id')
+    supabase.from('removed_categories').select('id'),
+    supabase.from('category_groups').select('id, label, kind, monthly_limit').order('created_at'),
+    supabase.from('category_settings').select('category, group_id, label')
   ]);
   if (!custom.error) customCategories = (custom.data as CustomCategory[]) ?? [];
   if (!removed.error) removedBase = ((removed.data as { id: string }[]) ?? []).map((r) => r.id);
+  // Tables des grandes catégories absentes (script SQL pas encore lancé) : tout s'affiche sans regroupement
+  if (!groupRows.error)
+    groups = ((groupRows.data as CategoryGroup[]) ?? []).map((g) => ({ ...g, monthly_limit: g.monthly_limit === null ? null : Number(g.monthly_limit) }));
+  if (!settingRows.error) settings = (settingRows.data as CategorySetting[]) ?? [];
   rebuildCategories();
   return custom.error ?? removed.error;
+}
+
+// Nouvelle grande catégorie (vide : on y range ensuite des sous-catégories)
+export async function addCategoryGroup(label: string, kind: GroupKind) {
+  const row: CategoryGroup = { id: `groupe_${Date.now().toString(36)}`, label: label.trim(), kind, monthly_limit: null };
+  const { error } = await supabase.from('category_groups').insert(row);
+  if (!error) groups = [...groups, row];
+  return { group: error ? null : row, error };
+}
+
+// Nom ou limite mensuelle d'une grande catégorie (limite null = pas de limite)
+export async function updateCategoryGroup(id: string, changes: Partial<Pick<CategoryGroup, 'label' | 'monthly_limit'>>) {
+  const { error } = await supabase.from('category_groups').update(changes).eq('id', id);
+  if (!error) {
+    groups = groups.map((g) => (g.id === id ? { ...g, ...changes } : g));
+    rebuildCategories();
+  }
+  return error;
+}
+
+// Range une catégorie dans une grande catégorie (null : la sort de sa grande catégorie)
+export async function setCategoryGroup(category: string, groupId: string | null) {
+  const { error } = await supabase.from('category_settings').upsert({ category, group_id: groupId }, { onConflict: 'category' });
+  if (!error) {
+    const current = settings.find((s) => s.category === category);
+    settings = [...settings.filter((s) => s.category !== category), { category, label: current?.label ?? null, group_id: groupId }];
+    rebuildCategories();
+  }
+  return error;
+}
+
+// Renomme une catégorie (de base ou personnelle) ; ses opérations et sa limite ne changent pas
+export async function renameCategory(category: string, label: string) {
+  const { error } = await supabase.from('category_settings').upsert({ category, label: label.trim() }, { onConflict: 'category' });
+  if (!error) {
+    const current = settings.find((s) => s.category === category);
+    settings = [...settings.filter((s) => s.category !== category), { category, group_id: current?.group_id ?? null, label: label.trim() }];
+    rebuildCategories();
+  }
+  return error;
+}
+
+// Dissout une grande catégorie : elle disparaît, ses sous-catégories restent (sans regroupement)
+export async function dissolveCategoryGroup(id: string) {
+  const { error } = await supabase.from('category_settings').update({ group_id: null }).eq('group_id', id);
+  if (error) return error;
+  const { error: err } = await supabase.from('category_groups').delete().eq('id', id);
+  if (err) return err;
+  groups = groups.filter((g) => g.id !== id);
+  settings = settings.map((s) => (s.group_id === id ? { ...s, group_id: null } : s));
+  rebuildCategories();
+  return null;
+}
+
+// Supprime une grande catégorie ET ses sous-catégories : leurs opérations vont dans « Autres »
+// (les deux « Autres », qui ne se suppriment pas, sont seulement sorties du regroupement)
+export async function deleteCategoryGroup(id: string) {
+  for (const c of groupMembers(id)) {
+    const error = DEFAULT_CATEGORY_IDS.includes(c.id) ? await setCategoryGroup(c.id, null) : await deleteCategory(c);
+    if (error) return error;
+  }
+  return dissolveCategoryGroup(id);
 }
 
 export async function addCustomCategory(label: string, kind: CustomCategory['kind'], section: string) {
@@ -141,6 +238,7 @@ export async function deleteCategory(category: Category) {
     supabase.from('bank_transactions').update({ category: 'autre_depense' }).eq('category', category.id).lte('amount', 0),
     supabase.from('category_rules').delete().eq('category', category.id),
     supabase.from('budgets').delete().eq('category', category.id),
+    supabase.from('category_settings').delete().eq('category', category.id),
     category.custom
       ? supabase.from('custom_categories').delete().eq('id', category.id)
       : supabase.from('removed_categories').upsert({ id: category.id }, { onConflict: 'id' })
@@ -150,6 +248,7 @@ export async function deleteCategory(category: Category) {
   }
   if (category.custom) customCategories = customCategories.filter((c) => c.id !== category.id);
   else removedBase = [...removedBase, category.id];
+  settings = settings.filter((s) => s.category !== category.id);
   rebuildCategories();
   return null;
 }
@@ -273,6 +372,10 @@ function markTransfers(rows: TransferCandidate[], existing: TransferCandidate[])
 }
 
 // Enregistre les opérations d'un relevé (les doublons sont ignorés) ; renvoie le nombre de nouvelles opérations
+// Livrets et comptes d'épargne réglementée : un virement ne peut aller que vers (ou venir de) un compte du titulaire
+export const isSavingsAccount = (account: string) => /livret|\blep\b|ldds|\bpel\b|\bcel\b|epargne|épargne/i.test(account);
+const TRANSFER_LABEL = /^(VIR|VIREMENT|VIRT)\b/;
+
 export async function importTransactions(parsed: ParsedTransaction[], account: string) {
   if (parsed.length === 0) return { inserted: 0, error: null };
   const { data: ruleRows } = await supabase.from('category_rules').select('pattern, category');
@@ -283,7 +386,7 @@ export async function importTransactions(parsed: ParsedTransaction[], account: s
     amount: t.amount,
     account,
     import_key: `${account}|${t.importKey}`,
-    category: t.category ?? categorize(t.label, t.amount, rules)
+    category: t.category ?? (isSavingsAccount(account) && TRANSFER_LABEL.test(normalizeLabel(t.label)) ? 'virement_interne' : categorize(t.label, t.amount, rules))
   }));
 
   // Virements entre comptes : comparés aussi aux opérations déjà importées sur la même période
@@ -598,9 +701,12 @@ function monthEndBalances(transactions: { date: string; amount: number }[], summ
 }
 
 // Après l'import d'un relevé, complète le reste de l'appli pour chaque mois où tombent ses opérations
-// (même s'il n'est pas celui affiché), sans jamais toucher aux montants saisis à la main :
+// (même s'il n'est pas celui affiché). Sur la période du relevé, ses données font foi et remplacent ce qui était inscrit,
+// même à la main :
 // - compte de résultat de chaque mois : totaux par catégorie, avec toutes les opérations connues du mois (tous comptes, tous relevés)
-// - bilan : solde du compte à la fin de chaque mois du relevé, et ancien solde pour le mois d'avant
+// - bilan : solde du compte à la fin de chaque mois du relevé
+// Hors de la période, rien de saisi à la main n'est modifié : ancien solde inscrit au mois d'avant (s'il est vide ou calculé).
+// Aucun solde n'est reporté sur les mois suivants : le bilan reproduit les relevés, et signale ceux qui manquent.
 export async function completeFromStatement(account: string, transactions: { date: string; amount: number }[], summary?: StatementSummary) {
   const months = [...new Set(transactions.map((t) => monthOf(t.date)))].sort();
   const done = { filled: [] as string[], kept: 0, balances: 0, error: null as { message: string } | null };
@@ -608,23 +714,23 @@ export async function completeFromStatement(account: string, transactions: { dat
   for (const month of months) {
     const { transactions: monthTx, error } = await fetchTransactions(`${month}-01`, lastDayOf(month));
     if (error) return fail(error);
-    const r = await reportToStatement(month, monthTx, 'import');
+    const r = await reportToStatement(month, monthTx, 'replace');
     if (r.error) return fail(r.error);
     if (r.filled) done.filled.push(month);
     done.kept += r.kept;
   }
   if (!summary) return done;
 
-  // Soldes exacts de fin de mois : ils remplacent un solde déjà calculé par un import (moins précis)
+  // Soldes exacts de fin de mois, donnés par le relevé : ils remplacent ce qui était inscrit (même à la main)
   const exact = monthEndBalances(transactions, summary);
   for (const { month, balance } of exact) {
-    const err = await setLineAmount(month, 'liquidites', account, balance);
+    const err = await setLineAmount(month, 'liquidites', account, balance, true, true);
     if (err) return fail(err);
     done.balances++;
   }
-  // Solde de fin de relevé quand le relevé ne s'arrête pas en fin de mois : seulement si le mois n'a pas encore de solde
+  // Solde de fin de relevé quand le relevé ne s'arrête pas en fin de mois : c'est le dernier solde connu du mois, il le remplace aussi
   if (summary.closing !== null && summary.to && !exact.some((e) => e.month === monthOf(summary.to!))) {
-    const err = await setLineAmount(monthOf(summary.to), 'liquidites', account, summary.closing, false);
+    const err = await setLineAmount(monthOf(summary.to), 'liquidites', account, summary.closing, true, true);
     if (err) return fail(err);
     done.balances++;
   }
@@ -636,4 +742,34 @@ export async function completeFromStatement(account: string, transactions: { dat
     done.balances++;
   }
   return done;
+}
+
+// Nombre d'opérations importées pour un mois (AAAA-MM)
+export async function countTransactions(month: string) {
+  const { count, error } = await supabase
+    .from('bank_transactions')
+    .select('id', { count: 'exact', head: true })
+    .gte('date', `${month}-01`)
+    .lte('date', lastDayOf(month));
+  return { count: count ?? 0, error };
+}
+
+// Comptes suivis par relevés : chacun avec le premier mois où il a des opérations importées (il est attendu dans le bilan
+// à partir de ce mois-là), et les comptes qui ont des opérations dans le mois demandé (noms en minuscules dans "present").
+// Un compte attendu sans opération ni solde inscrit par un relevé ce mois-ci a un relevé manquant.
+export type TrackedAccount = { account: string; first: string };
+export async function fetchStatementCoverage(month: string) {
+  const firsts = new Map<string, TrackedAccount>();
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase.from('bank_transactions').select('account, date').order('date').range(from, from + 999);
+    if (error) return { tracked: [] as TrackedAccount[], present: [] as string[], error };
+    for (const r of (data as { account: string; date: string }[]) ?? []) {
+      const key = r.account.toLowerCase();
+      if (!firsts.has(key)) firsts.set(key, { account: r.account, first: monthOf(r.date) });
+    }
+    if (!data || data.length < 1000) break;
+  }
+  const { data, error } = await supabase.from('bank_transactions').select('account').gte('date', `${month}-01`).lte('date', lastDayOf(month));
+  const present = [...new Set(((data as { account: string }[]) ?? []).map((r) => r.account.toLowerCase()))];
+  return { tracked: [...firsts.values()], present, error };
 }

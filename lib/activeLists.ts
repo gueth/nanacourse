@@ -35,6 +35,7 @@ export type SavedList = {
   updated_at?: string | null; // date de dernière modification (mise à jour par Supabase à chaque changement)
   activated_at?: string | null; // date d'activation (dans Paramètres > Listes de courses)
   store_id?: string | null; // magasin choisi pour faire les courses (ligne "Magasin" du ticket)
+  budget_id?: string | null; // budget dont la liste dépend (Paramètres > Listes) ; aucun = le premier budget
   items: SavedItem[]; // tous les articles de cette liste
 };
 

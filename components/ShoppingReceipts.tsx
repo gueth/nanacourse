@@ -13,11 +13,12 @@ import Link from 'next/link';
 // Le client Supabase configuré dans lib/supabase.ts, qui permet de lire/écrire dans la base de données.
 import { supabase } from '@/lib/supabase';
 // Budget de la période : ce qui reste à dépenser, dépassement, enregistrement des courses validées
-import { isOverBudget, recordExpense, shortDate, type BudgetState } from '@/lib/budget';
+import { budgetFor, describeBudgetError, isOverBudget, recordExpense, restartBudget, shortDate, today, validationCheck, type BudgetState } from '@/lib/budget';
 import { storeLabel, STORE_SELECT } from '@/lib/stores';
 // Mémoire des données entre deux visites : affichées tout de suite, puis rechargées en arrière-plan
 import { useActiveLists, type SavedItem, type SavedList } from '@/lib/activeLists';
-import { useShoppingBudget, useStores } from '@/lib/coursesQueries';
+import { useIngredients, useShoppingBudgets, useStores } from '@/lib/coursesQueries';
+import ReceiptScan from '@/components/ReceiptScan';
 // Famille d'un ingrédient (ex : toutes les sortes d'œufs), pour les regrouper sous une bannière
 import { familyKey } from '@/lib/ingredients';
 import FamilyList from '@/components/FamilyList';
@@ -38,7 +39,7 @@ import { deleteList as deleteListCascade } from '@/lib/deletions';
 import { analyzeList, summarizeTotal, type ListAnalysis } from '@/lib/optimize';
 // Icône poubelle pour supprimer un article de la liste
 // (Check / X : boutons ✓ / ✗ pour appliquer ou ignorer l'optimisation d'un article grisé)
-import { Check, ChevronRight, Pencil, Plus, PowerOff, Trash2, X } from 'lucide-react';
+import { Check, ChevronRight, Pencil, Plus, PowerOff, ReceiptText, Trash2, X } from 'lucide-react';
 // Quantités possibles selon le type d'ingrédient (kg, pièce, paquet...)
 import { formatQuantity, normalizeQuantity, quantityRule } from '@/lib/quantity';
 // Ta position et la distance des magasins, pour conseiller un magasin proche
@@ -100,15 +101,30 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   // Dans la fenêtre de validation : créer une liste "Reste ..." avec les articles non barrés (proposé par défaut)
   const [keepRest, setKeepRest] = useState(true);
+  // Dans la fenêtre de validation : jour réel des achats (aujourd'hui par défaut, ou un jour passé si la liste est validée plus tard)
+  const [boughtToday, setBoughtToday] = useState(true);
+  const [boughtOn, setBoughtOn] = useState('');
+  // Fermeture de la fenêtre de validation sans valider : le jour choisi est oublié
+  function closeValidation() {
+    setConfirmingId(null);
+    setBoughtToday(true);
+    setBoughtOn('');
+  }
   // Liste dans laquelle le cadre "ajouter un ingrédient" ajoute (ouvert par le "+" de son ticket) ; null = fermé.
   const [addTo, setAddTo] = useState<SavedList | null>(null);
+  // Cadre « Scanner un reçu » ouvert ou non (bouton au-dessus du ticket) : le reçu devient la nouvelle liste active
+  const [scanOpen, setScanOpen] = useState(false);
+  // Ingrédients connus, pour rattacher les produits lus sur le reçu
+  const ingredientsQuery = useIngredients();
   // Article dont le cadre de modification est ouvert (clic sur son nom), avec sa liste ; null = fermé.
   const [editing, setEditing] = useState<{ list: SavedList; item: SavedItem } | null>(null);
   // Résultat du bouton "Optimiser", rangé par id de liste (absent = pas encore optimisée).
   const [analyses, setAnalyses] = useState<Record<string, ListAnalysis>>({});
-  // Budget de la période en cours (réglages + ce qui reste), null tant qu'il n'est pas chargé.
-  const budgetQuery = useShoppingBudget();
-  const budget: BudgetState | null = budgetQuery.data ?? null;
+  // Budgets de courses (réglages + ce qui reste sur leur période en cours), undefined tant qu'ils ne sont pas chargés.
+  const budgetQuery = useShoppingBudgets();
+  const budgets = budgetQuery.data;
+  // Budget d'une liste : celui choisi dans Paramètres > Listes, sinon le premier budget (null s'il n'y en a aucun)
+  const budgetOf = (list: SavedList): BudgetState | null => budgetFor(budgets, list.budget_id);
   // id de la liste en cours d'optimisation (pour désactiver son bouton pendant le calcul).
   const [optimizing, setOptimizing] = useState<string | null>(null);
   // Articles dont l'optimisation a été refusée (✗), par liste : ils ne sont plus réoptimisés.
@@ -213,13 +229,15 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
 
   // Réactivation du budget : à la fin de la période en cours, le budget repart à zéro dépense,
   // on le recharge donc à ce moment-là (le minuteur est relancé pour la période suivante).
+  // (avec plusieurs budgets : à la fin de la première période qui se termine)
   useEffect(() => {
-    if (!budget) return;
+    if (!budgets?.length) return;
+    const nextEnd = Math.min(...budgets.map((b) => b.period.end.getTime()));
     // setTimeout n'accepte pas plus de ~24 jours : au-delà, on recharge plus tôt et on reprogramme
-    const delay = Math.min(Math.max(0, budget.period.end.getTime() - Date.now()) + 1000, 2_000_000_000);
+    const delay = Math.min(Math.max(0, nextEnd - Date.now()) + 1000, 2_000_000_000);
     const timer = setTimeout(reloadBudget, delay);
     return () => clearTimeout(timer);
-  }, [budget, reloadBudget]);
+  }, [budgets, reloadBudget]);
 
   // Regroupe les articles d'une liste par catégorie, pour les afficher par rayon.
   // Retourne un tableau de groupes : [{ name: 'Fruits', items: [...] }, ...]
@@ -464,7 +482,9 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
   //  4. on déduit le prix de la course du budget de la période (Profil > Budget)
   //  5. on désactive la liste (elle reste dans les paramètres)
   //  6. on recharge l'affichage et le budget restant
-  async function validateList(list: SavedList, createRest = false) {
+  // "restart" : budget de la liste à recommencer d'abord (liste plus chère que le reste, en fin de période, et
+  // l'utilisateur a accepté d'abandonner le reste de l'ancienne période)
+  async function validateList(list: SavedList, createRest = false, restart: BudgetState | null = null, boughtDay: string | null = null) {
     // On mémorise quelle liste est en cours de validation (désactive son bouton).
     setValidating(list.id);
 
@@ -486,9 +506,15 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
     const failures = await applyPendingChanges(boughtItems, list.store_id ?? null);
     if (failures.length > 0) console.error('Non enregistré :', failures.join(', '));
 
-    // 4. Le prix de la course (articles achetés) est déduit du budget de la période en cours
+    // 4. Le prix de la course (articles achetés) est déduit du budget de la liste, sur sa période en cours
+    //    (recommencée d'abord si l'utilisateur l'a accepté : le reste de l'ancienne période est abandonné)
+    if (restart) {
+      const restartError = await restartBudget(restart);
+      if (restartError) console.error(describeBudgetError(restartError));
+    }
     const spent = boughtItems.reduce((sum, item) => sum + (realPriceFor(item) ?? 0), 0);
-    if (spent > 0) await recordExpense(spent, list.name);
+    // La dépense est datée du jour réel des achats (budget de la période où ils ont eu lieu)
+    if (spent > 0) await recordExpense(spent, list.name, budgetOf(list)?.settings.id, boughtDay);
 
     // 5. La liste validée est désactivée (elle reste dans Paramètres > Listes de courses)
     const { error: deactivateError } = await supabase.from('shopping_lists').update({ is_active: false }).eq('id', list.id);
@@ -505,7 +531,9 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
           estimated_price: rest.reduce((sum, item) => sum + (item.expected_price ?? 0), 0),
           is_active: true,
           activated_at: new Date().toISOString(),
-          store_id: list.store_id ?? null
+          store_id: list.store_id ?? null,
+          // Même budget que la liste d'origine
+          ...(list.budget_id ? { budget_id: list.budget_id } : {})
         })
         .select()
         .single();
@@ -705,6 +733,16 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
             </div>
           )}
 
+          {/* Avant le ticket, même sans liste active : scan d'un reçu, qui met à jour les ingrédients (informations et prix)
+              et devient la nouvelle liste de courses active */}
+          {!loading && (
+            <div className="mb-4 flex justify-center">
+              <button onClick={() => setScanOpen(true)} className="btn-hand inline-flex items-center gap-1.5">
+                <ReceiptText size={16} /> Scanner un reçu
+              </button>
+            </div>
+          )}
+
           {/* Aucune liste active : un ticket vide avec le message */}
           {!loading && lists.length === 0 && (
             <div className="receipt text-center">
@@ -720,11 +758,15 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
           {lists.map((list) => {
             // Total de la liste (somme des prix connus) et dépassement de budget :
             // plus que ce qui reste sur la période, ou plus que (reste - marge) si des articles n'ont pas de prix.
-            // Dans ce cas, "Optimiser" passe en rouge et "Valider cette liste" est désactivé.
+            // Dans ce cas, "Optimiser" passe en rouge, et "Valider cette liste" est désactivé tant que la fin de période
+            // est loin (voir validationCheck : on peut alors commencer le budget suivant pendant les derniers jours).
+            const budget = budgetOf(list);
             const prices = list.items.map(realPriceFor);
             const summary = summarizeTotal(prices);
             const hasMissingPrice = prices.some((p) => p == null);
             const overBudget = budget ? isOverBudget(summary.total, hasMissingPrice, budget) : false;
+            const check = budget ? validationCheck(summary.total, hasMissingPrice, budget) : null;
+            const blocked = check?.kind === 'blocked';
             const analysis = analyses[list.id];
             // Magasin choisi pour la liste (via la ligne "Magasin" du ticket)
             const chosenStore = stores.find((s) => s.id === list.store_id);
@@ -787,10 +829,10 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
                       </button>
                     </span>
                   </p>
-                  {/* Budget encore disponible sur la période en cours, et date de sa réactivation */}
+                  {/* Budget de la liste : encore disponible sur la période en cours, et date de sa réactivation */}
                   {budget && (
                     <p className="receipt-row">
-                      <span>Budget :</span>
+                      <span>{budget.settings.name} :</span>
                       <span className="text-right">
                         {budget.remaining.toFixed(2)} € jusqu&apos;au {shortDate(new Date(budget.period.end.getTime() - 86_400_000))}
                       </span>
@@ -943,11 +985,16 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
                 >
                   {optimizing === list.id ? 'Optimisation...' : 'Optimiser'}
                 </button>
-                {/* Bouton de validation : désactivé pendant le traitement, ou tant que le budget est dépassé */}
+                {/* Bouton de validation : désactivé pendant le traitement, ou tant que le budget est dépassé loin de la fin
+                    de période (pendant les derniers jours, on peut valider en commençant le budget suivant) */}
                 <button
                   onClick={() => setConfirmingId(list.id)}
-                  disabled={validating === list.id || overBudget}
-                  title={overBudget ? 'Budget dépassé : optimise la liste avant de la valider' : undefined}
+                  disabled={validating === list.id || blocked}
+                  title={
+                    check?.kind === 'blocked'
+                      ? `Budget dépassé : optimise la liste, ou attends le ${shortDate(check.from)} pour commencer le budget suivant`
+                      : undefined
+                  }
                   className="btn-hand disabled:cursor-not-allowed"
                 >
                   {validating === list.id ? 'Validation...' : 'Valider cette liste'}
@@ -968,15 +1015,28 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
         const chosenStore = stores.find((s) => s.id === list.store_id);
         const prices = list.items.map(realPriceFor);
         const total = prices.reduce<number>((sum, p) => sum + (p ?? 0), 0);
-        const overBudget = budget ? isOverBudget(total, missingPrices.length > 0, budget) : false;
+        // Budget de la liste : la liste qui dépasse ce qui reste est bloquée tant que la fin de période est loin ;
+        // pendant les derniers jours (3 pour un budget à la semaine, 7 au mois), on propose de commencer le budget suivant
+        const budget = budgetOf(list);
+        const check = budget ? validationCheck(total, missingPrices.length > 0, budget) : null;
+        const restart = check?.kind === 'restart';
         const bought = list.items.filter((item) => checkedItems[item.id]);
         // Articles marqués "prix incertain" (appui long) : simple note dans la fenêtre
         const doubtfulItems = list.items.filter((item) => doubtful[item.id]);
-        const ready = list.items.length > 0 && missingPrices.length === 0 && !!chosenStore && !overBudget;
+        const ready = list.items.length > 0 && missingPrices.length === 0 && !!chosenStore && check?.kind !== 'blocked';
         return (
-          <Modal title="Valider mes achats" onClose={() => setConfirmingId(null)} variant={modalVariant}>
+          <Modal title="Valider mes achats" onClose={closeValidation} variant={modalVariant}>
             {ready ? (
               <>
+                {/* Liste plus chère que ce qui reste, en fin de période : on demande si l'on commence le budget suivant */}
+                {restart && budget && (
+                  <p className="text-sm mb-3 px-2 py-1.5 border-2 border-dashed border-brick rounded-sm">
+                    Cette liste ({total.toFixed(2)} €) dépasse ce qui reste sur le budget <strong>« {budget.settings.name} »</strong> (
+                    {budget.remaining.toFixed(2)} €), dont la période se termine le {shortDate(new Date(budget.period.end.getTime() - 86_400_000))}.
+                    Veux-tu <strong>commencer le nouveau budget dès maintenant</strong> ? Les {budget.remaining.toFixed(2)} € restants de
+                    l&apos;ancienne période seront abandonnés.
+                  </p>
+                )}
                 {bought.length === 0 && (
                   <p className="text-sm text-brick mb-3">
                     Aucun article n&apos;est coché : rien ne sera ajouté à l&apos;inventaire ni déduit du budget.
@@ -1009,21 +1069,56 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
                     </span>
                   </label>
                 )}
+                {/* Jour des achats : aujourd'hui, ou le jour réel si la liste est validée plus tard */}
+                <fieldset className="text-sm mb-3">
+                  <legend className="mb-1">Les achats ont-ils eu lieu aujourd&apos;hui ?</legend>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" checked={boughtToday} onChange={() => setBoughtToday(true)} className="accent-brick" />
+                    Oui, aujourd&apos;hui
+                  </label>
+                  <label className="flex flex-wrap items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={!boughtToday}
+                      onChange={() => {
+                        setBoughtToday(false);
+                        if (!boughtOn) setBoughtOn(today());
+                      }}
+                      className="accent-brick"
+                    />
+                    Non, le
+                    <input
+                      type="date"
+                      value={boughtOn}
+                      max={today()}
+                      onChange={(e) => {
+                        setBoughtOn(e.target.value);
+                        setBoughtToday(false);
+                      }}
+                      onFocus={() => setBoughtToday(false)}
+                      className="input-hand"
+                      aria-label="Jour réel des achats"
+                    />
+                  </label>
+                </fieldset>
                 <div className="mb-5" />
                 <div className="flex flex-wrap items-center gap-4">
                   <button
                     autoFocus
+                    disabled={!boughtToday && (!boughtOn || boughtOn > today())}
                     onClick={() => {
                       setConfirmingId(null);
-                      validateList(list, keepRest);
+                      validateList(list, keepRest, restart ? budget : null, boughtToday ? null : boughtOn);
                       setKeepRest(true);
+                      setBoughtToday(true);
+                      setBoughtOn('');
                     }}
-                    className="btn-hand"
+                    className="btn-hand disabled:cursor-not-allowed"
                   >
-                    Oui, valider
+                    {restart ? 'Oui, nouveau budget et valider' : 'Oui, valider'}
                   </button>
                   {/* Même forme que "Oui, valider", couleur plus discrète */}
-                  <button onClick={() => setConfirmingId(null)} className="btn-hand bg-line text-ink">
+                  <button onClick={closeValidation} className="btn-hand bg-line text-ink">
                     Annuler
                   </button>
                 </div>
@@ -1041,7 +1136,12 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
                       {missingPrices.map((item) => item.ingredient?.name ?? 'Ingrédient supprimé').join(', ')} ;
                     </li>
                   )}
-                  {overBudget && <li>le budget de la période est dépassé (optimise la liste).</li>}
+                  {check?.kind === 'blocked' && budget && (
+                    <li>
+                      la liste dépasse ce qui reste sur le budget « {budget.settings.name} » ({budget.remaining.toFixed(2)} €) : optimise-la, ou
+                      attends le {shortDate(check.from)} pour pouvoir commencer le budget suivant.
+                    </li>
+                  )}
                 </ul>
                 <button autoFocus onClick={() => setConfirmingId(null)} className="btn-hand">
                   Compléter la liste
@@ -1051,6 +1151,23 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
           </Modal>
         );
       })()}
+
+      {/* SCAN D'UN REÇU, ouvert depuis le bouton au-dessus du ticket : le reçu devient la nouvelle liste active */}
+      {scanOpen && (
+        <Modal title="Scanner un reçu" onClose={() => setScanOpen(false)} variant={modalVariant} wide>
+          <ReceiptScan
+            ingredients={ingredientsQuery.data ?? []}
+            asActiveList
+            // Budget proposé : celui de la liste active actuelle, sinon le premier budget
+            defaultBudgetId={lists[0] ? budgetOf(lists[0])?.settings.id : undefined}
+            onDone={() => {
+              setScanOpen(false);
+              ingredientsQuery.reload();
+              loadLists();
+            }}
+          />
+        </Modal>
+      )}
 
       {/* CADRE D'AJOUT : affiché au-dessus de la page, pour la liste dont on a cliqué le "+".
           Après l'ajout, on ferme le cadre et on recharge les listes pour voir le nouvel article. */}

@@ -2,14 +2,14 @@
 
 import { Bow, Flourish, NAVY, PAPER } from '@/components/gazette/Lace';
 import { useActiveLists } from '@/lib/activeLists';
-import { shortDate } from '@/lib/budget';
-import { useShoppingBudget, useStores } from '@/lib/coursesQueries';
+import { budgetFor, shortDate } from '@/lib/budget';
+import { useShoppingBudgets, useStores } from '@/lib/coursesQueries';
 import { formatEuros } from '@/lib/finance';
 import { storeLabel } from '@/lib/stores';
 
 // Réclame d'épicerie d'antan, comme les encarts publicitaires des vieux journaux :
 // « Une nouvelle épicerie a vu le jour dans le quartier ! », un panier dessiné au trait, puis ce qui reste
-// du budget courses. Le bouton « Vite, à vos courses » imprime le ticket de la liste active.
+// du budget courses. Le bouton « Vite, à vos courses » fait défiler la page jusqu'au ticket de la liste active.
 
 const serif = { fontFamily: 'var(--font-serif), Georgia, serif' };
 const script = { fontFamily: 'var(--font-script), cursive' };
@@ -56,10 +56,12 @@ function Basket() {
 
 export function GroceryAd({ onOpen }: { onOpen: () => void }) {
   const { data: lists } = useActiveLists();
-  const budget = useShoppingBudget().data;
+  const budgets = useShoppingBudgets().data;
   const stores = useStores().data ?? [];
   const list = lists?.[0];
   const store = list ? stores.find((s) => s.id === list.store_id) : undefined;
+  // Budget de la liste active (celui choisi dans Paramètres > Listes), sinon le premier budget
+  const budget = budgetFor(budgets, list?.budget_id);
 
   return (
     <div className="mt-4">
@@ -99,7 +101,7 @@ export function GroceryAd({ onOpen }: { onOpen: () => void }) {
             </p>
           )}
 
-          {/* Imprime le ticket de la liste de courses active */}
+          {/* Mène au ticket de la liste de courses active, affiché sous la réclame */}
           <button
             type="button"
             onClick={onOpen}

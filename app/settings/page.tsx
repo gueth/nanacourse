@@ -1,6 +1,9 @@
 'use client';
 
-import { Suspense } from 'react';
+import { Suspense, useState } from 'react';
+import { ReceiptText } from 'lucide-react';
+import Modal from '@/components/Modal';
+import ReceiptScan from '@/components/ReceiptScan';
 import { STORE_SELECT } from '@/lib/stores';
 import { useCached } from '@/lib/cache';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -71,13 +74,32 @@ function SettingsContent() {
     };
   });
   const loadAll = query.reload;
+  // Cadre du scan de reçu ouvert ou non
+  const [receiptOpen, setReceiptOpen] = useState(false);
 
   if (!query.data) return <p>Chargement...</p>;
   const { categories, brands, stores, chains, ingredients } = query.data;
 
   return (
     <div>
-      <h1 className="title-hand text-3xl sm:text-4xl mb-3">Paramètres</h1>
+      {/* Titre, et à droite le scan d'un reçu : il met à jour les ingrédients (informations et prix) et les magasins */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <h1 className="title-hand text-3xl sm:text-4xl">Paramètres</h1>
+        <button onClick={() => setReceiptOpen(true)} className="btn-hand inline-flex items-center gap-1.5">
+          <ReceiptText size={18} /> Scanner un reçu
+        </button>
+      </div>
+      {receiptOpen && (
+        <Modal title="Scanner un reçu" onClose={() => setReceiptOpen(false)} wide>
+          <ReceiptScan
+            ingredients={ingredients}
+            onDone={() => {
+              setReceiptOpen(false);
+              loadAll();
+            }}
+          />
+        </Modal>
+      )}
 
       {/* BARRE D'ONGLETS : une seule ligne, qui défile horizontalement sur téléphone ; l'onglet actif est mis en avant */}
       <div className="flex gap-1 overflow-x-auto no-scrollbar border-b-2 border-ink mb-5 -mx-4 px-4 sm:mx-0 sm:px-0">

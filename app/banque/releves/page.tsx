@@ -131,7 +131,7 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
         ? ` Compte de résultat mis à jour pour ${done.filled.map(monthLabel).join(', ')}.`
         : ' Compte de résultat déjà à jour.';
       if (done.kept) message += ` ${done.kept} ligne${done.kept > 1 ? 's' : ''} saisie${done.kept > 1 ? 's' : ''} à la main gardée${done.kept > 1 ? 's' : ''} telle${done.kept > 1 ? 's' : ''} quelle${done.kept > 1 ? 's' : ''}.`;
-      if (done.balances) message += ` Soldes de fin de mois inscrits au bilan (ligne « ${name} »), sauf là où tu les avais saisis toi-même.`;
+      if (done.balances) message += ` Soldes du relevé inscrits au bilan (ligne « ${name} »).`;
     }
     // Relevé de livret : la valeur du livret est aussi mise à jour dans les placements
     if (parsed.summary?.savings && parsed.summary.closing != null && parsed.summary.to) {
@@ -298,7 +298,7 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
                 </>
               )}{' '}
               de chaque mois concerné ({[...new Set(dates.map(monthOf))].map(monthLabel).join(', ')}), même s&apos;il n&apos;est pas
-              celui affiché, avec toutes les opérations connues de chaque mois (même venues d&apos;un autre relevé). Les montants que tu as saisis à la main ne sont jamais modifiés.
+              celui affiché, avec toutes les opérations connues de chaque mois (même venues d&apos;un autre relevé). Sur la période du relevé, ses données remplacent celles déjà inscrites, même à la main. Aucun solde n&apos;est reporté sur les mois suivants : le bilan signale les relevés manquants.
             </span>
           </label>
           {/* Relevé déjà importé ? */}
