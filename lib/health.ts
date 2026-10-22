@@ -2,8 +2,7 @@
 
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { byPeriod, liquidAssets, monthKey, passiveIncome, shiftMonth, totals, type FinanceLine } from '@/lib/finance';
-import type { Investment } from '@/lib/financePlans';
-import { useFinanceLines, useInvestments } from '@/lib/financeQueries';
+import { useFinanceLines } from '@/lib/financeQueries';
 
 // Santé financière : l'état (hémorragie, maladie, fatigue, santé, olympique), la teinte qu'il donne à la partie
 // Finances, et la prévision d'une hémorragie (période sans revenu d'activité).
@@ -87,11 +86,11 @@ const workIncomeOf = (ls: FinanceLine[]) => ls.filter((l) => l.section === 'reve
 // Du plus grave au meilleur :
 //  - hémorragie : plus aucun revenu d'activité (ou arrêt déclaré par l'utilisateur) ;
 //  - maladie : on travaille, mais on dépense plus qu'on ne gagne (ou on est à découvert) ;
-//  - olympique : budget tenu, et on investit (placements au bilan ou dans l'onglet Placements) ;
+//  - olympique : budget tenu, et on investit (rubrique Placements du bilan) ;
 //  - fatigue : budget tenu sans investir, mais le patrimoine progresse moins vite que l'inflation ;
 //  - santé : budget tenu, et le patrimoine progresse au moins au rythme de l'inflation.
 // null : pas encore assez de chiffres.
-export function assessHealth(lines: FinanceLine[], currentMonth: string, investments: Investment[], span: number | 'now', plan: HemorrhagePlan = EMPTY_PLAN) {
+export function assessHealth(lines: FinanceLine[], currentMonth: string, span: number | 'now', plan: HemorrhagePlan = EMPTY_PLAN) {
   const periods = byPeriod(lines.filter((l) => l.amount !== 0));
   // Mois analysables : ceux qui ont des revenus ou des dépenses au compte de résultat (un mois qui n'a que des soldes
   // reportés, faute de relevé importé, n'en fait pas partie : il serait sinon jugé « sans revenu »)
@@ -113,7 +112,7 @@ export function assessHealth(lines: FinanceLine[], currentMonth: string, investm
   const overdraft = L.some((l) => /d[ée]couvert/i.test(l.label) && l.amount > 0);
   const periodLines = (done.length ? done : [ref]).map((p) => periods.get(p) ?? []);
   const workIncome = periodLines.reduce((s, ls) => s + workIncomeOf(ls), 0) / (periodLines.length || 1);
-  const investing = L.some((l) => l.section === 'placements' && l.amount > 0) || investments.some((i) => i.value > 0);
+  const investing = L.some((l) => l.section === 'placements' && l.amount > 0);
   // Progression du patrimoine sur la période, comparée à celle qu'aurait demandé l'inflation
   const startLines = periods.get(shiftMonth(done.length ? done[0] : ref, -1));
   const months = isNow ? 1 : Math.max(1, done.length);
@@ -179,12 +178,11 @@ export function useFinanceTone() {
   );
   const month = viewed ?? currentMonth;
   const lines = useFinanceLines(currentMonth, 13).data;
-  const investments = useInvestments().data;
   const plan = useHemorrhagePlan();
   return useMemo(() => {
-    const health = month && lines ? assessHealth(lines, month, investments ?? [], 'now', plan) : null;
+    const health = month && lines ? assessHealth(lines, month, 'now', plan) : null;
     return { state: health?.state ?? null, ...HEALTH_TONES[health?.state ?? 'sante'] };
-  }, [month, lines, investments, plan]);
+  }, [month, lines, plan]);
 }
 
 // --- Prévision d'une hémorragie ---

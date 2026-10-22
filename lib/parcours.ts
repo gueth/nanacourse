@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { byPeriod, formatEuros, liquidAssets, median, monthLabel, passiveIncome, shiftMonth, totals, type FinanceLine } from '@/lib/finance';
-import { useCategories, useCategoryLimits, useFinanceLines, useGoals, useMonthTransactions } from '@/lib/financeQueries';
+import { useCategories, useCategoryLimits, useFinanceLines, useMonthTransactions } from '@/lib/financeQueries';
 import { categoryById, summarize } from '@/lib/transactions';
 
 // Parcours vers l'autonomie financière : six étapes validées à partir des chiffres.
@@ -20,8 +20,7 @@ export function computeParcours(
   currentMonth: string,
   span: number,
   limits: { category: string; monthly_limit: number }[],
-  lastMonthTx: Parameters<typeof summarize>[0] | undefined,
-  goalsCount: number
+  lastMonthTx: Parameters<typeof summarize>[0] | undefined
 ): Parcours | null {
   const periods = byPeriod(lines.filter((l) => l.amount !== 0));
   const filled = [...periods.keys()].sort();
@@ -87,9 +86,9 @@ export function computeParcours(
     },
     {
       title: 'Faire grandir ton patrimoine',
-      text: 'Définir des objectifs, comprendre les placements et investir selon ton horizon et ton niveau de risque.',
-      done: placements > 0 && goalsCount > 0,
-      action: 'Fixe-toi un objectif chiffré dans l’onglet Objectifs, et renseigne-toi sur les placements adaptés à ton horizon.'
+      text: 'Comprendre les placements et investir selon son horizon et son niveau de risque.',
+      done: placements > 0,
+      action: 'Place une partie de ton épargne selon ton horizon, et inscris tes placements dans ton bilan (rubrique Placements).'
     },
     {
       title: "Atteindre ton objectif d'indépendance",
@@ -108,13 +107,12 @@ export function computeParcours(
 // Parcours calculé à partir des données gardées en mémoire (lib/financeQueries)
 export function useParcours(currentMonth: string | null, span: number) {
   const lines = useFinanceLines(currentMonth, 13).data;
-  const goals = useGoals().data;
   const limits = useCategoryLimits().data;
   // Libellés des catégories personnalisées, pour nommer celles qui dépassent leur limite
   useCategories();
   const lastMonthTx = useMonthTransactions(currentMonth && shiftMonth(currentMonth, -1)).data;
   return useMemo(
-    () => (currentMonth && lines ? computeParcours(lines, currentMonth, span, limits ?? [], lastMonthTx, goals?.length ?? 0) : null),
-    [lines, currentMonth, span, limits, lastMonthTx, goals]
+    () => (currentMonth && lines ? computeParcours(lines, currentMonth, span, limits ?? [], lastMonthTx) : null),
+    [lines, currentMonth, span, limits, lastMonthTx]
   );
 }

@@ -114,8 +114,8 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
   const [addTo, setAddTo] = useState<SavedList | null>(null);
   // Cadre « Scanner un reçu » ouvert ou non (bouton au-dessus du ticket) : le reçu devient la nouvelle liste active
   const [scanOpen, setScanOpen] = useState(false);
-  // Ingrédients connus, pour rattacher les produits lus sur le reçu
-  const ingredientsQuery = useIngredients();
+  // Ingrédients connus, pour rattacher les produits lus sur le reçu (chargés à l'ouverture du scan seulement)
+  const ingredientsQuery = useIngredients(scanOpen);
   // Article dont le cadre de modification est ouvert (clic sur son nom), avec sa liste ; null = fermé.
   const [editing, setEditing] = useState<{ list: SavedList; item: SavedItem } | null>(null);
   // Résultat du bouton "Optimiser", rangé par id de liste (absent = pas encore optimisée).

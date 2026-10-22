@@ -4,10 +4,9 @@ import { useMemo } from 'react';
 import { orThrow, useCached } from '@/lib/cache';
 import { fetchLines, fetchLinesRange, groceriesTotal, shiftMonth } from '@/lib/finance';
 import { countTransactions, fetchBudgets, fetchStatementCoverage, fetchTransactions, loadCategories } from '@/lib/transactions';
-import { fetchDebts, fetchGoals, fetchInvestments } from '@/lib/financePlans';
 
-// Données des pages Finances gardées en mémoire (lib/cache) : partagées entre les pages Santé, Objectifs,
-// Placements et Dettes, elles ne sont chargées qu'une fois puis rafraîchies en arrière-plan.
+// Données des pages Finances gardées en mémoire (lib/cache) : partagées entre les pages Santé, Bilan,
+// Budget et l'accueil, elles ne sont chargées qu'une fois puis rafraîchies en arrière-plan.
 
 // Lignes du bilan et du compte de résultat des "back" derniers mois (et du mois en cours).
 // Une seule requête de 13 mois en arrière sert à toutes les pages ; chacune n'en garde que la période voulue.
@@ -51,27 +50,6 @@ export function useMonthLines(period: string | null) {
 // Total des courses enregistrées dans l'appli pour un mois
 export function useGroceriesTotal(period: string | null) {
   return useCached(period && `finances:courses:${period}`, () => groceriesTotal(period!));
-}
-
-export function useGoals() {
-  return useCached('finances:objectifs', async () => {
-    const { goals, error } = await fetchGoals();
-    return orThrow(goals, error);
-  });
-}
-
-export function useDebts() {
-  return useCached('finances:dettes', async () => {
-    const { debts, error } = await fetchDebts();
-    return orThrow(debts, error);
-  });
-}
-
-export function useInvestments() {
-  return useCached('finances:placements', async () => {
-    const { investments, error } = await fetchInvestments();
-    return orThrow(investments, error);
-  });
 }
 
 // Limites mensuelles des grandes catégories (Finances > Budget) : même mémoire que la page Budget

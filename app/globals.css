@@ -420,14 +420,14 @@ body {
     }
   }
 
-  /* Transition en fondu (page de titre → accueil) : 500ms d'apparition, 150ms opaque,
-     700ms de disparition, soit 1350ms au total (cf. PageFadeTransition.tsx) */
+  /* Transition en fondu (page de titre → accueil) : 250ms d'apparition, 100ms opaque,
+     350ms de disparition, soit 700ms au total (cf. PageFadeTransition.tsx) */
   @keyframes page-fade {
     0% {
       opacity: 0;
     }
-    37%,
-    48% {
+    36%,
+    50% {
       opacity: 1;
     }
     100% {
@@ -756,7 +756,8 @@ body:has(.gazette) {
   background-color: #d6d5d1;
 }
 
-/* Accueil (gazette) : texture de papier par-dessus le gris papier journal (neutre, sans bleu). Grain fin (bruit SVG gris neutre),
+/* Accueil (gazette) : texture de papier par-dessus le gris papier journal (neutre, sans bleu), volontairement légère pour
+   rester fluide sur téléphone (pas de relief calculé ni de mode de mélange, très coûteux à afficher). Grain fin (bruit SVG gris neutre),
    fibres étirées à l'horizontale, et quelques zones plus claires ou plus foncées comme un papier mal pressé */
 .gazette {
   background-image:
@@ -765,10 +766,6 @@ body:has(.gazette) {
     linear-gradient(68deg, transparent 40.4%, rgba(255, 255, 255, 0.32) 41%, rgba(40, 45, 55, 0.1) 41.05%, transparent 41.8%),
     linear-gradient(97deg, transparent 63.4%, rgba(255, 255, 255, 0.32) 64%, rgba(40, 45, 55, 0.1) 64.05%, transparent 64.8%),
     linear-gradient(151deg, transparent 81.4%, rgba(255, 255, 255, 0.32) 82%, rgba(40, 45, 55, 0.1) 82.05%, transparent 82.8%),
-    /* Grands plis de papier froissé : relief en lumière rasante, fondu en « overlay » pour bien marquer creux et bosses */
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='700' height='700'%3E%3Cfilter id='c' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='turbulence' baseFrequency='0.004 0.0055' numOctaves='5' seed='5' stitchTiles='stitch'/%3E%3CfeDiffuseLighting lighting-color='%23fff' surfaceScale='14' diffuseConstant='0.8'%3E%3CfeDistantLight azimuth='225' elevation='38'/%3E%3C/feDiffuseLighting%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23c)'/%3E%3C/svg%3E"),
-    /* Petites rides entre les grands plis, plus discrètes (« soft-light ») */
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='320'%3E%3Cfilter id='w' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='turbulence' baseFrequency='0.018 0.024' numOctaves='3' seed='11' stitchTiles='stitch'/%3E%3CfeDiffuseLighting lighting-color='%23fff' surfaceScale='3.5' diffuseConstant='0.75'%3E%3CfeDistantLight azimuth='225' elevation='50'/%3E%3C/feDiffuseLighting%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23w)'/%3E%3C/svg%3E"),
     /* Grain fin et fibres étirées à l'horizontale */
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.24 0 0 0 0 0.24 0 0 0 0 0.24 0 0 0 0.17 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E"),
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.012 0.18' numOctaves='2' seed='7' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.22 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)'/%3E%3C/svg%3E"),
@@ -776,7 +773,6 @@ body:has(.gazette) {
     radial-gradient(ellipse at 18% 12%, rgba(255, 255, 255, 0.35) 0, transparent 45%),
     radial-gradient(ellipse at 85% 55%, rgba(105, 105, 105, 0.16) 0, transparent 50%),
     radial-gradient(ellipse at 30% 90%, rgba(255, 255, 255, 0.25) 0, transparent 40%);
-  background-blend-mode: normal, normal, normal, normal, overlay, soft-light, normal, normal, normal, normal, normal;
 }
 
 /* Sommaire de la gazette : feuille qui se déplie vers le bas depuis la ligne du haut (léger rebond en fin de course),

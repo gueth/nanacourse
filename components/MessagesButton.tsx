@@ -8,12 +8,18 @@ import { countUnread, runReminders } from '@/lib/messages';
 // Lettre de l'accueil, fixée en bas à droite de l'écran (elle reste visible au défilement) :
 // à l'ouverture, nana envoie les rappels dus, puis la pastille affiche le nombre de messages non lus.
 // À placer hors de ScaledStage : un parent transformé ferait défiler l'élément "fixed" avec la page.
+// Rappels de la session en cours (lancés à la première visite de l'accueil)
+let remindersRun: ReturnType<typeof runReminders> | null = null;
+
 export function MessagesButton() {
   const [unread, setUnread] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    runReminders()
+    // Les rappels ne sont évalués qu'une fois par ouverture de l'appli (plusieurs requêtes et écritures) ;
+    // les visites suivantes de l'accueil se contentent de recompter les non lus
+    remindersRun ??= runReminders();
+    remindersRun
       .then(() => countUnread())
       .then(({ count }) => {
         if (!cancelled) setUnread(count);

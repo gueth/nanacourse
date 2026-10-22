@@ -6,9 +6,9 @@ import { PAPER } from '@/components/gazette/Lace';
 // Fondu (page de titre -> accueil) : un voile couleur papier de l'accueil (gris bleuté, pas le beige du thème)
 // apparaît par-dessus la page, on change de page, puis il s'efface.
 // Doit rester synchronisé avec les paliers de @keyframes page-fade (globals.css).
-const FADE_IN_MS = 500;
-const HOLD_MS = 150; // court palier opaque, laisse à la page suivante le temps de s'afficher
-const FADE_OUT_MS = 700;
+const FADE_IN_MS = 250;
+const HOLD_MS = 100; // court palier opaque, laisse à la page suivante le temps de s'afficher
+const FADE_OUT_MS = 350;
 const TOTAL_MS = FADE_IN_MS + HOLD_MS + FADE_OUT_MS;
 
 type Props = {

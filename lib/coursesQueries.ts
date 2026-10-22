@@ -31,7 +31,8 @@ export function useStores() {
   return useCached('courses:magasins', async () => must<Store[]>(await supabase.from('stores').select(STORE_SELECT).order('name')));
 }
 
-// Ingrédients, par ordre alphabétique (scan d'un reçu depuis le ticket de la liste active)
-export function useIngredients() {
-  return useCached('courses:ingredients', async () => must<Ingredient[]>(await supabase.from('ingredients').select('*').order('name')));
+// Ingrédients, par ordre alphabétique (scan d'un reçu depuis le ticket de la liste active) ;
+// chargés seulement quand on en a besoin (enabled), pour ne pas alourdir l'affichage de l'accueil
+export function useIngredients(enabled = true) {
+  return useCached(enabled ? 'courses:ingredients' : null, async () => must<Ingredient[]>(await supabase.from('ingredients').select('*').order('name')));
 }

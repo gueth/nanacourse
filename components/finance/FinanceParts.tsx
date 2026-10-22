@@ -51,9 +51,6 @@ export function Ornament({ color = FIN.gold, width = 120 }: { color?: string; wi
 const FINANCE_PAGES = [
   { href: '/banque/comptes', label: 'Bilan' },
   { href: '/banque/budget', label: 'Budget' },
-  { href: '/banque/objectifs', label: 'Objectifs' },
-  { href: '/banque/placements', label: 'Placements' },
-  { href: '/banque/dettes', label: 'Dettes' },
   { href: '/banque/releves', label: 'Relevés' }
 ];
 

@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { ChevronDown, Store as StoreIcon } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { AlertTriangle, Check, ChevronDown, Store as StoreIcon } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import type { Brand, Category, Ingredient, Store, Chain } from '@/lib/types';
 import { createIngredient, saveIngredientPrice } from '@/lib/ingredients';
@@ -13,7 +13,7 @@ import StoreOptions from '@/components/StoreOptions';
 import PhotoPicker, { usePhotos } from '@/components/PhotoPicker';
 // Lecture gratuite dans le navigateur (Tesseract.js) puis analyse du texte du reçu
 import { readLines } from '@/lib/ocr';
-import { parseReceipt, type ReceiptItem } from '@/lib/receiptParser';
+import { countArticles, parseReceipt, printedTotal, type ReceiptItem, type ReceiptScanResult, type ReceiptSource } from '@/lib/receiptParser';
 import { loadAliases, rememberAliases } from '@/lib/receiptAliases';
 
 const MAX_PHOTOS = 4;
@@ -45,6 +45,7 @@ type ResultRow = {
   brandId: string; // '' = aucune, NEW = nouvelle marque créée avec brandName
   brandName: string;
   confidence: ReceiptItem['confidence'];
+  sources: ReceiptSource[]; // lignes du ticket d'où vient le produit (extraits de la photo affichés pour vérifier)
 };
 
 // Valeurs proposées pour une ligne : celles de l'ingrédient connu quand elles sont renseignées
@@ -56,6 +57,30 @@ function rowDetails(known: Ingredient | undefined, it: Pick<ReceiptItem, 'type' 
     brandId: known?.brand_id ?? it.brand_id ?? (it.brand_name ? NEW : ''),
     brandName: it.brand_name ?? ''
   };
+}
+
+// Extrait de la photo du ticket : la ligne d'où vient ce qui a été lu, pour comparer avec le texte proposé
+function LineCrop({ src, box }: { src: string; box: ReceiptSource['box'] }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = ref.current;
+      if (!canvas) return;
+      // Un peu de marge autour de la ligne
+      const pad = (box.y1 - box.y0) * 0.3;
+      const x = Math.max(0, box.x0 - pad);
+      const y = Math.max(0, box.y0 - pad);
+      const w = Math.min(img.naturalWidth - x, box.x1 - box.x0 + 2 * pad);
+      const h = Math.min(img.naturalHeight - y, box.y1 - box.y0 + 2 * pad);
+      if (w <= 0 || h <= 0) return;
+      canvas.width = Math.round(w);
+      canvas.height = Math.round(h);
+      canvas.getContext('2d')?.drawImage(img, x, y, w, h, 0, 0, w, h);
+    };
+    img.src = src;
+  }, [src, box]);
+  return <canvas ref={ref} role="img" aria-label="Extrait du ticket" className="block h-auto max-h-14 w-full rounded-sm border border-line bg-white object-contain object-left" />;
 }
 
 // Informations du magasin lues sur le reçu (enseigne, nom, adresse)
@@ -107,6 +132,9 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
   // Affichage : informations du magasin dépliées, et détails dépliés par ligne (clé de la ligne)
   const [storeOpen, setStoreOpen] = useState(false);
   const [openDetails, setOpenDetails] = useState<Record<number, boolean>>({});
+  // Lu sur le ticket : nombre d'articles annoncé et totaux imprimés (pour vérifier la lecture)
+  const [articleCount, setArticleCount] = useState<number | null>(null);
+  const [printedTotals, setPrintedTotals] = useState<ReceiptScanResult['totals']>([]);
 
   useEffect(() => {
     Promise.all([
@@ -146,6 +174,8 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
       const scanned = { chain: result.store_chain ?? '', name: result.store_name ?? '', address: result.store_address ?? '' };
       const matchedId = result.store_id ?? (scanned.chain || scanned.name ? NEW : '');
       setScannedStore(scanned);
+      setArticleCount(result.article_count);
+      setPrintedTotals(result.totals);
       setStoreId(matchedId);
       // Magasin nouveau : ses informations lues sont dépliées, pour être vérifiées
       setStoreOpen(matchedId === NEW);
@@ -162,6 +192,7 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
           quantity: String(it.quantity),
           unitPrice: it.unit_price != null ? String(it.unit_price) : '',
           confidence: it.confidence,
+          sources: it.sources,
           ...rowDetails(
             ingredients.find((i) => i.id === it.ingredient_id),
             it
@@ -398,6 +429,14 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
 
   // ----- ÉTAPE 2 : VÉRIFICATION DES PRODUITS LUS -----
   const toCheck = rows.filter((r) => r.confidence === 'basse').length;
+  // Contrôles de la lecture, sur toutes les lignes lues (cochées ou non) : nombre d'articles et somme des prix,
+  // comparés à ce qui est imprimé sur le ticket
+  const readArticles = countArticles(rows.map((r) => ({ quantity: Number(r.quantity.replace(',', '.')) || 0, type: r.type.trim() || null })));
+  const readSum = Math.round(rows.reduce((sum, r) => sum + (Number(r.unitPrice) || 0) * (Number(r.quantity.replace(',', '.')) || 0), 0) * 100) / 100;
+  const ticketTotal = printedTotal(printedTotals);
+  const distinctTotals = [...new Set(printedTotals.map((t) => t.amount.toFixed(2)))];
+  const sumOk = ticketTotal !== null && Math.abs(readSum - ticketTotal) < 0.01;
+  const countOk = articleCount !== null && readArticles === articleCount;
   const storeTitle = storeId === NEW ? `Nouveau : ${store.name || store.chain || 'magasin'}` : knownStore ? storeLabel(knownStore) : 'Aucun (prix non mémorisés)';
   return (
     <div>
@@ -406,6 +445,43 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
 
       {rows.length > 0 && (
         <>
+          {/* Contrôles : enseigne (en gros en haut du ticket), nombre d'articles et total, comparés à ce qui a été lu */}
+          <div className="mb-3 space-y-1.5 rounded-sm border-2 border-line px-3 py-2 text-sm">
+            <p className="flex items-center gap-2">
+              <StoreIcon size={15} className="shrink-0 opacity-70" />
+              <span className="min-w-0 flex-1 truncate">
+                Enseigne : <b>{scannedStore.chain || 'non lue'}</b>
+              </span>
+            </p>
+            <p className={`flex items-start gap-2 ${articleCount === null ? 'opacity-70' : countOk ? 'text-herb' : 'text-brick'}`}>
+              {articleCount !== null && countOk ? <Check size={15} className="mt-0.5 shrink-0" /> : <AlertTriangle size={15} className="mt-0.5 shrink-0" />}
+              <span>
+                {articleCount === null
+                  ? `${readArticles} article${readArticles > 1 ? 's' : ''} lu${readArticles > 1 ? 's' : ''} (le nombre d'articles n'est pas indiqué sur le ticket)`
+                  : countOk
+                    ? `${articleCount} articles, comme sur le ticket`
+                    : `Le ticket indique ${articleCount} articles, ${readArticles} ont été lus : il manque ou il y a en trop ${Math.abs(articleCount - readArticles)} article${Math.abs(articleCount - readArticles) > 1 ? 's' : ''}.`}
+              </span>
+            </p>
+            <p className={`flex items-start gap-2 ${ticketTotal === null ? 'opacity-70' : sumOk ? 'text-herb' : 'text-brick'}`}>
+              {ticketTotal !== null && sumOk ? <Check size={15} className="mt-0.5 shrink-0" /> : <AlertTriangle size={15} className="mt-0.5 shrink-0" />}
+              <span>
+                {ticketTotal === null
+                  ? `Somme des produits lus : ${readSum.toFixed(2)} € (total du ticket non lu)`
+                  : sumOk
+                    ? `Total du ticket ${ticketTotal.toFixed(2)} € = somme des produits lus`
+                    : `Total du ticket ${ticketTotal.toFixed(2)} €, somme des produits lus ${readSum.toFixed(2)} € : écart de ${Math.abs(ticketTotal - readSum).toFixed(2)} €. Corrige les prix ou les quantités.`}
+                {distinctTotals.length > 1 && (
+                  <span className="block text-xs opacity-80">Totaux imprimés : {distinctTotals.map((t) => `${t.replace('.', ',')} €`).join(' · ')}</span>
+                )}
+              </span>
+            </p>
+            {/* Ligne du total sur la photo, pour vérifier sa lecture */}
+            {printedTotals.length > 0 && photos[printedTotals[printedTotals.length - 1].source.image] && (
+              <LineCrop src={photos[printedTotals[printedTotals.length - 1].source.image].url} box={printedTotals[printedTotals.length - 1].source.box} />
+            )}
+          </div>
+
           {/* Résumé de la lecture */}
           <p className="mb-3 flex flex-wrap gap-1.5 text-xs">
             <span className="rounded-full border border-line px-2 py-0.5">
@@ -497,7 +573,7 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
           </div>
 
           <ul className="mb-4 space-y-2 text-sm">
-            {rows.map((row) => {
+            {rows.map((row, index) => {
               const known = ingredients.find((i) => i.id === row.ingredientId);
               const rule = quantityRule(row.type);
               const low = row.confidence === 'basse';
@@ -542,11 +618,18 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
                           </option>
                         ))}
                       </select>
-                      {/* Texte imprimé sur le reçu, pour vérifier la lecture */}
+                      {/* Numéro dans l'ordre du ticket, texte lu, et extrait de la photo pour comparer */}
                       <p className="mt-0.5 truncate text-[11px] italic opacity-60">
-                        Lu : « {row.raw} »
+                        <span className="not-italic font-bold">n° {index + 1}</span> · Lu : « {row.raw} »
                         {low && <span className="not-italic font-bold text-orange-600"> · à vérifier</span>}
                       </p>
+                      {row.sources.length > 0 && (
+                        <div className="mt-1 space-y-0.5">
+                          {row.sources.map((src, i) =>
+                            photos[src.image] ? <LineCrop key={i} src={photos[src.image].url} box={src.box} /> : null
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
 
