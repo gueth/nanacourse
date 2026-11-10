@@ -1,5 +1,4 @@
 import type { Store } from './types';
-import { halveQuantity, quantityRule } from './quantity';
 
 export type PriceOption = { storeId: string; storeName: string; price: number };
 
@@ -122,8 +121,6 @@ export type ListItemToAnalyze = {
   expectedPrice: number | null;
   // Famille de l'ingrédient (ex : « oeuf ») : un seul article par famille est gardé, le moins cher
   family?: string;
-  // Type de l'ingrédient (kg, pièce, paquet...) : fixe les quantités possibles
-  type?: string | null;
 };
 
 // Un magasin possible pour faire les courses
@@ -141,72 +138,35 @@ export type ListAnalysis = {
   bestStore: Store | null;
   // Les 3 meilleurs magasins, du meilleur au moins bon (articles trouvés, puis prix)
   options: StoreOption[];
-  // Économie totale : prix actuel - prix en allant dans la meilleure boutique,
-  // sans les articles en rouge et avec les articles en orange divisés par deux
+  // Économie totale : prix actuel - prix en allant dans la meilleure boutique, sans les articles en rouge
   savings: number;
-  // Par id d'article : "remove" (rouge) si le stock suffit (sans "stock faible") ou si un article moins cher
-  // de la même famille est gardé ; "reduce" (orange) si le stock est faible ou insuffisant
-  status: Record<string, 'remove' | 'reduce'>;
-  // Nouvelles quantités des articles en orange (moitié, arrondie au pas supérieur selon le type)
-  newQuantities: Record<string, number>;
+  // Par id d'article : "remove" (rouge) si un article moins cher de la même famille est gardé
+  status: Record<string, 'remove'>;
 };
 
 /**
- * Analyse une liste de courses à partir des prix en magasin et de l'inventaire.
+ * Analyse une liste de courses à partir des prix en magasin.
  */
 export function analyzeList(
   items: ListItemToAnalyze[],
   prices: { ingredient_id: string; store_id: string; price: number; available: boolean }[],
-  stores: Store[],
-  // Stock de chaque ingrédient dans l'inventaire : quantité, et "stock faible" coché ou non
-  stockByIngredient: Record<string, { quantity: number; low: boolean }>,
-  // Articles à ne pas réanalyser : on leur garde le statut donné ici (absent = aucun statut)
-  overrides: Record<string, { status?: 'remove' | 'reduce'; newQty?: number }> = {}
+  stores: Store[]
 ): ListAnalysis {
-  // 1. Comparaison avec l'inventaire :
-  //  - absent de l'inventaire (ou à 0) : à acheter, aucune couleur ;
-  //  - présent en quantité suffisante, sans "stock faible" : rouge (inutile de l'acheter) ;
-  //  - présent mais en "stock faible", ou en quantité insuffisante : orange (quantité à réduire).
+  // 1. Plusieurs articles d'une même famille (ex : deux sortes de lait) : on garde le moins cher
+  // (prix de la ligne ; sans prix = en dernier ; à égalité, le premier de la liste), les autres passent en rouge
   const status: ListAnalysis['status'] = {};
-  const newQuantities: ListAnalysis['newQuantities'] = {};
-  for (const item of items) {
-    const stock = stockByIngredient[item.ingredientId];
-    if (!stock || stock.quantity <= 0) continue;
-    if (!stock.low && stock.quantity >= item.quantity) status[item.id] = 'remove';
-    else {
-      status[item.id] = 'reduce';
-      // Moitié arrondie selon le type (0,5 kg possible, mais pas 0,5 pièce)
-      const half = halveQuantity(item.quantity, quantityRule(item.type));
-      if (half != null) newQuantities[item.id] = half;
-    }
-  }
-
-  // Articles figés : on remplace le résultat calculé par celui fourni
-  for (const [id, o] of Object.entries(overrides)) {
-    delete status[id];
-    delete newQuantities[id];
-    if (o.status) status[id] = o.status;
-    if (o.newQty != null) newQuantities[id] = o.newQty;
-  }
-
-  // Plusieurs articles d'une même famille (ex : deux sortes de lait) : parmi ceux qui restent à acheter,
-  // on garde le moins cher (prix de la ligne ; sans prix = en dernier ; à égalité, le premier de la liste),
-  // les autres passent en rouge
   const kept = new Map<string, ListItemToAnalyze>();
   for (const item of items) {
-    if (!item.family || status[item.id] === 'remove') continue;
+    if (!item.family) continue;
     const current = kept.get(item.family);
     if (!current || (item.expectedPrice ?? Infinity) < (current.expectedPrice ?? Infinity)) kept.set(item.family, item);
   }
   for (const item of items) {
-    if (!item.family || status[item.id] === 'remove' || kept.get(item.family) === item) continue;
-    status[item.id] = 'remove';
-    delete newQuantities[item.id];
+    if (item.family && kept.get(item.family) !== item) status[item.id] = 'remove';
   }
 
-  // Quantité après optimisation : 0 pour le rouge, moitié pour l'orange
-  const adjustedQty = (item: ListItemToAnalyze) =>
-    status[item.id] === 'remove' ? 0 : (newQuantities[item.id] ?? item.quantity);
+  // Quantité après optimisation : 0 pour le rouge
+  const adjustedQty = (item: ListItemToAnalyze) => (status[item.id] === 'remove' ? 0 : item.quantity);
 
   // Prix unitaire de chaque ingrédient, magasin par magasin
   const unitPrice = new Map<string, number>();
@@ -229,7 +189,7 @@ export function analyzeList(
     .filter((o) => o.covered > 0)
     .sort((a, b) => b.covered - a.covered || a.total - b.total);
 
-  // 3. Économie en allant dans un magasin (ou sans magasin : seulement les articles en rouge / orange),
+  // 3. Économie en allant dans un magasin (ou sans magasin : seulement les articles en rouge),
   // calculée sur les articles dont le prix actuel est connu
   function savingsWith(store: Store | null) {
     let currentTotal = 0;
@@ -249,8 +209,7 @@ export function analyzeList(
     bestStore: options[0]?.store ?? null,
     options,
     savings: options[0]?.savings ?? savingsWith(null),
-    status,
-    newQuantities
+    status
   };
 }
 

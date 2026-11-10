@@ -30,18 +30,15 @@ import EditListItemForm from '@/components/EditListItemForm';
 import { useConfirm } from '@/components/ConfirmDialog';
 // Total d'une liste et suppression d'une liste avec ses articles (partagés avec les paramètres)
 import { applyStoreToList, saveListTotal } from '@/lib/lists';
-// Ajout des articles achetés au stock (partagé avec le scan de reçu)
-import { addToInventory } from '@/lib/inventory';
 // Modifications faites depuis la liste, appliquées aux ingrédients à la validation
 import { applyPendingChanges } from '@/lib/pending';
 import { deleteList as deleteListCascade } from '@/lib/deletions';
-// Analyse d'une liste : meilleure boutique + comparaison avec l'inventaire
+// Analyse d'une liste : meilleure boutique + doublons d'une même famille
 import { analyzeList, summarizeTotal, type ListAnalysis } from '@/lib/optimize';
 // Icône poubelle pour supprimer un article de la liste
-// (Check / X : boutons ✓ / ✗ pour appliquer ou ignorer l'optimisation d'un article grisé)
-import { Check, ChevronRight, Pencil, Plus, PowerOff, ReceiptText, Trash2, X } from 'lucide-react';
+import { ChevronRight, Pencil, Plus, PowerOff, ReceiptText, Trash2 } from 'lucide-react';
 // Quantités possibles selon le type d'ingrédient (kg, pièce, paquet...)
-import { formatQuantity, normalizeQuantity, quantityRule } from '@/lib/quantity';
+import { normalizeQuantity, quantityRule } from '@/lib/quantity';
 // Ta position et la distance des magasins, pour conseiller un magasin proche
 import { chooseNearbyOption } from '@/lib/geo';
 // Position de départ enregistrée dans le profil
@@ -127,8 +124,6 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
   const budgetOf = (list: SavedList): BudgetState | null => budgetFor(budgets, list.budget_id);
   // id de la liste en cours d'optimisation (pour désactiver son bouton pendant le calcul).
   const [optimizing, setOptimizing] = useState<string | null>(null);
-  // Articles dont l'optimisation a été refusée (✗), par liste : ils ne sont plus réoptimisés.
-  const [rejected, setRejected] = useState<Record<string, Record<string, boolean>>>({});
   // Listes déjà optimisées et non modifiées depuis : leur bouton "Optimiser" est désactivé
   // (il se réactive dès qu'on change un article de la liste).
   const [optimized, setOptimized] = useState<Record<string, boolean>>({});
@@ -143,10 +138,10 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
 
   // Un article de la liste a changé (ou la liste elle-même) :
   //  - on autorise une nouvelle optimisation ;
-  //  - on efface le résultat d'optimisation de cet article, devenu faux (couleur, quantité proposée).
+  //  - on efface le résultat d'optimisation de cet article, devenu faux (couleur).
   function markModified(listId: string, itemId?: string) {
     setOptimized((o) => ({ ...o, [listId]: false }));
-    if (itemId) clearSuggestion(listId, itemId);
+    if (itemId) clearStatus(listId, itemId);
   }
 
   // Articles au prix incertain, marqués par un appui long sur leur libellé (ligne surlignée en gris).
@@ -344,39 +339,15 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
     });
   }
 
-  // Retire la suggestion "grisée" d'un article (après ✓ ou ✗)
-  function clearSuggestion(listId: string, itemId: string) {
+  // Retire la couleur donnée par l'optimisation à un article
+  function clearStatus(listId: string, itemId: string) {
     setAnalyses((a) => {
       const current = a[listId];
       if (!current) return a;
       const status = { ...current.status };
-      const newQuantities = { ...current.newQuantities };
       delete status[itemId];
-      delete newQuantities[itemId];
-      return { ...a, [listId]: { ...current, status, newQuantities } };
+      return { ...a, [listId]: { ...current, status } };
     });
-  }
-
-  // ✗ : refuse l'optimisation d'un article grisé (il ne sera plus réoptimisé)
-  function rejectSuggestion(listId: string, itemId: string) {
-    setRejected((r) => ({ ...r, [listId]: { ...r[listId], [itemId]: true } }));
-    clearSuggestion(listId, itemId);
-  }
-
-  // ✓ : applique l'optimisation sur un article grisé (quantité divisée par deux, prix au prorata)
-  async function applySuggestion(list: SavedList, item: SavedItem, newQty: number) {
-    const newPrice = item.expected_price ? (item.expected_price / item.quantity) * newQty : item.expected_price;
-    const { error } = await supabase
-      .from('shopping_list_items')
-      .update({ quantity: newQty, expected_price: newPrice })
-      .eq('id', item.id);
-    if (error) return console.error(error);
-    await saveListTotal(
-      list.id,
-      list.items.map((i) => (i.id === item.id ? { ...i, expected_price: newPrice } : i))
-    );
-    markModified(list.id, item.id);
-    loadLists();
   }
 
   // SUPPRESSION D'UN ARTICLE de la liste, puis mise à jour du total
@@ -394,36 +365,16 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
 
   // OPTIMISATION :
   //  - indique la meilleure boutique et l'économie totale possible ;
-  //  - colore en rouge les articles déjà assez en stock, sans "stock faible" (l'utilisateur les supprime s'il veut) ;
-  //  - colore aussi en rouge les autres articles d'une même famille : seul le moins cher est gardé ;
-  //  - affiche en gris ceux en "stock faible" ou en partie en stock, avec ✓ / ✗ pour diviser ou non leur quantité par deux.
-  // Lors d'une nouvelle optimisation, seuls les articles validés (✓) ou jamais modifiés sont réanalysés :
-  //  - les articles grisés encore en attente d'un choix gardent leur statut tel quel ;
-  //  - les articles refusés (✗) ne sont plus optimisés.
+  //  - colore en rouge les autres articles d'une même famille : seul le moins cher est gardé (l'utilisateur les supprime s'il veut).
   async function optimizeList(list: SavedList) {
     setOptimizing(list.id);
     const ingredientIds = list.items.map((i) => i.ingredient_id);
 
-    // On charge en parallèle : les prix des ingrédients de la liste, les magasins et l'inventaire
-    const [{ data: prices }, { data: stores }, { data: inv }] = await Promise.all([
+    // On charge en parallèle : les prix des ingrédients de la liste et les magasins
+    const [{ data: prices }, { data: stores }] = await Promise.all([
       supabase.from('ingredient_prices').select('ingredient_id, store_id, price, available').in('ingredient_id', ingredientIds),
-      supabase.from('stores').select(STORE_SELECT),
-      supabase.from('inventory').select('ingredient_id, quantity, low_stock')
+      supabase.from('stores').select(STORE_SELECT)
     ]);
-
-    // Dictionnaire ingredient_id -> stock à la maison (quantité, et "stock faible" coché ou non)
-    const stock: Record<string, { quantity: number; low: boolean }> = {};
-    for (const row of inv ?? []) stock[row.ingredient_id] = { quantity: row.quantity, low: !!row.low_stock };
-
-    // Articles figés : en attente d'un choix (on garde leur statut) ou refusés (aucun statut)
-    const previous = analyses[list.id];
-    const overrides: Record<string, { status?: 'remove' | 'reduce'; newQty?: number }> = {};
-    for (const item of list.items) {
-      if (rejected[list.id]?.[item.id]) overrides[item.id] = {};
-      else if (previous?.status[item.id] === 'reduce' && previous.newQuantities[item.id] != null) {
-        overrides[item.id] = { status: 'reduce', newQty: previous.newQuantities[item.id] };
-      }
-    }
 
     const analysis = analyzeList(
       list.items.map((i) => ({
@@ -431,13 +382,10 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
         ingredientId: i.ingredient_id,
         quantity: i.quantity,
         expectedPrice: expectedPriceFor(i),
-        type: i.ingredient?.type,
         family: i.ingredient ? familyKey(i.ingredient.name) || undefined : undefined
       })),
       prices ?? [],
-      stores ?? [],
-      stock,
-      overrides
+      stores ?? []
     );
 
     // Magasin conseillé parmi les 3 meilleurs : le plus avantageux depuis la position du profil (prix + trajet),
@@ -473,12 +421,11 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
     loadLists();
   }
 
-  // VALIDATION (après confirmation dans la fenêtre de validation) : les articles achetés rejoignent l'inventaire,
-  // leur prix est déduit du budget, et la liste est désactivée
+  // VALIDATION (après confirmation dans la fenêtre de validation) : le prix des articles achetés est déduit du budget,
+  // et la liste est désactivée
   // Étapes :
   //  1. on garde uniquement les articles cochés (achetés)
-  //  2. on lit l'inventaire actuel pour connaître les quantités déjà présentes
-  //  3. on ajoute les quantités achetées dans l'inventaire
+  //  2-3. on applique aux ingrédients les modifications faites depuis la liste
   //  4. on déduit le prix de la course du budget de la période (Profil > Budget)
   //  5. on désactive la liste (elle reste dans les paramètres)
   //  6. on recharge l'affichage et le budget restant
@@ -491,16 +438,7 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
     // 1. Seuls les articles cochés sont considérés comme achetés.
     const boughtItems = list.items.filter((item) => checkedItems[item.id]);
 
-    // 2-3. Les quantités achetées s'ajoutent au stock, en une seule requête
-    // (un même ingrédient sur plusieurs lignes : toutes ses quantités sont additionnées).
-    const error = await addToInventory(boughtItems.map((item) => ({ ingredientId: item.ingredient_id, quantity: item.quantity })));
-    // En cas d'échec, on garde la liste pour ne rien perdre
-    if (error) {
-      console.error(error);
-      return setValidating(null);
-    }
-
-    // 3 bis. Les modifications faites depuis la liste (informations et prix) s'appliquent maintenant aux ingrédients,
+    // 2-3. Les modifications faites depuis la liste (informations et prix) s'appliquent maintenant aux ingrédients,
     // mais seulement pour les articles barrés (achetés) : informations modifiées, et prix mémorisé dans le magasin de la liste.
     // Celles des articles non barrés restent en attente (reprises dans la liste "Reste ..." si on la crée).
     const failures = await applyPendingChanges(boughtItems, list.store_id ?? null);
@@ -575,12 +513,9 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
 
   // Une ligne d'article de la liste (case "acheté", nom, optimisation, prix, suppression)
   function renderItem(list: SavedList, item: SavedItem) {
-    // Couleur donnée par l'optimisation : rouge = déjà en stock ou doublon plus cher de sa famille, gris = quantité à réduire (déjà en partie en stock : moins mis en avant)
+    // Couleur donnée par l'optimisation : rouge = doublon plus cher de sa famille
     const status = analyses[list.id]?.status[item.id];
-    // Quantité proposée pour un article grisé (absente si on ne peut pas diviser par deux)
-    const suggestedQty = analyses[list.id]?.newQuantities[item.id];
-    const statusColor =
-      status === 'remove' ? 'text-red-600' : status === 'reduce' ? 'text-ink/60' : '';
+    const statusColor = status === 'remove' ? 'text-red-600' : '';
     // Quantités possibles pour ce type d'ingrédient (ex : 0,1 kg en 0,1 kg, ou pièces entières)
     const rule = quantityRule(item.ingredient?.type);
     const checked = !!checkedItems[item.id];
@@ -601,7 +536,7 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
           className="w-4 h-4 accent-brick"
           title="Acheté"
         />
-        {/* Colonne 2 — article : nom, et ✓ / ✗ pour un article grisé */}
+        {/* Colonne 2 — article : nom */}
         <span className="min-w-0 flex flex-wrap items-center gap-x-2">
           {/* Clic sur le nom : ouvre le cadre de modification de l'article.
               Appui long : marque / démarque l'article comme "prix incertain" (le clic qui suit est ignoré).
@@ -627,32 +562,6 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
           >
             {item.ingredient?.name ?? 'Ingrédient supprimé'}
           </button>
-        {/* ✓ / ✗ pour un article grisé : diviser sa quantité par deux, ou non */}
-        {status === 'reduce' && suggestedQty != null && (
-          <span className="flex items-center gap-1">
-            <span className="font-bold">
-              → {formatQuantity(suggestedQty)} {rule.unit}
-            </span>
-            <button
-              onClick={() => applySuggestion(list, item, suggestedQty)}
-              disabled={checked}
-              aria-label="Appliquer l'optimisation"
-              title="Appliquer"
-              className="p-1 rounded border-2 border-current hover:bg-line/40"
-            >
-              <Check size={14} />
-            </button>
-            <button
-              onClick={() => rejectSuggestion(list.id, item.id)}
-              disabled={checked}
-              aria-label="Ignorer l'optimisation"
-              title="Ignorer"
-              className="p-1 rounded border-2 border-current hover:bg-line/40"
-            >
-              <X size={14} />
-            </button>
-          </span>
-        )}
         </span>
         {/* Colonne 3 — quantité, modifiable. Le pas et le minimum dépendent du type
             (0,1 kg pour le vrac, 1 pour une pièce ou un paquet). Le prix suit au prorata
@@ -934,7 +843,7 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
                         {/* Validation des articles barrés, écrite clairement */}
                         <button
                           onClick={() => setConfirmingId(list.id)}
-                          title="Les articles barrés rejoignent l'inventaire et leur prix est déduit du budget"
+                          title="Le prix des articles barrés est déduit du budget"
                           className="flex items-center gap-0.5 ml-auto text-[10px] sm:text-xs uppercase underline decoration-dotted underline-offset-4 opacity-70 hover:opacity-100"
                         >
                           Valider mes achats <ChevronRight size={14} />
@@ -1037,7 +946,7 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
                 )}
                 {bought.length === 0 && (
                   <p className="text-sm text-brick mb-3">
-                    Aucun article n&apos;est coché : rien ne sera ajouté à l&apos;inventaire ni déduit du budget.
+                    Aucun article n&apos;est coché : rien ne sera déduit du budget.
                   </p>
                 )}
                 {/* Simple note (n'empêche pas la validation) : articles marqués "prix incertain" par un appui long */}

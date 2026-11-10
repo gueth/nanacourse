@@ -286,8 +286,19 @@ export function LedgerComputed({
 const amountText = (n: number) => (n === 0 ? '' : n.toLocaleString('fr-FR', { maximumFractionDigits: 2 }));
 
 // Une rubrique (ex : Liquidités) dans le tableau : titre et sous-total, puis ses lignes.
-// Rien n'y est modifiable : les montants viennent des relevés et des budgets. "missing" : ligne dont le relevé manque (barre à la place du montant).
-export function SectionBlock({ section, lines, missing }: { section: Section; lines: FinanceLine[]; missing?: (line: FinanceLine) => boolean }) {
+// Rien n'y est modifiable : les montants viennent des relevés et des budgets. "missing" : ligne dont le relevé manque (barre à la place du montant) ;
+// "estimated" : ligne dont le relevé manque mais dont le solde est estimé (précédé de « ≈ »).
+export function SectionBlock({
+  section,
+  lines,
+  missing,
+  estimated
+}: {
+  section: Section;
+  lines: FinanceLine[];
+  missing?: (line: FinanceLine) => boolean;
+  estimated?: (line: FinanceLine) => boolean;
+}) {
   const value = (line: FinanceLine) => (missing?.(line) ? null : line.amount);
   return (
     <tbody>
@@ -299,11 +310,17 @@ export function SectionBlock({ section, lines, missing }: { section: Section; li
             <td className="border-r px-1 py-0.5" style={{ borderColor: FIN.line }}>
               <p className="px-1 py-1 text-[12px]" style={{ color: FIN.navy }}>
                 {line.label}
+                {estimated?.(line) && (
+                  <span className="block text-[9px] italic" style={{ color: FIN.slate }}>
+                    relevé manquant · solde estimé
+                  </span>
+                )}
               </p>
             </td>
             <td className="px-1 py-0.5">
               <div className="flex items-baseline gap-0.5">
-                <span className="w-full min-w-0 px-1 py-1 text-right text-[12px]" style={{ color: FIN.navy }}>
+                <span className={`w-full min-w-0 px-1 py-1 text-right text-[12px] ${estimated?.(line) ? 'italic' : ''}`} style={{ color: FIN.navy }}>
+                  {amount !== null && estimated?.(line) && '≈ '}
                   {amount === null ? <Amount value={null} /> : amountText(amount) || <span style={{ opacity: 0.4 }}>0</span>}
                 </span>
                 <span className="text-[11px]" style={{ color: FIN.slate }}>

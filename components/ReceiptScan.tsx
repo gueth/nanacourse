@@ -98,7 +98,7 @@ function storeDetails(store: Store | undefined, scanned: StoreDetails): StoreDet
 //     les correspondances déjà validées (texte du reçu -> ingrédient) sont reconnues directement ;
 //  3. on vérifie / corrige chaque ligne ;
 //  4. les lignes cochées : nouveaux ingrédients créés, informations des ingrédients connus complétées
-//     ou corrigées, prix mémorisés pour ce magasin (il n'y a plus d'inventaire à mettre à jour) ;
+//     ou corrigées, prix mémorisés pour ce magasin ;
 //     le magasin est créé ou complété (enseigne, nom, adresse lus sur le reçu).
 export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asActiveList = false }: Props) {
   const { photos, add: addPhotos, remove: removePhoto, error: photoError } = usePhotos(MAX_PHOTOS);

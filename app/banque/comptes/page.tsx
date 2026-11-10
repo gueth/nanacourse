@@ -5,7 +5,8 @@ import Link from 'next/link';
 import { AlertTriangle, PenLine } from 'lucide-react';
 import { rememberedFinanceMonth, useViewedMonth } from '@/lib/health';
 import { useCoverage, useMonthLines, useMonthOperations } from '@/lib/financeQueries';
-import { isMissingLine, manualNotes, monthStatus } from '@/lib/coverage';
+import { estimateOf, isMissingLine, manualNotes, monthStatus, withEstimates, type TransferQuestion } from '@/lib/coverage';
+import { lastDayOf, setTransferAccount } from '@/lib/transactions';
 import { formatEuros, monthEndLabel, monthKey, monthLabel, SECTIONS, shiftMonth, totals, type FinanceLine, type Side, type Statement } from '@/lib/finance';
 import {
   useFinanceToneVars,
@@ -55,15 +56,16 @@ const readMonth = () => monthKey(new Date());
 
 // Le bilan et le compte de résultat ne se modifient pas ici : leurs montants viennent des relevés importés (Gestion)
 // et des budgets (Budget). Aucun montant n'est reporté d'un mois sur l'autre : quand le relevé d'un compte manque,
-// une barre remplace son solde et les totaux qui en dépendent.
+// une barre remplace son solde et les totaux qui en dépendent ; pour un livret, son solde est estimé quand c'est possible
+// (lib/coverage), et le relevé reste signalé comme manquant.
 export default function FinancePage() {
   // Teinte de la partie Finances selon l'état de santé
   const toneVars = useFinanceToneVars();
   const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
   const [offset, setOffset] = useState(0);
-  // Le Bilan s'ouvre sur le mois qu'on regardait sur le Budget, sinon sur le mois en cours
+  // Le Bilan s'ouvre sur le mois qu'on regardait sur le Budget, sinon sur le mois précédent (le dernier terminé)
   const [remembered] = useState(rememberedFinanceMonth);
-  const startMonth = remembered ?? currentMonth;
+  const startMonth = remembered ?? (currentMonth && shiftMonth(currentMonth, -1));
   const period = startMonth ? shiftMonth(startMonth, offset) : null;
   // La teinte de la partie Finances suit l'état de santé du mois affiché
   useViewedMonth(period);
@@ -74,27 +76,45 @@ export default function FinancePage() {
   // Le mois en cours reste un « nouveau mois » tant que son relevé n'est pas importé
   const operations = useMonthOperations(period).data;
   // Relevés présents ou manquants (règles dans lib/coverage, les mêmes que pour l'accueil et l'état de santé)
-  const coverage = useCoverage().data;
+  const coverageQuery = useCoverage();
+  const coverage = coverageQuery.data;
   const stored = currentQuery.data ?? [];
   const balanceLine = (account: string) => stored.find((l) => l.section === 'liquidites' && l.label.toLowerCase() === account);
-  const missingAccounts = period && coverage ? monthStatus(coverage, period).missing : [];
+  const status = period && coverage ? monthStatus(coverage, period) : null;
+  // Relevés manquants : toujours signalés ; le solde d'un livret est estimé quand c'est possible, sinon il est inconnu
+  const missingAccounts = status?.missing ?? [];
+  const unknownAccounts = status?.unknown ?? [];
+  const estimatedAccounts = status?.estimated ?? [];
   // Opérations ajoutées à la main ce mois-ci : elles tiennent lieu de relevé pour leur compte, une note le signale
   const manual = period && coverage ? manualNotes(coverage, period) : [];
-  const isMissing = (line: FinanceLine) => isMissingLine(line, missingAccounts);
-  // Un compte dont le relevé manque a sa ligne au bilan (avec une barre), même s'il n'en avait pas encore
-  const lines: FinanceLine[] = [
+  const isMissing = (line: FinanceLine) => isMissingLine(line, unknownAccounts);
+  const isEstimated = (line: FinanceLine) => line.section === 'liquidites' && estimatedAccounts.some((a) => a.toLowerCase() === line.label.toLowerCase());
+  // Un compte dont le relevé manque a sa ligne au bilan (avec une barre ou son solde estimé), même s'il n'en avait pas encore
+  const withMissing: FinanceLine[] = [
     ...stored,
     ...missingAccounts
       .filter((a) => !balanceLine(a.toLowerCase()))
       .map((a) => ({ id: `manquant-${a}`, period: period!, statement: 'bilan' as const, section: 'liquidites', label: a, amount: 0, position: 1000 }))
   ];
+  const lines = period && coverage ? withEstimates(withMissing, coverage, period) : withMissing;
+  // Virements entre mes comptes dont l'autre compte est à préciser : chacun se précise dans le mois où il a eu lieu
+  const questions = (coverage?.questions ?? []).filter((q) => !!period && q.date.startsWith(period));
+  // Mois (autres que celui affiché) dont des virements restent à préciser pour estimer le solde d'un livret ce mois-ci
+  const pendingMonths = (account: string) => {
+    const e = period && coverage?.estimates.find((x) => x.month === period && x.account === account && x.balance === null);
+    if (!e) return [];
+    const months = (coverage?.questions ?? []).filter((q) => q.date > lastDayOf(e.base) && q.date <= lastDayOf(e.month)).map((q) => q.date.slice(0, 7));
+    return [...new Set(months)].filter((m) => m !== period).sort();
+  };
   const error = currentQuery.error && describeError(currentQuery.error);
 
   const loading = !period || (currentQuery.data === undefined && !currentQuery.error);
   const isNew = !!period && (stored.length === 0 || (period === currentMonth && operations === 0));
   const t = totals(lines.filter((l) => !isMissing(l)));
-  // Il manque un relevé : le patrimoine et les totaux du bilan ne sont pas connus (null : affichés avec une barre)
-  const incomplete = missingAccounts.length > 0;
+  // Un solde n'est pas connu : le patrimoine et les totaux du bilan non plus (null : affichés avec une barre)
+  const incomplete = unknownAccounts.length > 0;
+  // Des soldes sont estimés : les totaux le sont aussi
+  const estimatedBilan = !incomplete && estimatedAccounts.length > 0;
   const known = (n: number) => (incomplete ? null : n);
   // Le compte de résultat (revenus, dépenses, épargne du mois) ne dépend que des comptes courants : un relevé de livret
   // manquant ne le rend pas incomplet
@@ -104,7 +124,7 @@ export default function FinancePage() {
   // Affiche toutes les rubriques d'un côté du document
   function renderSide(side: Side) {
     return SECTIONS.filter((s) => s.side === side).map((section) => (
-      <SectionBlock key={section.id} section={section} lines={lines.filter((l) => l.section === section.id)} missing={isMissing} />
+      <SectionBlock key={section.id} section={section} lines={lines.filter((l) => l.section === section.id)} missing={isMissing} estimated={isEstimated} />
     ));
   }
 
@@ -141,21 +161,38 @@ export default function FinancePage() {
           <NewMonthCard period={period} />
         ) : (
           <>
-            {/* Relevés manquants du mois affiché : un court message par compte, qui mène à l'import */}
-            {incomplete && (
+            {/* Relevés manquants du mois affiché : un court message par compte, qui mène à l'import (toujours affiché,
+                même quand le solde d'un livret est estimé) */}
+            {missingAccounts.length > 0 && (
               <Link
                 href="/banque/releves"
                 className="mt-5 block rounded-sm border px-3 py-2 text-[12px]"
                 style={{ borderColor: FIN.rose, backgroundColor: FIN.paper, color: FIN.rose }}
               >
-                {missingAccounts.map((a) => (
-                  <span key={a} className="flex items-center gap-2 py-0.5">
-                    <AlertTriangle size={14} className="shrink-0" aria-hidden />
-                    Relevé {a} manquant
-                  </span>
-                ))}
+                {missingAccounts.map((a) => {
+                  const estimate = estimateOf(coverage!, a, period!);
+                  return (
+                    <span key={a} className="flex items-start gap-2 py-0.5">
+                      <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden />
+                      <span>
+                        Relevé {a} manquant
+                        {estimate && (
+                          <span className="block text-[10px]" style={{ color: FIN.slate }}>
+                            {estimate.balance !== null
+                              ? `Solde estimé : relevé de ${monthLabel(estimate.base)} et virements entre tes comptes depuis (hors intérêts)`
+                              : pendingMonths(a).length
+                                ? `Solde estimé dès que les virements de ${pendingMonths(a).map(monthLabel).join(', ')} seront précisés (sur ${pendingMonths(a).length > 1 ? 'ces mois' : 'ce mois'})`
+                                : 'Solde estimé dès que les virements ci-dessous seront précisés'}
+                          </span>
+                        )}
+                      </span>
+                    </span>
+                  );
+                })}
               </Link>
             )}
+            {/* Virements dont on ne sait pas vers quel compte va l'argent : la réponse permet d'estimer le solde du livret */}
+            {questions.length > 0 && <TransferQuestions questions={questions} onAnswered={coverageQuery.reload} />}
             {/* Opérations ajoutées à la main : elles comptent pour le mois, en attendant (ou en plus) du relevé */}
             {manual.length > 0 && (
               <div className="mt-3 rounded-sm border px-3 py-2 text-[12px]" style={{ borderColor: FIN.gold, backgroundColor: FIN.paper, color: FIN.navy }}>
@@ -172,8 +209,9 @@ export default function FinancePage() {
             <div className="mt-6 grid grid-cols-2 gap-2">
               <SummaryTile
                 label="Patrimoine net"
-                value={incomplete ? '—' : formatEuros(t.patrimoine)}
+                value={incomplete ? '—' : `${estimatedBilan ? '≈ ' : ''}${formatEuros(t.patrimoine)}`}
                 color={incomplete || t.patrimoine >= 0 ? FIN.navy : FIN.rose}
+                note={estimatedBilan ? 'estimé, relevé manquant' : undefined}
               />
               <SummaryTile
                 label="Épargne du mois"
@@ -224,7 +262,9 @@ export default function FinancePage() {
                     </Ledger>
                     {!incomplete && (
                       <p className="mt-2 text-center text-[10px] uppercase tracking-[0.2em]" style={{ color: FIN.sage }}>
-                        ✓ Actif = Passif = {formatEuros(t.actif)}
+                        ✓ Actif = Passif = {estimatedBilan ? '≈ ' : ''}
+                        {formatEuros(t.actif)}
+                        {estimatedBilan ? ' (soldes estimés)' : ''}
                       </p>
                     )}
                     <p className="mt-1 text-center text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
@@ -284,6 +324,64 @@ export default function FinancePage() {
           </>
         )}
       </main>
+    </div>
+  );
+}
+
+// Virements entre mes comptes à préciser : pour chacun, l'autre compte (celui qui reçoit l'argent, ou qui l'envoie)
+function TransferQuestions({ questions, onAnswered }: { questions: TransferQuestion[]; onAnswered: () => Promise<unknown> }) {
+  const [saving, setSaving] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  async function answer(id: string, account: string) {
+    setSaving(id);
+    setError(null);
+    const err = await setTransferAccount(id, account);
+    if (err)
+      setError(
+        /transfer_account/.test(err.message)
+          ? "La colonne « transfer_account » n'existe pas encore : lance le script supabase/transfer_accounts.sql dans Supabase."
+          : `Erreur : ${err.message}`
+      );
+    else await onAnswered();
+    setSaving(null);
+  }
+  return (
+    <div className="mt-3 rounded-sm border px-3 py-2 text-[12px]" style={{ borderColor: FIN.gold, backgroundColor: FIN.paper, color: FIN.navy }}>
+      <p className="text-[11px]" style={{ color: FIN.slate }}>
+        Virements entre tes comptes : précise l&apos;autre compte pour estimer le solde de ton livret.
+      </p>
+      {questions.map((q) => (
+        <label key={q.id} className="mt-2 block">
+          <span className="block">
+            {new Date(q.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} · {q.label}
+          </span>
+          <span className="flex items-center gap-2 text-[11px]" style={{ color: FIN.slate }}>
+            {formatEuros(q.amount)} sur {q.account}, {q.amount < 0 ? 'vers' : 'depuis'}
+            <select
+              className="min-w-0 flex-1 rounded-sm border bg-transparent px-1 py-0.5 text-[12px]"
+              style={{ borderColor: FIN.line, color: FIN.navy }}
+              defaultValue=""
+              disabled={saving === q.id}
+              onChange={(e) => e.target.value !== '' && answer(q.id, e.target.value === '-' ? '' : e.target.value)}
+            >
+              <option value="" disabled>
+                Choisir…
+              </option>
+              {q.choices.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+              <option value="-">Un compte non suivi ici</option>
+            </select>
+          </span>
+        </label>
+      ))}
+      {error && (
+        <p className="mt-2 text-[11px]" style={{ color: FIN.rose }}>
+          {error}
+        </p>
+      )}
     </div>
   );
 }

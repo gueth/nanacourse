@@ -74,12 +74,6 @@ export function normalizeQuantity(value: number, rule: QuantityRule) {
   return clean(Math.max(rule.min, Math.round(value / rule.step) * rule.step));
 }
 
-// Moitié d'une quantité, arrondie au pas supérieur ; null si on ne peut pas descendre plus bas
-export function halveQuantity(value: number, rule: QuantityRule) {
-  const half = clean(Math.max(rule.min, Math.ceil(value / 2 / rule.step) * rule.step));
-  return half < value ? half : null;
-}
-
 // Affichage d'une quantité à la française (virgule décimale)
 export function formatQuantity(value: number) {
   return String(clean(value)).replace('.', ',');

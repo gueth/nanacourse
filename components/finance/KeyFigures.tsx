@@ -1,7 +1,7 @@
 'use client';
 
 import { formatEuros } from '@/lib/finance';
-import { useCategoryLimits } from '@/lib/financeQueries';
+import { useCategoryLimits, useMonthBudgets } from '@/lib/financeQueries';
 import { debtOfMonth } from '@/lib/selfDebt';
 import { annualPlans, categoryById, lastDayOf, monthOf, spendingChanges, summarize, type Transaction } from '@/lib/transactions';
 import { FIN, Panel } from '@/components/finance/FinanceParts';
@@ -42,6 +42,7 @@ export function KeyFigures({
   fixed: number;
 }) {
   const budgets = useCategoryLimits().data;
+  const monthBudgets = useMonthBudgets().data;
   const monthTx = transactions.filter((t) => monthOf(t.date) === period);
   const { income, expenses } = summarize(monthTx);
 
@@ -56,7 +57,7 @@ export function KeyFigures({
   const avgRate = previousRates.length ? previousRates.reduce((s, r) => s + r, 0) / previousRates.length : null;
 
   const rate = income > 0 ? (income - expenses) / income : null;
-  const debt = budgets ? debtOfMonth(period, monthTx, budgets, annualPlans()) : null;
+  const debt = budgets && monthBudgets ? debtOfMonth(period, monthTx, budgets, annualPlans(), monthBudgets) : null;
   // Mois en cours : dépense par jour écoulé
   const days = period === currentMonth ? new Date().getDate() : Number(lastDayOf(period).slice(8));
   const changes = spendingChanges(period, transactions);

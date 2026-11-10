@@ -31,7 +31,7 @@ export async function deleteChain(id: string): Promise<DbError> {
   return (await supabase.from('chains').delete().eq('id', id)).error;
 }
 
-// INGRÉDIENT : retiré des listes de courses (dont le total est recalculé), de l'inventaire et des prix
+// INGRÉDIENT : retiré des listes de courses (dont le total est recalculé) et des prix
 export async function deleteIngredient(id: string): Promise<DbError> {
   // Listes qui contiennent cet ingrédient, pour recalculer leur total ensuite
   const { data: rows, error: readError } = await supabase
@@ -42,7 +42,6 @@ export async function deleteIngredient(id: string): Promise<DbError> {
 
   const results = await Promise.all([
     supabase.from('shopping_list_items').delete().eq('ingredient_id', id),
-    supabase.from('inventory').delete().eq('ingredient_id', id),
     supabase.from('ingredient_prices').delete().eq('ingredient_id', id)
   ]);
   const failed = results.find((r) => r.error);

@@ -122,10 +122,9 @@ export default function IngredientsSettings({ ingredients, categories, stores, o
     else onChange();
   }
 
-  // SUPPRESSION D'UN INGRÉDIENT, après confirmation : il est aussi retiré des listes de courses,
-  // de l'inventaire et des prix
+  // SUPPRESSION D'UN INGRÉDIENT, après confirmation : il est aussi retiré des listes de courses et des prix
   async function handleDelete(ing: IngredientWithRelations) {
-    if (!(await confirm("Supprimer l'ingrédient", `Supprimer « ${ing.name} » ? Il sera aussi retiré des listes de courses, de l'inventaire et de ses prix.`))) return;
+    if (!(await confirm("Supprimer l'ingrédient", `Supprimer « ${ing.name} » ? Il sera aussi retiré des listes de courses et de ses prix.`))) return;
     setErrorMessage('');
     const error = await deleteIngredient(ing.id);
     if (error) {

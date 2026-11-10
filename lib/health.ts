@@ -159,7 +159,7 @@ const viewedListeners = new Set<() => void>();
 // Dernier mois affiché, gardé en changeant de page : Bilan et Budget s'ouvrent sur le mois qu'on regardait
 let rememberedMonth: string | null = null;
 export const rememberedFinanceMonth = () => rememberedMonth;
-// En retournant à l'accueil, les Finances se rouvriront sur le mois en cours
+// En retournant à l'accueil, les Finances se rouvriront sur le mois précédent (le dernier terminé)
 export const forgetFinanceMonth = () => {
   rememberedMonth = null;
 };

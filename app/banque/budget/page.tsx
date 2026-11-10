@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useSyncExternalStore } from 'react';
 import { latestCached, orThrow, setCachedAll, useCached } from '@/lib/cache';
-import { AlertTriangle, Plus, X } from 'lucide-react';
+import { Plus, X } from 'lucide-react';
 import { useConfirm } from '@/components/ConfirmDialog';
 import { formatEuros, monthKey, monthLabel, shiftMonth } from '@/lib/finance';
 import {
@@ -295,9 +295,9 @@ export default function BudgetPage() {
   const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
   const [offset, setOffset] = useState(0);
   const askedMonth = useSyncExternalStore(noSubscribe, readAskedMonth, () => null);
-  // Sinon, le mois qu'on regardait sur le Bilan (ou lors de la dernière visite du Budget)
+  // Sinon, le mois qu'on regardait sur le Bilan (ou lors de la dernière visite du Budget), sinon le mois précédent
   const [remembered] = useState(rememberedFinanceMonth);
-  const startMonth = askedMonth ?? remembered ?? currentMonth;
+  const startMonth = askedMonth ?? remembered ?? (currentMonth && shiftMonth(currentMonth, -1));
   const period = startMonth ? shiftMonth(startMonth, offset) : null;
   // La teinte de la partie Finances suit l'état de santé du mois affiché
   useViewedMonth(period);
@@ -331,6 +331,7 @@ export default function BudgetPage() {
   const monthTx = useMemo(() => transactions.filter((t) => period && monthOf(t.date) === period), [transactions, period]);
   const history = useMemo(() => transactions.filter((t) => period && monthOf(t.date) < period), [transactions, period]);
   const summary = summarize(monthTx);
+  // Dépenses inhabituelles : comptées comme occasionnelles dans la barre fixes / variables / occasionnelles
   const unusual = useMemo(() => detectUnusual(monthTx, history), [monthTx, history]);
   const unusualIds = new Set(unusual.map((t) => t.id));
   const split = splitByKind(monthTx, unusualIds);
@@ -473,29 +474,10 @@ export default function BudgetPage() {
           )}
 
           <OthersPanel items={monthTx.filter((t) => OTHER_IDS.includes(t.category))} onClassify={classifyOther} />
-
           <KeyFigures period={period!} currentMonth={currentMonth} transactions={transactions} fixed={split.fixed} />
 
           {/* Ce que dit le relevé face aux limites : barre de progression, dépassement et de combien */}
-          <BudgetLimits period={period!} monthTx={monthTx} onError={setError} onCategoriesChanged={() => categoriesQuery.reload()} />
-
-          {unusual.length > 0 && (
-            <Panel title="Inhabituel" subtitle="Dépenses bien plus élevées que d'habitude dans leur catégorie, ou grosse dépense chez un nouveau commerçant.">
-              <ul className="space-y-1 text-[12px]">
-                {unusual.map((t) => (
-                  <li key={t.id} className="flex items-start justify-between gap-2">
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <AlertTriangle size={13} className="shrink-0" style={{ color: FIN.gold }} />
-                      <span className="min-w-0 break-words">
-                        {shortDate(t.date)} · {t.label}
-                      </span>
-                    </span>
-                    <b className="shrink-0" style={{ color: FIN.rose }}>{formatEuros(-t.amount)}</b>
-                  </li>
-                ))}
-              </ul>
-            </Panel>
-          )}
+          <BudgetLimits period={period!} currentMonth={currentMonth} monthTx={monthTx} onError={setError} onCategoriesChanged={() => categoriesQuery.reload()} />
 
           <Panel collapsible title="Liste des opérations" subtitle="Corrige une catégorie si besoin : l'appli peut retenir ta correction pour les fois suivantes.">
             <ul className="divide-y" style={{ borderColor: FIN.line }}>

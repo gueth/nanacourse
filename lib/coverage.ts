@@ -10,12 +10,22 @@ import type { FinanceLine } from '@/lib/finance';
 //  - sinon il manque : son solde n'est pas connu, ni le patrimoine du mois ; si c'est un compte courant,
 //    le compte de résultat du mois (revenus, dépenses, épargne) ne l'est pas non plus. Un livret manquant ne touche
 //    pas au résultat : seuls les comptes courants le font.
+//  - exception : le relevé d'un livret (Livret A, LEP...) arrive souvent bien après la fin du mois. Son solde est alors
+//    estimé (voir estimateSavings, lib/transactions) : dernier solde connu, plus les virements entre mes comptes vus
+//    depuis sur les autres comptes. Le relevé reste signalé comme manquant, et le solde comme estimé.
 export type TrackedAccount = { account: string; first: string };
 export type ManualNote = { account: string; month: string; count: number };
+// Solde estimé d'un livret à la fin d'un mois sans relevé ; balance null : des virements sont à préciser (questions)
+export type SavingsEstimate = { account: string; month: string; base: string; balance: number | null };
+// Virement entre mes comptes dont on ne sait pas vers quel compte (ou de quel compte) va l'argent : à préciser.
+// choices : mes autres comptes ; '' = un compte qui n'est pas suivi ici
+export type TransferQuestion = { id: string; date: string; label: string; amount: number; account: string; choices: string[] };
 export type Coverage = {
   tracked: TrackedAccount[];
   covered: string[]; // "compte en minuscules|AAAA-MM"
   manual: ManualNote[]; // opérations ajoutées à la main, par compte et par mois
+  estimates: SavingsEstimate[];
+  questions: TransferQuestion[];
 };
 
 const keyOf = (account: string, month: string) => `${account.toLowerCase()}|${month}`;
@@ -29,31 +39,60 @@ export function missingAccounts(coverage: Coverage, month: string) {
 // Opérations ajoutées à la main dans le mois, compte par compte
 export const manualNotes = (coverage: Coverage, month: string) => coverage.manual.filter((m) => m.month === month);
 
-// Ce qui est connu d'un mois : bilan complet (aucun relevé manquant), compte de résultat complet (aucun compte courant manquant)
+// Solde estimé d'un compte pour le mois (undefined : pas d'estimation possible)
+export const estimateOf = (coverage: Coverage, account: string, month: string) =>
+  coverage.estimates.find((e) => e.month === month && e.account.toLowerCase() === account.toLowerCase());
+
+// Ce qui est connu d'un mois :
+//  - missing : comptes dont le relevé manque (toujours signalés) ; estimated : ceux dont le solde est estimé ;
+//    unknown : ceux dont le solde n'est pas connu du tout
+//  - bilan complet (aucun solde inconnu, estimé ou non), compte de résultat complet (aucun compte courant manquant)
 export function monthStatus(coverage: Coverage, month: string) {
   const missing = missingAccounts(coverage, month);
-  return { missing, bilanKnown: missing.length === 0, resultKnown: !missing.some((a) => !isSavingsAccount(a)) };
+  const estimated = missing.filter((a) => typeof estimateOf(coverage, a, month)?.balance === 'number');
+  const unknown = missing.filter((a) => !estimated.includes(a));
+  return { missing, estimated, unknown, bilanKnown: unknown.length === 0, resultKnown: !missing.some((a) => !isSavingsAccount(a)) };
 }
 
-// Lignes d'un compte dont le relevé manque pour leur mois : leur solde n'est pas connu
-export const isMissingLine = (line: Pick<FinanceLine, 'section' | 'label'>, missing: string[]) =>
-  line.section === 'liquidites' && missing.some((a) => a.toLowerCase() === line.label.toLowerCase());
+// Lignes d'un compte dont le solde n'est pas connu pour leur mois (relevé manquant, sans estimation)
+export const isMissingLine = (line: Pick<FinanceLine, 'section' | 'label'>, unknown: string[]) =>
+  line.section === 'liquidites' && unknown.some((a) => a.toLowerCase() === line.label.toLowerCase());
 
-// Lignes de plusieurs mois sans les soldes inconnus, et les mois dont le bilan ou le résultat n'est pas connu
+// Lignes d'un mois avec les soldes estimés à la place des soldes inscrits (une ligne est ajoutée au besoin)
+export function withEstimates(lines: FinanceLine[], coverage: Coverage, month: string) {
+  const estimated = monthStatus(coverage, month).estimated;
+  if (estimated.length === 0) return lines;
+  const balanceOf = (account: string) => estimateOf(coverage, account, month)!.balance!;
+  const isEstimated = (l: FinanceLine) => l.period === month && l.section === 'liquidites' && estimated.some((a) => a.toLowerCase() === l.label.toLowerCase());
+  const added = estimated
+    .filter((a) => !lines.some((l) => isEstimated(l) && l.label.toLowerCase() === a.toLowerCase()))
+    .map((a): FinanceLine => ({ id: `estime-${a}-${month}`, period: month, statement: 'bilan', section: 'liquidites', label: a, amount: 0, position: 1000 }));
+  return [...lines, ...added].map((l) => (isEstimated(l) ? { ...l, amount: balanceOf(l.label) } : l));
+}
+
+// Lignes de plusieurs mois sans les soldes inconnus (les soldes estimés y remplacent ceux inscrits), et les mois dont
+// le bilan ou le résultat n'est pas connu, ou dont le bilan n'est qu'estimé
 // (un vieux solde recopié d'un mois sur l'autre n'est ainsi jamais pris pour un vrai)
 export function knownLines(lines: FinanceLine[], coverage: Coverage | undefined) {
   const unknownBilan = new Set<string>();
   const unknownResult = new Set<string>();
-  if (!coverage) return { lines, unknownBilan, unknownResult };
+  const estimatedBilan = new Set<string>();
+  if (!coverage) return { lines, unknownBilan, unknownResult, estimatedBilan };
   const status = new Map<string, ReturnType<typeof monthStatus>>();
   const statusOf = (month: string) => {
     if (!status.has(month)) status.set(month, monthStatus(coverage, month));
     return status.get(month)!;
   };
-  for (const month of new Set(lines.map((l) => l.period))) {
+  const months = [...new Set(lines.map((l) => l.period))];
+  let all = lines;
+  for (const month of months) {
     const s = statusOf(month);
     if (!s.bilanKnown) unknownBilan.add(month);
     if (!s.resultKnown) unknownResult.add(month);
+    if (s.estimated.length) {
+      estimatedBilan.add(month);
+      all = withEstimates(all, coverage, month);
+    }
   }
-  return { lines: lines.filter((l) => !isMissingLine(l, statusOf(l.period).missing)), unknownBilan, unknownResult };
+  return { lines: all.filter((l) => !isMissingLine(l, statusOf(l.period).unknown)), unknownBilan, unknownResult, estimatedBilan };
 }

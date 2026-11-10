@@ -45,10 +45,3 @@ export type IngredientWithRelations = Ingredient & {
   category: Category | null;
   prices: (IngredientPrice & { store: Store })[];
 };
-
-export type InventoryRow = {
-  id: string;
-  ingredient_id: string;
-  quantity: number;
-  low_stock: boolean;
-};

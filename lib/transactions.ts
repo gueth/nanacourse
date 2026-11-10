@@ -1,7 +1,7 @@
 import { supabase } from '@/lib/supabase';
-import { addLine, fetchOrSeedLines, importMayWrite, SECTIONS, setLineAmount, shiftMonth, updateLine } from '@/lib/finance';
+import { addLine, fetchOrSeedLines, importMayWrite, monthKey, SECTIONS, setLineAmount, shiftMonth, updateLine } from '@/lib/finance';
 import type { ParsedTransaction, StatementSummary } from '@/lib/bankImport';
-import type { Coverage, ManualNote, TrackedAccount } from '@/lib/coverage';
+import type { Coverage, ManualNote, SavingsEstimate, TrackedAccount, TransferQuestion } from '@/lib/coverage';
 
 // Opérations bancaires importées depuis les relevés, classées par catégorie, et budget par catégorie.
 // Tables : voir supabase/finance_coach.sql
@@ -14,6 +14,9 @@ export type Transaction = {
   category: string;
   account: string;
   import_key: string;
+  // Virement entre mes comptes : l'autre compte, précisé à la main quand le libellé ne le dit pas
+  // ('' : un compte qui n'est pas suivi ici ; absent : pas précisé). Colonne ajoutée par supabase/transfer_accounts.sql
+  transfer_account?: string | null;
 };
 
 export type Kind = 'income' | 'fixed' | 'variable' | 'transfer';
@@ -74,8 +77,7 @@ export const CATEGORIES: Category[] = [
   { id: 'achats', label: 'Achats divers', kind: 'variable', sign: -1, section: 'vie_courante', line: 'Achats divers', keywords: ['AMAZON', 'AMZN', 'CDISCOUNT', 'IKEA', 'ACTION', 'GIFI', 'MAISONS DU MONDE', 'DARTY', 'BOULANGER', 'ALIEXPRESS', 'TEMU', 'ETSY', 'PAYPAL', 'LEBONCOIN'] },
   // Argent envoyé à la famille ou à des amis (virements, services de transfert vers l'étranger), et argent reçu d'eux
   { id: 'proches_envoi', label: 'Envois à des proches', kind: 'variable', sign: -1, section: 'engagements', line: 'Aide à des proches', keywords: ['TAPTAP SEND', 'TAPTAP', 'LEMFI', 'WESTERN UNION', 'MONEYGRAM', 'WORLDREMIT', 'REMITLY', 'RIA'] },
-  { id: 'proches_recu', label: 'Argent reçu de proches', kind: 'income', sign: 1, section: 'autres_revenus', line: 'Argent reçu de proches', keywords: [] },
-  { id: 'especes', label: "Retraits d'espèces", kind: 'variable', sign: -1, section: 'vie_courante', line: "Retraits d'espèces", keywords: ['RETRAIT', 'DAB', 'GAB'] },
+  { id: 'proches_recu', label: 'Argent reçu de proches', kind: 'income', sign: 1, section: 'autres_revenus', line: 'Argent reçu de proches', keywords: [] },  { id: 'especes', label: "Retraits d'espèces", kind: 'variable', sign: -1, section: 'vie_courante', line: "Retraits d'espèces", keywords: ['RETRAIT', 'DAB', 'GAB'] },
   { id: 'autre_revenu', label: 'Autres entrées', kind: 'income', sign: 1, section: 'autres_revenus', line: 'Autres entrées', keywords: [] },
   { id: 'autre_depense', label: 'Autres dépenses', kind: 'variable', sign: -1, section: 'vie_courante', line: 'Autres dépenses', keywords: [] }
 ];
@@ -203,6 +205,9 @@ export async function addCategoryGroup(label: string, kind: GroupKind) {
 
 // Nom ou limite mensuelle d'une grande catégorie (limite null = pas de limite)
 export async function updateCategoryGroup(id: string, changes: Partial<Pick<CategoryGroup, 'label' | 'monthly_limit'>>) {
+  const previous = groups.find((g) => g.id === id);
+  if (previous && changes.monthly_limit !== undefined && changes.monthly_limit !== previous.monthly_limit)
+    await keepPastLimit(groupTarget(id), previous.monthly_limit);
   const { error } = await supabase.from('category_groups').update(changes).eq('id', id);
   if (!error) {
     groups = groups.map((g) => (g.id === id ? { ...g, ...changes } : g));
@@ -600,11 +605,59 @@ export async function fetchBudgets() {
 }
 
 export async function saveBudget(category: string, limit: number | null) {
+  const { data: previous } = await supabase.from('budgets').select('monthly_limit').eq('category', category).maybeSingle();
+  const before = previous ? Number((previous as { monthly_limit: number }).monthly_limit) : null;
+  if ((limit || null) !== before) await keepPastLimit(category, before);
   const { error } = limit
     ? await supabase.from('budgets').upsert({ category, monthly_limit: limit }, { onConflict: 'category' })
     : await supabase.from('budgets').delete().eq('category', category);
   return error;
 }
+
+// Budget propre à un mois passé (table month_budgets, supabase/month_budgets.sql), pour une catégorie ou une grande
+// catégorie (« groupe:<id> ») : sa limite ce mois-là si custom_limit (null : pas de limite), et si son dépassement
+// (ou son économie) compte dans la dette à moi-même. Sans ligne, le mois suit la limite générale et compte.
+export type MonthBudget = { month: string; target: string; custom_limit: boolean; monthly_limit: number | null; counted: boolean };
+export const groupTarget = (id: string) => `groupe:${id}`;
+
+export async function fetchMonthBudgets() {
+  const { data, error } = await supabase.from('month_budgets').select('month, target, custom_limit, monthly_limit, counted');
+  // Table absente (script pas encore lancé) : chaque mois suit les limites générales
+  if (error && (error.code === '42P01' || error.code === 'PGRST205')) return { monthBudgets: [] as MonthBudget[], error: null };
+  const monthBudgets = ((data as MonthBudget[]) ?? []).map((b) => ({ ...b, monthly_limit: b.monthly_limit === null ? null : Number(b.monthly_limit) }));
+  return { monthBudgets, error };
+}
+
+export async function saveMonthBudget(month: string, target: string, changes: Partial<Pick<MonthBudget, 'custom_limit' | 'monthly_limit' | 'counted'>>) {
+  const { error } = await supabase
+    .from('month_budgets')
+    .upsert({ month, target, ...changes, updated_at: new Date().toISOString() }, { onConflict: 'month,target' });
+  return error;
+}
+
+// Avant de changer une limite générale : les mois passés (depuis la première opération) gardent celle qu'ils avaient,
+// sauf ceux qui ont déjà leur propre limite. Sans la table month_budgets, rien n'est retenu et le passé suit le changement.
+async function keepPastLimit(target: string, previous: number | null) {
+  const current = monthKey(new Date());
+  const { data } = await supabase.from('bank_transactions').select('date').order('date').limit(1);
+  const first = (data as { date: string }[] | null)?.[0]?.date.slice(0, 7);
+  if (!first || first >= current) return;
+  // Mois où seul le choix de compter (ou non) dans la dette était retenu
+  await supabase.from('month_budgets').update({ custom_limit: true, monthly_limit: previous }).eq('target', target).eq('custom_limit', false).lt('month', current);
+  const rows = [];
+  for (let month = first; month < current; month = shiftMonth(month, 1)) rows.push({ month, target, custom_limit: true, monthly_limit: previous });
+  await supabase.from('month_budgets').upsert(rows, { onConflict: 'month,target', ignoreDuplicates: true });
+}
+
+// Limite d'une catégorie ou grande catégorie pour un mois : la sienne si ce mois en a une, sinon la limite générale
+export function limitIn(month: string, target: string, general: number | null, monthBudgets: MonthBudget[]) {
+  const own = monthBudgets.find((b) => b.month === month && b.target === target);
+  return own?.custom_limit ? own.monthly_limit : general;
+}
+
+// Son dépassement (ou son économie) compte-t-il dans la dette à moi-même ce mois-là ?
+export const countedIn = (month: string, target: string, monthBudgets: MonthBudget[]) =>
+  monthBudgets.find((b) => b.month === month && b.target === target)?.counted ?? true;
 
 // Dépenses annuelles à anticiper (assurance, impôts, vacances...) : mises de côté chaque mois.
 // Chacune devient une sous-catégorie de « Dépenses annuelles » (voir annualCategoryId).
@@ -929,7 +982,7 @@ export async function fetchCoverage(): Promise<{ coverage: Coverage; error: { me
   };
   for (let from = 0; ; from += 1000) {
     const { data, error } = await supabase.from('bank_transactions').select('account, date, import_key').order('date').range(from, from + 999);
-    if (error) return { coverage: { tracked: [], covered: [], manual: [] }, error };
+    if (error) return { coverage: { tracked: [], covered: [], manual: [], estimates: [], questions: [] }, error };
     for (const r of (data as { account: string; date: string; import_key: string }[]) ?? []) {
       const month = monthOf(r.date);
       if (!isManual(r)) {
@@ -948,5 +1001,119 @@ export async function fetchCoverage(): Promise<{ coverage: Coverage; error: { me
   // Mois renseignés par les relevés (la table peut ne pas exister encore : on s'en passe)
   const months = await supabase.from('statement_months').select('account, month');
   for (const r of (months.data as { account: string; month: string }[]) ?? []) track(r.account, r.month);
-  return { coverage: { tracked: [...firsts.values()], covered: [...covered], manual: [...manual.values()] }, error: null };
+  const tracked = [...firsts.values()];
+  const { estimates, questions, error } = await estimateSavings(tracked, covered);
+  return { coverage: { tracked, covered: [...covered], manual: [...manual.values()], estimates, questions }, error };
+}
+
+// --- Soldes estimés des livrets ---
+// Le relevé d'un livret arrive souvent longtemps après la fin du mois. En l'attendant, son solde de fin de mois est
+// estimé : dernier solde connu (le bilan du dernier mois couvert par un relevé), plus les virements entre mes comptes
+// vus depuis sur les autres comptes, vers ce livret ou depuis ce livret (hors intérêts, versés en fin d'année).
+// Il faut pour cela que les relevés des comptes courants soient là pour chacun de ces mois.
+// L'autre compte d'un virement se lit dans son libellé (« VERS LIVRET A », « LEP »...) ; s'il n'est pas clair,
+// l'utilisateur le précise (questions) et le solde attend sa réponse.
+
+// Types de livrets reconnus dans un nom de compte ou un libellé
+const SAVINGS_KINDS: [string, RegExp][] = [
+  ['lep', /\bLEP\b|EPARGNE POPULAIRE/],
+  ['ldds', /\bLDDS?\b|DEVELOPPEMENT DURABLE/],
+  ['jeune', /LIVRET JEUNE/],
+  ['livret a', /\bLIVRET A\b|\bLIV A\b/],
+  ['pel', /\bPEL\b|PLAN EPARGNE LOGEMENT/],
+  ['cel', /\bCEL\b|COMPTE EPARGNE LOGEMENT/]
+];
+const savingsKind = (text: string) => SAVINGS_KINDS.find(([, re]) => re.test(normalizeLabel(text)))?.[0] ?? null;
+
+// Autre compte d'un virement : précisé à la main, ou seul de mes comptes que le libellé désigne, ou seul compte possible
+// (undefined : on ne sait pas)
+function transferTarget(t: Transaction, accounts: string[]) {
+  if (typeof t.transfer_account === 'string') return t.transfer_account;
+  const others = accounts.filter((a) => a.toLowerCase() !== t.account.toLowerCase());
+  if (others.length === 1) return others[0];
+  const label = normalizeLabel(t.label);
+  const kind = savingsKind(t.label);
+  const named = others.filter((a) => {
+    const name = normalizeLabel(a);
+    return (!!name && new RegExp(`(^|[^A-Z0-9])${escapeRegex(name)}([^A-Z0-9]|$)`).test(label)) || (!!kind && savingsKind(a) === kind);
+  });
+  if (named.length === 1) return named[0];
+  // Un livret ne peut échanger qu'avec un compte courant du titulaire : s'il n'y en a qu'un, c'est lui
+  const current = others.filter((a) => !isSavingsAccount(a));
+  if (isSavingsAccount(t.account) && current.length === 1) return current[0];
+  return undefined;
+}
+
+async function estimateSavings(tracked: TrackedAccount[], covered: Set<string>) {
+  const estimates: SavingsEstimate[] = [];
+  const questions = new Map<string, TransferQuestion>();
+  const done = (error: { message: string } | null = null) => ({ estimates, questions: [...questions.values()], error });
+  const savings = tracked.filter((a) => isSavingsAccount(a.account));
+  if (savings.length === 0) return done();
+  const isCovered = (account: string, month: string) => covered.has(`${account.toLowerCase()}|${month}`);
+  const thisMonth = monthKey(new Date());
+
+  // Soldes inscrits au bilan, et virements entre mes comptes
+  const { data: balanceData, error: balanceError } = await supabase.from('finance_lines').select('period, label, amount').eq('section', 'liquidites');
+  if (balanceError) return done(balanceError);
+  const balances = (balanceData as { period: string; label: string; amount: number }[]) ?? [];
+  const balanceOf = (account: string, month: string) => {
+    const row = balances.find((r) => r.period === month && r.label.toLowerCase() === account.toLowerCase());
+    return row ? Number(row.amount) : null;
+  };
+  const transfers: Transaction[] = [];
+  for (let start = 0; ; start += 1000) {
+    const { data, error } = await supabase.from('bank_transactions').select('*').eq('category', 'virement_interne').order('date').range(start, start + 999);
+    if (error) return done(error);
+    transfers.push(...((data as Transaction[]) ?? []).map(toTransaction));
+    if (!data || data.length < 1000) break;
+  }
+  // Les virements dont les deux moitiés sont enregistrées sont déjà comptés dans les relevés des deux comptes
+  const pairs = pairTransfers(transfers);
+  const loose = transfers.filter((t) => !pairs.has(t));
+  const accounts = tracked.map((a) => a.account);
+  const currents = tracked.filter((a) => !isSavingsAccount(a.account));
+
+  for (const s of savings) {
+    // Mois terminés seulement : le mois en cours n'a encore de relevé sur aucun compte
+    for (let month = s.first; month < thisMonth; month = shiftMonth(month, 1)) {
+      if (isCovered(s.account, month)) continue;
+      // Dernier mois couvert par un relevé du livret, avec un solde inscrit au bilan
+      let base = shiftMonth(month, -1);
+      while (base >= s.first && !isCovered(s.account, base)) base = shiftMonth(base, -1);
+      const start = base < s.first ? null : balanceOf(s.account, base);
+      if (start === null) continue;
+      // Les relevés des comptes courants doivent être là pour chaque mois écoulé depuis
+      let complete = true;
+      for (let m = shiftMonth(base, 1); m <= month; m = shiftMonth(m, 1))
+        if (currents.some((c) => c.first <= m && !isCovered(c.account, m))) complete = false;
+      if (!complete) continue;
+      let balance = start;
+      let unclear = false;
+      for (const t of loose) {
+        if (t.date <= lastDayOf(base) || t.date > lastDayOf(month) || t.account.toLowerCase() === s.account.toLowerCase()) continue;
+        const target = transferTarget(t, accounts);
+        if (target === undefined) {
+          // Ce virement pourrait concerner le livret : on le fait préciser, et le solde attend la réponse
+          unclear = true;
+          questions.set(t.id, {
+            id: t.id,
+            date: t.date,
+            label: t.label,
+            amount: t.amount,
+            account: t.account,
+            choices: accounts.filter((a) => a.toLowerCase() !== t.account.toLowerCase())
+          });
+        } else if (target.toLowerCase() === s.account.toLowerCase()) balance -= t.amount; // sortie du compte courant = entrée sur le livret
+      }
+      estimates.push({ account: s.account, month, base, balance: unclear ? null : round(balance) });
+    }
+  }
+  return done();
+}
+
+// Précise l'autre compte d'un virement entre mes comptes ('' : un compte qui n'est pas suivi ici)
+export async function setTransferAccount(id: string, account: string) {
+  const { error } = await supabase.from('bank_transactions').update({ transfer_account: account }).eq('id', id);
+  return error;
 }

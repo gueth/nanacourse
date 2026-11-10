@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { orThrow, useCached } from '@/lib/cache';
 import { fetchLines, fetchLinesRange, shiftMonth } from '@/lib/finance';
-import { countTransactions, fetchBudgets, fetchCoverage, fetchTransactions, loadCategories } from '@/lib/transactions';
+import { countTransactions, fetchBudgets, fetchCoverage, fetchMonthBudgets, fetchTransactions, loadCategories } from '@/lib/transactions';
 
 // Données des pages Finances gardées en mémoire (lib/cache) : partagées entre les pages Santé, Bilan,
 // Budget et l'accueil, elles ne sont chargées qu'une fois puis rafraîchies en arrière-plan.
@@ -18,9 +18,11 @@ export function useCoverage() {
   });
 }
 
-// Nombre d'opérations importées pour un mois (0 : aucun relevé n'a encore été importé pour ce mois)
+// Nombre d'opérations importées pour un mois (0 : aucun relevé n'a encore été importé pour ce mois).
+// Clé distincte de useMonthTransactions (la liste des opérations du mois) : partager la même clé mettait un nombre
+// là où l'accueil attend une liste, et la page plantait.
 export function useMonthOperations(period: string | null) {
-  return useCached(period && `finances:operations-du-mois:${period}`, async () => {
+  return useCached(period && `finances:nombre-operations:${period}`, async () => {
     const { count, error } = await countTransactions(period!);
     return orThrow(count, error);
   });
@@ -52,6 +54,14 @@ export function useCategoryLimits() {
   return useCached('finances:budgets', async () => {
     const { budgets, error } = await fetchBudgets();
     return orThrow(budgets, error);
+  });
+}
+
+// Budgets propres aux mois passés, et ce qui compte (ou non) dans la dette à moi-même, tous mois confondus
+export function useMonthBudgets() {
+  return useCached('finances:budgets-des-mois', async () => {
+    const { monthBudgets, error } = await fetchMonthBudgets();
+    return orThrow(monthBudgets, error);
   });
 }
 

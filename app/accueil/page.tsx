@@ -145,8 +145,7 @@ function Masthead({ today }: { today: Date | null }) {
             entries={[
               { label: 'Finances', href: '/banque/comptes', page: 2 },
               { label: 'Profil', href: '/profile', page: 3 },
-              { label: 'Garde-manger', href: '/inventory', page: 4 },
-              { label: 'Paramètres', href: '/settings?tab=lists', page: 5 }
+              { label: 'Paramètres', href: '/settings?tab=lists', page: 4 }
             ]}
           />
         </div>
@@ -183,7 +182,7 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
     if (!rawLines) return null;
     // Mêmes règles que le Bilan (lib/coverage) : les soldes des relevés manquants sont écartés, et un mois dont le bilan
     // ou le résultat n'est pas connu n'est pas compté dans les chiffres qui en dépendent
-    const { lines, unknownBilan, unknownResult } = knownLines(rawLines, coverage);
+    const { lines, unknownBilan, unknownResult, estimatedBilan } = knownLines(rawLines, coverage);
     const periods = byPeriod(lines.filter((l) => l.amount !== 0));
     const filled = [...periods.keys()].sort();
     // Mois de référence : le dernier mois terminé rempli dont le résultat est connu, ou à défaut le mois en cours
@@ -225,16 +224,19 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
             patrimoine: unknownBilan.has(lastDone) ? null : indicators.patrimoine,
             reserve: unknownBilan.has(lastDone) ? null : indicators.reserve,
             savings: unknownResult.has(lastDone) ? null : indicators.savings,
-            savingsRate: unknownResult.has(lastDone) ? null : indicators.savingsRate
+            savingsRate: unknownResult.has(lastDone) ? null : indicators.savingsRate,
+            // Solde d’un livret estimé (son relevé arrive plus tard) : le patrimoine l’est aussi
+            estimated: estimatedBilan.has(lastDone)
           }
         : null;
     const bilanKnown = !!ref && !unknownBilan.has(ref);
-    return { ref, t: ref ? totals(periods.get(ref)!) : null, bilanKnown, months, resultMonthly, bilanMonthly, health, keyFigures };
+    const estimated = !!ref && estimatedBilan.has(ref);
+    return { ref, t: ref ? totals(periods.get(ref)!) : null, bilanKnown, estimated, months, resultMonthly, bilanMonthly, health, keyFigures };
   }, [rawLines, coverage, currentMonth]);
 
   if (!news) return <Printing />;
 
-  const { ref, t, bilanKnown, months, resultMonthly, bilanMonthly, health, keyFigures } = news;
+  const { ref, t, bilanKnown, estimated, months, resultMonthly, bilanMonthly, health, keyFigures } = news;
   if (!ref || !t) {
     return (
       <article className="mt-5 text-center">
@@ -324,7 +326,7 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
             </p>
             <LeaderRow label="Actif" value={bilanKnown ? formatEuros(t.actif) : '—'} />
             <LeaderRow label="Dettes" value={bilanKnown ? formatEuros(t.dettes) : '—'} />
-            <LeaderRow label="Net" value={bilanKnown ? formatEuros(t.patrimoine) : '—'} strong />
+            <LeaderRow label={estimated ? 'Net (estimé)' : 'Net'} value={bilanKnown ? formatEuros(t.patrimoine) : '—'} strong />
           </div>
           <div className="border-l pl-4" style={{ borderColor: NAVY }}>
             <p className="mb-1 text-center text-[10px] font-bold uppercase tracking-[0.2em]" style={serif}>
@@ -349,7 +351,12 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
               {
                 label: 'Patrimoine net',
                 value: keyFigures.patrimoine !== null ? formatEuros(keyFigures.patrimoine) : '—',
-                note: keyFigures.patrimoine !== null ? `au ${monthEndLabel(keyFigures.month)}` : 'relevé manquant'
+                note:
+                  keyFigures.patrimoine === null
+                    ? 'relevé manquant'
+                    : keyFigures.estimated
+                      ? 'estimé, relevé de livret manquant'
+                      : `au ${monthEndLabel(keyFigures.month)}`
               },
               {
                 label: 'Réserve de sécurité',

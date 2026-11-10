@@ -2,11 +2,11 @@ import { supabase } from '@/lib/supabase';
 import { monthKey, SECTIONS, setLineAmount, shiftMonth } from '@/lib/finance';
 import { CATEGORIES, lastDayOf, monthOf, type Transaction } from '@/lib/transactions';
 
-// Lignes du bilan reliées à des catégories (Finances > Gestion) : dettes, emprunts et sommes à recevoir.
-// Une ligne suit ses catégories (ou grandes catégories) mois après mois, à partir d'un solde de départ :
-//  - au passif (emprunts, autres dettes) : l'argent reçu (emprunter) augmente la dette, l'argent versé (rembourser) la diminue ;
-//  - à l'actif (sommes à recevoir) : l'argent versé (prêter) augmente ce qu'on te doit, l'argent reçu (être remboursé) le diminue.
-// Le solde de chaque fin de mois est inscrit sur la ligne du bilan, comme un solde de relevé : le bilan reste non modifiable.
+// Lignes du bilan complétées par des catégories du Budget (Finances > Gestion, « Compléter les tableaux ») :
+//  - une ligne de l'actif (sommes à recevoir) prend la somme de catégories d'entrée ;
+//  - une ligne du passif (emprunts, autres dettes) prend la somme de catégories de sortie.
+// Le montant inscrit chaque fin de mois est le cumul de ces catégories (plus un montant de départ facultatif), depuis le mois
+// de départ s'il est donné, sinon depuis la première opération. Le bilan reste non modifiable : c'est ici qu'on décide d'où viennent ses montants.
 // Table "balance_links" (voir supabase/finances_coherence.sql).
 
 export type BalanceLink = {
@@ -14,8 +14,8 @@ export type BalanceLink = {
   section: string; // rubrique du bilan : creances, emprunts ou dettes
   label: string; // ligne de cette rubrique
   targets: string[]; // catégories, ou grandes catégories ("groupe:<id>")
-  opening: number; // solde au dernier jour du mois de départ
-  opening_month: string; // AAAA-MM
+  opening: number; // montant au dernier jour du mois de départ (0 par défaut)
+  opening_month: string | null; // AAAA-MM, facultatif : sans lui, tout l'historique des catégories compte
 };
 
 // Rubriques du bilan qu'on peut relier : celles des dettes et des créances
@@ -34,19 +34,25 @@ export function linkCategories(link: Pick<BalanceLink, 'targets'>) {
 }
 
 const round = (n: number) => Math.round(n * 100) / 100;
-const isAsset = (link: Pick<BalanceLink, 'section'>) => link.section === 'creances';
+// Côté du bilan d'une rubrique : l'actif se complète avec des entrées, le passif avec des sorties
+export const sideOf = (section: string) => SECTIONS.find((s) => s.id === section)?.side ?? 'passif';
+export const isAsset = (link: Pick<BalanceLink, 'section'>) => sideOf(link.section) === 'actif';
 
-// Solde de la ligne à la fin de chaque mois, du mois de départ jusqu'à "lastMonth"
+// Montant de la ligne à la fin de chaque mois, jusqu'à "lastMonth" : cumul des entrées (actif) ou des sorties (passif)
 export function linkBalances(link: BalanceLink, transactions: Pick<Transaction, 'date' | 'amount' | 'category'>[], lastMonth: string) {
   const ids = new Set(linkCategories(link));
-  const start = lastDayOf(link.opening_month);
+  const start = link.opening_month ? lastDayOf(link.opening_month) : '';
   const moves = transactions.filter((t) => ids.has(t.category) && t.date > start);
   const result: { month: string; balance: number }[] = [];
   let balance = link.opening;
-  result.push({ month: link.opening_month, balance: round(balance) });
-  for (let month = shiftMonth(link.opening_month, 1); month <= lastMonth; month = shiftMonth(month, 1)) {
+  let month = link.opening_month ?? moves.map((t) => monthOf(t.date)).sort()[0] ?? lastMonth;
+  if (link.opening_month) {
+    result.push({ month, balance: round(balance) });
+    month = shiftMonth(month, 1);
+  }
+  for (; month <= lastMonth; month = shiftMonth(month, 1)) {
     const moved = moves.filter((t) => monthOf(t.date) === month).reduce((s, t) => s + t.amount, 0);
-    balance += isAsset(link) ? -moved : moved;
+    balance += isAsset(link) ? moved : -moved;
     result.push({ month, balance: round(balance) });
   }
   return result;
@@ -58,7 +64,7 @@ export async function fetchBalanceLinks() {
 }
 
 export async function saveBalanceLink(link: Omit<BalanceLink, 'id'> & { id?: string }) {
-  const row = { ...link, label: link.label.trim() };
+  const row = { ...link, label: link.label.trim(), opening_month: link.opening_month || null };
   const { error } = link.id ? await supabase.from('balance_links').update(row).eq('id', link.id) : await supabase.from('balance_links').insert(row);
   return error;
 }
@@ -77,14 +83,14 @@ export async function refreshBalanceLinks() {
   if (error) return /balance_links/.test(error.message) ? null : error; // table pas encore créée : rien à faire
   if (links.length === 0) return null;
   const currentMonth = monthKey(new Date());
-  const firstMonth = links.map((l) => l.opening_month).sort()[0];
-  const { data: periodRows, error: periodError } = await supabase.from('finance_lines').select('period').gte('period', firstMonth).lte('period', currentMonth);
+  const { data: periodRows, error: periodError } = await supabase.from('finance_lines').select('period').lte('period', currentMonth);
   if (periodError) return periodError;
   const opened = new Set(((periodRows as { period: string }[]) ?? []).map((r) => r.period));
   for (const link of links) {
     const categories = linkCategories(link);
+    const query = supabase.from('bank_transactions').select('date, amount, category').in('category', categories);
     const { data, error: txError } = categories.length
-      ? await supabase.from('bank_transactions').select('date, amount, category').in('category', categories).gt('date', lastDayOf(link.opening_month))
+      ? await (link.opening_month ? query.gt('date', lastDayOf(link.opening_month)) : query)
       : { data: [], error: null };
     if (txError) return txError;
     const transactions = ((data as Transaction[]) ?? []).map((t) => ({ ...t, amount: Number(t.amount) }));

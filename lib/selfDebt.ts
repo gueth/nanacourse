@@ -3,11 +3,15 @@ import {
   annualCategoryId,
   categoryById,
   categoryGroups,
+  countedIn,
   groupMembers,
+  groupTarget,
+  limitIn,
   monthOf,
   SELF_DEBT_ID,
   summarize,
   type Budget,
+  type MonthBudget,
   type PlannedExpense,
   type Transaction
 } from '@/lib/transactions';
@@ -17,13 +21,16 @@ import {
 //    (« Dépenses annuelles ») ; la part qu'on ne retrouve pas dans les relevés du mois va dans la dette.
 //    Payer plus que sa part (la facture de l'année, ou une mise de côté en avance) la rembourse d'autant.
 //  - Budgets : dépasser la limite d'une grande catégorie ou d'une catégorie ajoute le dépassement à la dette ;
-//    dépenser moins que prévu la rembourse de la différence.
+//    dépenser moins que prévu la rembourse de la différence. Un mois passé peut avoir ses propres limites
+//    (month_budgets), et chaque dépassement ou économie d'un mois peut être retiré de la dette (« ne pas compter »).
 //  - Les opérations classées dans « Dette à moi-même » la remboursent aussi.
-// La dette s'accumule d'un mois sur l'autre, sans jamais descendre sous zéro. Son total, et ce qui la compose,
+// La dette s'accumule d'un mois sur l'autre ; négative, on est en avance sur son budget. Son total, et ce qui la compose,
 // s'affichent dans Finances > Gestion ; Finances > Budget montre celle du mois affiché.
 
 export type DebtItemKind = 'annuelle' | 'depassement' | 'economie' | 'remboursement';
-export type DebtItem = { label: string; amount: number; kind: DebtItemKind }; // amount > 0 : ajouté à la dette
+// amount > 0 : ajouté à la dette ; target : catégorie ou grande catégorie (« groupe:<id> ») concernée ;
+// ignored : choisi pour ne pas compter dans la dette (affiché, mais hors du total)
+export type DebtItem = { label: string; amount: number; kind: DebtItemKind; target?: string; ignored?: boolean };
 export type DebtMonth = {
   month: string;
   items: DebtItem[];
@@ -38,53 +45,76 @@ const round = (n: number) => Math.round(n * 100) / 100;
 export const plannedFrom = (p: PlannedExpense) => (p.created_at ?? '').slice(0, 7);
 const activePlans = (planned: PlannedExpense[], month: string) => planned.filter((p) => plannedFrom(p) <= month);
 
+// Limites d'un mois : les siennes (month_budgets) s'il en a, sinon les limites générales.
+// category(id) / group(id) : limite d'une catégorie / grande catégorie (null : pas de limite) ; categories : celles limitées ce mois-là
+export function monthLimits(month: string, budgets: Budget[], monthBudgets: MonthBudget[]) {
+  const category = (id: string) => limitIn(month, id, budgets.find((b) => b.category === id)?.monthly_limit ?? null, monthBudgets);
+  const group = (id: string) => limitIn(month, groupTarget(id), categoryGroups().find((g) => g.id === id)?.monthly_limit ?? null, monthBudgets);
+  const ids = new Set([
+    ...budgets.map((b) => b.category),
+    ...monthBudgets.filter((b) => b.month === month && b.custom_limit && !b.target.startsWith('groupe:')).map((b) => b.target)
+  ]);
+  const categories = [...ids].map((id) => ({ category: id, limit: category(id) })).filter((l): l is { category: string; limit: number } => l.limit !== null);
+  return { category, group, categories };
+}
+
 // Dette ajoutée (ou remboursée) par un mois, à partir de ses opérations
-export function debtOfMonth(month: string, monthTx: Transaction[], budgets: Budget[], planned: PlannedExpense[]): DebtMonth {
+export function debtOfMonth(month: string, monthTx: Transaction[], budgets: Budget[], planned: PlannedExpense[], monthBudgets: MonthBudget[] = []): DebtMonth {
   const { byCategory } = summarize(monthTx);
   const spentIn = (id: string) => byCategory.get(id) ?? 0;
   const items: DebtItem[] = [];
   let allowed = 0;
   let spent = 0;
 
-  // Budgets : grandes catégories limitées (le total de leurs sous-catégories), puis catégories limitées hors de celles-ci
-  const limitedGroups = categoryGroups().filter((g) => g.kind === 'expense' && !g.virtual && g.monthly_limit !== null);
+  // Budgets du mois : grandes catégories limitées (le total de leurs sous-catégories), puis catégories limitées hors de celles-ci
+  const limits = monthLimits(month, budgets, monthBudgets);
+  const limitedGroups = categoryGroups()
+    .filter((g) => g.kind === 'expense' && !g.virtual)
+    .map((g) => ({ g, limit: limits.group(g.id) }))
+    .filter((x): x is { g: (typeof x)['g']; limit: number } => x.limit !== null);
   const budgetLines = [
-    ...limitedGroups.map((g) => ({
+    ...limitedGroups.map(({ g, limit }) => ({
+      target: groupTarget(g.id),
       label: g.label,
-      limit: g.monthly_limit!,
+      limit,
       spent: groupMembers(g.id)
         .filter((c) => c.id !== SELF_DEBT_ID && !c.annual)
         .reduce((s, c) => s + spentIn(c.id), 0)
     })),
-    ...budgets
-      .map((b) => ({ b, cat: categoryById(b.category) }))
-      .filter(({ b, cat }) => cat.id === b.category && cat.id !== SELF_DEBT_ID && !cat.annual && !limitedGroups.some((g) => g.id === cat.group))
-      .map(({ b, cat }) => ({ label: cat.label, limit: b.monthly_limit, spent: spentIn(cat.id) }))
+    ...limits.categories
+      .map(({ category, limit }) => ({ cat: categoryById(category), category, limit }))
+      .filter(({ cat, category }) => cat.id === category && cat.id !== SELF_DEBT_ID && !cat.annual && !limitedGroups.some(({ g }) => g.id === cat.group))
+      .map(({ cat, limit }) => ({ target: cat.id, label: cat.label, limit, spent: spentIn(cat.id) }))
   ];
   for (const line of budgetLines) {
     allowed += line.limit;
     spent += line.spent;
     const over = round(line.spent - line.limit);
-    if (over > 0) items.push({ label: `${line.label} : dépassement`, amount: over, kind: 'depassement' });
-    else if (over < 0) items.push({ label: `${line.label} : moins que prévu`, amount: over, kind: 'economie' });
+    const ignored = !countedIn(month, line.target, monthBudgets);
+    if (over > 0) items.push({ label: `${line.label} : dépassement`, amount: over, kind: 'depassement', target: line.target, ignored });
+    else if (over < 0) items.push({ label: `${line.label} : moins que prévu`, amount: over, kind: 'economie', target: line.target, ignored });
   }
 
   // Dépenses annuelles : un douzième par mois depuis leur création
   for (const p of activePlans(planned, month)) {
     const share = p.amount / 12;
-    const paid = spentIn(annualCategoryId(p.id));
+    const target = annualCategoryId(p.id);
+    const paid = spentIn(target);
+    const ignored = !countedIn(month, target, monthBudgets);
     allowed += share;
     spent += paid;
     const missing = round(share - paid);
-    if (missing > 0) items.push({ label: paid > 0 ? `${p.label} : part incomplète` : `${p.label} : part non vue dans le relevé`, amount: missing, kind: 'annuelle' });
-    else if (missing < 0) items.push({ label: `${p.label} : payé au-delà de la part`, amount: missing, kind: 'remboursement' });
+    if (missing > 0)
+      items.push({ label: paid > 0 ? `${p.label} : part incomplète` : `${p.label} : part non vue dans le relevé`, amount: missing, kind: 'annuelle', target, ignored });
+    else if (missing < 0) items.push({ label: `${p.label} : payé au-delà de la part`, amount: missing, kind: 'remboursement', target, ignored });
   }
 
   // Opérations classées dans « Dette à moi-même »
   const repaid = round(spentIn(SELF_DEBT_ID));
   if (repaid !== 0) items.push({ label: 'Remboursements à moi-même', amount: -repaid, kind: 'remboursement' });
 
-  return { month, items, delta: round(items.reduce((s, i) => s + i.amount, 0)), allowed: round(allowed), spent: round(spent) };
+  const delta = round(items.reduce((s, i) => s + (i.ignored ? 0 : i.amount), 0));
+  return { month, items, delta, allowed: round(allowed), spent: round(spent) };
 }
 
 // Mois à partir duquel la dette est suivie : celui de la première dépense annuelle créée
@@ -94,7 +124,7 @@ export function debtStart(planned: PlannedExpense[]) {
 
 // Historique de la dette : chaque mois terminé qui a des opérations (relevé importé), du début du suivi au mois
 // précédent, avec la dette cumulée à sa fin ; et le mois en cours à part, provisoire (pas encore ajouté au total)
-export function debtHistory(currentMonth: string, transactions: Transaction[], budgets: Budget[], planned: PlannedExpense[]) {
+export function debtHistory(currentMonth: string, transactions: Transaction[], budgets: Budget[], planned: PlannedExpense[], monthBudgets: MonthBudget[] = []) {
   const start = debtStart(planned);
   const months: (DebtMonth & { total: number })[] = [];
   let total = 0;
@@ -104,12 +134,12 @@ export function debtHistory(currentMonth: string, transactions: Transaction[], b
     for (let m = start; m < currentMonth; m = shiftMonth(m, 1)) {
       const monthTx = byMonth.get(m);
       if (!monthTx?.length) continue;
-      const d = debtOfMonth(m, monthTx, budgets, planned);
-      total = round(Math.max(0, total + d.delta));
+      const d = debtOfMonth(m, monthTx, budgets, planned, monthBudgets);
+      total = round(total + d.delta);
       months.push({ ...d, total });
     }
   }
   const currentTx = transactions.filter((t) => monthOf(t.date) === currentMonth);
-  const current = start && start <= currentMonth && currentTx.length ? debtOfMonth(currentMonth, currentTx, budgets, planned) : null;
+  const current = start && start <= currentMonth && currentTx.length ? debtOfMonth(currentMonth, currentTx, budgets, planned, monthBudgets) : null;
   return { start, months, total, current };
 }
