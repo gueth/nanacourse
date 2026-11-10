@@ -2,10 +2,9 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
-import { Check } from 'lucide-react';
+import { ArrowLeft, Check } from 'lucide-react';
 import { Sommaire } from '@/components/gazette/Sommaire';
-import { DEFIS } from '@/components/DefiCards';
-import { DefiCoupons } from '@/components/gazette/DefiCoupons';
+import { RewardsCorner, WeeklyChallenge } from '@/components/gazette/ChallengeCorner';
 import { MessagesButton } from '@/components/MessagesButton';
 import ShoppingReceipts from '@/components/ShoppingReceipts';
 import { SwipePages } from '@/components/SwipePages';
@@ -14,12 +13,13 @@ import { Bow, Flourish, LaceEdge, LaceFrame, MIST, NAVY, PAPER, Rosette } from '
 import { byPeriod, formatEuros, monthIndicators, monthKey, monthLabel, monthEndLabel, shiftMonth, totals } from '@/lib/finance';
 import { useFinanceLines } from '@/lib/financeQueries';
 import { useParcours } from '@/lib/parcours';
+import { unlockCreditsAudio } from '@/lib/creditsAudio';
 import { formatIssue, gazetteIssue } from '@/lib/gazette';
 
 // Accueil : la gazette du jour, en bleu nuit sur papier blanc, ornée de dentelle, sur deux pages que l'on fait glisser.
 // Page de gauche, le journal : à la une le bilan et le compte de résultat du dernier mois rempli, puis les graphiques
 // de santé financière et le parcours vers l'autonomie. Page de droite : le ticket de caisse de la liste de courses
-// active, et les défis en brèves.
+// active, les bons d'achat (points des défis) et le défi de la semaine en brève.
 
 const serif = { fontFamily: 'var(--font-serif), Georgia, serif' };
 const blackletter = { fontFamily: 'var(--font-blackletter), serif' };
@@ -115,7 +115,7 @@ function Printing() {
 }
 
 // EN-TÊTE DU JOURNAL : numéro et date, titre en lettres gothiques, nœud, filets et devise
-function Masthead({ today, onCourse }: { today: Date | null; onCourse: () => void }) {
+function Masthead({ today }: { today: Date | null }) {
   // Numéro de l'édition : 001 le premier jour, puis un de plus chaque jour à 8 h (lib/gazette.ts)
   const issue = useSyncExternalStore(noSubscribe, readIssue, () => null);
   // Date abrégée, sans les points d'abréviation : « mar 12 Oct 2027 »
@@ -125,10 +125,15 @@ function Masthead({ today, onCourse }: { today: Date | null; onCourse: () => voi
 
   return (
     <header className="relative pt-3 text-center">
-      {/* Ligne du haut : numéro, date, et le « Sommaire » (menu) à droite */}
+      {/* Ligne du haut : flèche de retour à l'écran titre et numéro, date, et le « Sommaire » (menu) à droite */}
       <div className="grid h-[22px] grid-cols-[1fr_auto_1fr] items-center gap-2 text-[10px] uppercase tracking-[0.18em]">
-        <p className="text-left">
-          N° <span className="italic" style={serif}>{issue ? formatIssue(issue) : '—'}</span>
+        <p className="flex items-center gap-2 text-left">
+          <Link href="/" aria-label="Retour à l'écran titre" className="-m-2 inline-flex p-2">
+            <ArrowLeft size={18} strokeWidth={1.8} />
+          </Link>
+          <span>
+            N° <span className="italic" style={serif}>{issue ? formatIssue(issue) : '—'}</span>
+          </span>
         </p>
         <p className="normal-case">{date}</p>
         <div className="text-right">
@@ -137,17 +142,8 @@ function Masthead({ today, onCourse }: { today: Date | null; onCourse: () => voi
             top={47}
             entries={[
               { label: 'Finances', href: '/banque/comptes', page: 2 },
-              {
-                label: 'Courses',
-                href: '/accueil#ticket',
-                page: 3,
-                onClick: (e) => {
-                  e.preventDefault();
-                  onCourse();
-                }
-              },
-              { label: 'Profil', href: '/profile', page: 4 },
-              { label: 'Paramètres', href: '/settings?tab=lists', page: 5 }
+              { label: 'Profil', href: '/profile', page: 3 },
+              { label: 'Paramètres', href: '/settings?tab=lists', page: 4 }
             ]}
           />
         </div>
@@ -502,8 +498,6 @@ export default function Accueil() {
   const currentMonth = today ? monthKey(today) : null;
   // Deux pages côte à côte : à gauche le journal, à droite la liste de courses active et les défis
   const [page, setPage] = useState(0);
-  // Le bouton Courses du sommaire ouvre la page de droite
-  const openCourse = () => setPage(1);
   // Arrivée par /accueil#ticket (anciens liens de la page Courses, activation d'une liste dans les paramètres) :
   // on ouvre directement la page de droite, et on retire #ticket de l'adresse
   useEffect(() => {
@@ -518,6 +512,12 @@ export default function Accueil() {
       <Flourish width={160} />
       <p className="mt-2 text-center text-[22px]" style={script}>
         à demain !
+      </p>
+      {/* Tout en bas : les crédits (le toucher déverrouille le son, la musique de la page démarre toute seule) */}
+      <p className="mt-6 text-center">
+        <Link href="/credits" onClick={() => unlockCreditsAudio()} className="inline-block px-3 py-2 text-[11px] uppercase tracking-[0.22em] underline underline-offset-4">
+          Crédits
+        </Link>
       </p>
     </div>
   );
@@ -535,7 +535,7 @@ export default function Accueil() {
           labels={['Le journal', 'Courses et défis']}
           pages={[
             <div key="journal" className="mx-auto max-w-[430px] px-4">
-              <Masthead today={today} onCourse={openCourse} />
+              <Masthead today={today} />
 
               {/* À LA UNE : les comptes du mois, puis la santé financière */}
               {currentMonth ? <FinanceNews currentMonth={currentMonth} /> : <Printing />}
@@ -548,9 +548,11 @@ export default function Accueil() {
                 <ShoppingReceipts blue />
               </div>
 
-              {/* BRÈVES : les défis du jour */}
-              <Ribbon>Les brèves · défis</Ribbon>
-              <DefiCoupons defis={DEFIS} />
+              {/* BONS D'ACHAT : récupérés avec les points des défis réussis */}
+              <RewardsCorner ribbon={(title) => <Ribbon>{title}</Ribbon>} />
+
+              {/* BRÈVES : le défi de la semaine, en coupon détachable */}
+              <WeeklyChallenge ribbon={(title) => <Ribbon>{title}</Ribbon>} />
 
               {footer}
             </div>

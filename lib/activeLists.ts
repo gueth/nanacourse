@@ -17,7 +17,6 @@ export type SavedItem = {
   ingredient: {
     name: string;
     type: string | null; // kg, pièce, paquet... : fixe les quantités possibles
-    brand: { name: string } | null;
     category: { id: string; name: string; budget_limit: number | null } | null; // budget max de la catégorie
   } | null;
   // Modifications en attente (nom, catégorie, prix modifié...) : appliquées à l'ingrédient à la validation de la liste.
@@ -41,28 +40,26 @@ export type SavedList = {
 
 // Requête de la liste de courses ACTIVE (on l'active dans Paramètres > Listes de courses), avec :
 //   items      -> les lignes de "shopping_list_items" liées à la liste
-//   ingredient -> pour chaque ligne, l'ingrédient (nom, type, marque)
+//   ingredient -> pour chaque ligne, l'ingrédient (nom, type)
 //   category   -> pour chaque ingrédient, sa catégorie (id + nom)
 // Tri par id décroissant : les listes les plus récentes en premier.
 export async function fetchActiveLists() {
-  const [lists, { data: categories }, { data: brands }] = await Promise.all([
+  const [lists, { data: categories }] = await Promise.all([
     supabase
       .from('shopping_lists')
-      .select('*, items:shopping_list_items(*, ingredient:ingredients(name, type, brand:brands(name), category:categories(id, name, budget_limit)))')
+      .select('*, items:shopping_list_items(*, ingredient:ingredients(name, type, category:categories(id, name, budget_limit)))')
       .eq('is_active', true)
       .order('id', { ascending: false }),
-    supabase.from('categories').select('id, name, budget_limit'),
-    supabase.from('brands').select('id, name')
+    supabase.from('categories').select('id, name, budget_limit')
   ]);
-  return { data: withPending((lists.data as unknown as SavedList[]) ?? [], categories ?? [], brands ?? []), error: lists.error };
+  return { data: withPending((lists.data as unknown as SavedList[]) ?? [], categories ?? []), error: lists.error };
 }
 
-// Affichage des articles avec leurs modifications en attente (nom, catégorie, marque, unité) :
+// Affichage des articles avec leurs modifications en attente (nom, catégorie, unité) :
 // la liste montre ce que l'utilisateur a saisi, même si l'ingrédient ne change qu'à la validation
 function withPending(
   lists: SavedList[],
-  categories: { id: string; name: string; budget_limit: number | null }[],
-  brands: { id: string; name: string }[]
+  categories: { id: string; name: string; budget_limit: number | null }[]
 ) {
   return lists.map((list) => ({
     ...list,
@@ -72,7 +69,6 @@ function withPending(
       const ingredient = { ...item.ingredient };
       if (p.name !== undefined) ingredient.name = p.name;
       if (p.type !== undefined) ingredient.type = p.type ?? null;
-      if (p.brand_id !== undefined) ingredient.brand = brands.find((b) => b.id === p.brand_id) ?? null;
       if (p.category_id !== undefined) ingredient.category = categories.find((c) => c.id === p.category_id) ?? null;
       return { ...item, ingredient };
     })

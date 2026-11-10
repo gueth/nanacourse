@@ -4,7 +4,6 @@ export type NewIngredient = {
   name: string;
   note?: string;
   category_id?: string;
-  brand_id?: string;
   type?: string;
 };
 
@@ -17,7 +16,6 @@ export async function createIngredient(fields: NewIngredient, storeId?: string, 
       name: fields.name.trim(),
       note: fields.note?.trim() || null,
       category_id: fields.category_id || null,
-      brand_id: fields.brand_id || null,
       type: fields.type?.trim() || null
     })
     .select()

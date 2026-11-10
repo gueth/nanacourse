@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { TYPE_SUGGESTIONS } from '@/lib/quantity';
-import type { Brand, Category, Store } from '@/lib/types';
+import type { Category, Store } from '@/lib/types';
 import { createIngredient } from '@/lib/ingredients';
 import StoreOptions from '@/components/StoreOptions';
 import ScanLabelButton from '@/components/ScanLabelButton';
@@ -12,17 +12,15 @@ type Props = {
   // Nom pré-rempli (ex : le texte tapé dans la recherche)
   initialName?: string;
   categories: Category[];
-  brands: Brand[];
   stores: Store[];
   // Appelée une fois l'ingrédient créé
   onCreated: () => void;
 };
 
 // Formulaire complet de création d'un ingrédient, affiché dans la fenêtre modale des paramètres.
-export default function NewIngredientForm({ initialName = '', categories, brands, stores, onCreated }: Props) {
+export default function NewIngredientForm({ initialName = '', categories, stores, onCreated }: Props) {
   const [name, setName] = useState(initialName);
   const [categoryId, setCategoryId] = useState('');
-  const [brandId, setBrandId] = useState('');
   const [type, setType] = useState('');
   const [note, setNote] = useState('');
   const [storeId, setStoreId] = useState('');
@@ -34,7 +32,7 @@ export default function NewIngredientForm({ initialName = '', categories, brands
     if (!name.trim()) return;
     setSaving(true);
     const id = await createIngredient(
-      { name, note, category_id: categoryId, brand_id: brandId, type },
+      { name, note, category_id: categoryId, type },
       storeId || undefined,
       price ? Number(price) : undefined
     );
@@ -66,18 +64,6 @@ export default function NewIngredientForm({ initialName = '', categories, brands
           {categories.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div>
-        <label className="field-label">Marque</label>
-        <select value={brandId} onChange={(e) => setBrandId(e.target.value)} className="input-hand">
-          <option value="">—</option>
-          {brands.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.name}
-              {b.rating != null ? ` (${b.rating}/5)` : ''}
             </option>
           ))}
         </select>

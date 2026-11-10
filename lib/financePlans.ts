@@ -1,70 +1,12 @@
 import { supabase } from '@/lib/supabase';
-import { addLine, fetchLines, SECTIONS, updateLine } from '@/lib/finance';
 
-// Objectifs d'épargne, dettes en cours et placements. Tables : voir supabase/finance_coach.sql
-
-export type Goal = {
-  id: string;
-  name: string;
-  target: number; // montant visé, en euros d'aujourd'hui
-  saved: number; // déjà mis de côté
-  monthly: number; // versement mensuel prévu
-  annual_rate: number; // rendement annuel espéré du placement (0.03 = 3 %), une estimation
-};
-
-export type Debt = {
-  id: string;
-  name: string;
-  principal: number; // capital restant dû
-  annual_rate: number; // taux annuel (0.035 = 3,5 %)
-  monthly: number; // mensualité
-};
+// Placements (mis à jour à l'import d'un relevé de livret). Tables : voir supabase/finance_coach.sql
 
 const toNumbers = <T extends object>(row: T, keys: (keyof T)[]) => {
   const copy = { ...row };
   for (const k of keys) copy[k] = Number(copy[k]) as T[keyof T];
   return copy;
 };
-
-export async function fetchGoals() {
-  const { data, error } = await supabase.from('finance_goals').select('*').order('created_at');
-  return { goals: ((data as Goal[]) ?? []).map((g) => toNumbers(g, ['target', 'saved', 'monthly', 'annual_rate'])), error };
-}
-
-export async function addGoal(goal: Omit<Goal, 'id'>) {
-  const { data, error } = await supabase.from('finance_goals').insert(goal).select().single();
-  return { goal: data ? toNumbers(data as Goal, ['target', 'saved', 'monthly', 'annual_rate']) : null, error };
-}
-
-export async function updateGoal(id: string, changes: Partial<Omit<Goal, 'id'>>) {
-  const { error } = await supabase.from('finance_goals').update(changes).eq('id', id);
-  return error;
-}
-
-export async function deleteGoal(id: string) {
-  const { error } = await supabase.from('finance_goals').delete().eq('id', id);
-  return error;
-}
-
-export async function fetchDebts() {
-  const { data, error } = await supabase.from('debts').select('*').order('created_at');
-  return { debts: ((data as Debt[]) ?? []).map((d) => toNumbers(d, ['principal', 'annual_rate', 'monthly'])), error };
-}
-
-export async function addDebt(debt: Omit<Debt, 'id'>) {
-  const { data, error } = await supabase.from('debts').insert(debt).select().single();
-  return { debt: data ? toNumbers(data as Debt, ['principal', 'annual_rate', 'monthly']) : null, error };
-}
-
-export async function updateDebt(id: string, changes: Partial<Omit<Debt, 'id'>>) {
-  const { error } = await supabase.from('debts').update(changes).eq('id', id);
-  return error;
-}
-
-export async function deleteDebt(id: string) {
-  const { error } = await supabase.from('debts').delete().eq('id', id);
-  return error;
-}
 
 export type InvestmentKind = 'livret' | 'fonds_euros' | 'av_uc' | 'pea' | 'per' | 'scpi' | 'crypto' | 'autre';
 
@@ -120,11 +62,6 @@ export async function updateInvestment(id: string, changes: Partial<Omit<Investm
   return error;
 }
 
-export async function deleteInvestment(id: string) {
-  const { error } = await supabase.from('investments').delete().eq('id', id);
-  return error;
-}
-
 // Après l'import d'un relevé de livret : met à jour la valeur du livret dans les placements (même nom), ou l'ajoute.
 // À la création, les versements sont pris égaux au solde (le relevé ne dit pas ce qui a été versé depuis l'ouverture).
 export async function syncSavingsAccount(name: string, balance: number, asOf: string) {
@@ -150,25 +87,6 @@ export async function syncSavingsAccount(name: string, balance: number, asOf: st
   });
   if (!err) await supabase.from('investments').update({ updated_at }).eq('name', name);
   return { created: !err, error: err };
-}
-
-// Reporte la valeur de chaque placement dans le bilan du mois (une ligne par placement, créée si besoin)
-export async function reportInvestments(period: string, investments: Investment[]) {
-  const { lines, error } = await fetchLines(period);
-  if (error) return error;
-  for (const inv of investments) {
-    const sectionId = investmentKind(inv.kind).section;
-    const existing = lines.find((l) => l.section === sectionId && l.label === inv.name);
-    if (existing) {
-      const err = await updateLine(existing.id, { amount: inv.value });
-      if (err) return err;
-    } else {
-      const { line, error: err } = await addLine(period, SECTIONS.find((s) => s.id === sectionId)!, inv.name, 100);
-      if (err) return err;
-      if (line) await updateLine(line.id, { amount: inv.value });
-    }
-  }
-  return null;
 }
 
 // Message lisible quand une table n'existe pas encore dans Supabase

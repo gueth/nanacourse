@@ -30,7 +30,7 @@ export default function NewListForm({ onCreated }: Props) {
   useEffect(() => {
     supabase
       .from('ingredients')
-      .select(`*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
+      .select(`*, category:categories(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
       .order('name')
       .then(({ data, error }) => {
         if (error) console.error(error);
@@ -158,7 +158,6 @@ export default function NewListForm({ onCreated }: Props) {
                       />
                       <span className="truncate">
                         {ing.name}
-                        {ing.brand && <span className="opacity-60"> — {ing.brand.name}</span>}
                       </span>
                     </label>
                     {/* Le champ quantité n'apparaît qu'une fois l'ingrédient coché, et doit être rempli */}

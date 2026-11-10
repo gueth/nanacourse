@@ -9,20 +9,6 @@ export const TRAVEL_COST_PER_KM = 0.3;
 // Au-delà de cette distance de ta position, un magasin est jugé "trop loin" pour être conseillé
 export const MAX_DISTANCE_KM = 20;
 
-// Position actuelle du téléphone (le navigateur demande l'autorisation).
-// Utilisée seulement depuis le profil, pour enregistrer sa position de départ.
-// Renvoie null si elle est refusée, indisponible, ou si le site n'est pas en https (hors localhost).
-export function getPosition(): Promise<Coords | null> {
-  return new Promise((resolve) => {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) return resolve(null);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      () => resolve(null),
-      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 0 }
-    );
-  });
-}
-
 // Coordonnées d'une adresse française, via la Base Adresse Nationale (api-adresse.data.gouv.fr :
 // service public gratuit, sans clé), avec l'adresse complète trouvée.
 // Renvoie null si l'adresse n'est pas trouvée avec assez de certitude.
@@ -35,19 +21,6 @@ export async function geocodeAddress(address: string): Promise<(Coords & { label
     if (!feature || feature.properties?.score < 0.4) return null;
     const [lng, lat] = feature.geometry.coordinates;
     return { lat, lng, label: feature.properties?.label };
-  } catch (err) {
-    console.error(err);
-    return null;
-  }
-}
-
-// Adresse la plus proche d'une position (même service), ou null si aucune n'est trouvée
-export async function reverseGeocode(pos: Coords): Promise<string | null> {
-  try {
-    const res = await fetch(`https://api-adresse.data.gouv.fr/reverse/?lon=${pos.lng}&lat=${pos.lat}&limit=1`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.features?.[0]?.properties?.label ?? null;
   } catch (err) {
     console.error(err);
     return null;

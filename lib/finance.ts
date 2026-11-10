@@ -239,13 +239,6 @@ export const passiveIncome = (lines: FinanceLine[]) =>
 export const creditPayments = (lines: FinanceLine[]) =>
   sum(lines.filter((l) => l.section === 'engagements' && /cr[ée]dit|emprunt|pr[êe]t/i.test(l.label)));
 
-// Répartition du patrimoine (côté actif du bilan) par rubrique
-export function assetSplit(lines: FinanceLine[]) {
-  return SECTIONS.filter((s) => s.side === 'actif')
-    .map((s) => ({ id: s.id, title: s.title, amount: inSections(lines, [s.id]) }))
-    .filter((s) => s.amount > 0);
-}
-
 // Regroupe des lignes par mois
 export function byPeriod(lines: FinanceLine[]) {
   const map = new Map<string, FinanceLine[]>();

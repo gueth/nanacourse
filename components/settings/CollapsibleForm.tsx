@@ -4,7 +4,7 @@ import { useState, type ReactNode } from 'react';
 import { ChevronRight } from 'lucide-react';
 
 type Props = {
-  // Titre toujours visible, ex : « + Ajouter une marque »
+  // Titre toujours visible, ex : « + Ajouter une catégorie »
   title: string;
   // Clé pour se souvenir (sur cet appareil) si le formulaire était ouvert ou fermé
   storageKey: string;

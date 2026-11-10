@@ -7,42 +7,57 @@ import { supabase } from '@/lib/supabase';
 
 export type PeriodUnit = 'day' | 'week' | 'month';
 
-// --- Répartition du revenu (méthode 40/40/20) ---
-// Le revenu du mois est divisé en trois parties, aux pourcentages modulables :
+// --- Répartition du revenu (40/40/20 au départ) ---
+// Le revenu du mois est divisé en parties (lignes de répartition), chacune avec son pourcentage. Au départ :
 //  - charges : tout ce qui est nécessaire (loyer, nourriture, abonnements...) ;
 //  - investissement personnel : ce qu'on s'offre (sorties, cours de tennis...) ;
 //  - épargne.
+// On peut en ajouter, les renommer ou les supprimer (Profil > Répartition).
 // Chaque budget entre dans l'une de ces parties ; son plafond peut être un montant, ou un pourcentage de sa partie.
-// Table Supabase "income_plan" (une seule ligne) ; voir supabase/shopping_budgets.sql.
-export type BudgetPart = 'charges' | 'plaisirs' | 'epargne';
-export const BUDGET_PARTS: { id: BudgetPart; label: string; hint: string; column: keyof IncomePlan }[] = [
-  { id: 'charges', label: 'Charges', hint: 'Loyer, nourriture, abonnements…', column: 'charges_pct' },
-  { id: 'plaisirs', label: 'Investissement personnel', hint: 'Sorties, cours de tennis…', column: 'plaisirs_pct' },
-  { id: 'epargne', label: 'Épargne', hint: 'Ce que tu mets de côté', column: 'epargne_pct' }
-];
-export const partLabel = (part: BudgetPart | null | undefined) => BUDGET_PARTS.find((p) => p.id === part)?.label ?? 'Charges';
+// Table Supabase "income_plan" (une seule ligne, parties dans la colonne "parts") ; voir supabase/shopping_budgets.sql.
+export type BudgetPart = string; // identifiant d'une partie
+export type IncomePart = { id: BudgetPart; label: string; hint?: string; pct: number };
+export type IncomePlan = { income: number; parts: IncomePart[] };
 
-export type IncomePlan = { income: number; charges_pct: number; plaisirs_pct: number; epargne_pct: number };
-export const DEFAULT_PLAN: IncomePlan = { income: 0, charges_pct: 40, plaisirs_pct: 40, epargne_pct: 20 };
+export const DEFAULT_PARTS: IncomePart[] = [
+  { id: 'charges', label: 'Charges', hint: 'Loyer, nourriture, abonnements…', pct: 40 },
+  { id: 'plaisirs', label: 'Investissement personnel', hint: 'Sorties, cours de tennis…', pct: 40 },
+  { id: 'epargne', label: 'Épargne', hint: 'Ce que tu mets de côté', pct: 20 }
+];
+export const DEFAULT_PLAN: IncomePlan = { income: 0, parts: DEFAULT_PARTS };
+
+// Partie d'un budget ; une partie supprimée (ou absente) revient à la première
+export const partOf = (plan: IncomePlan, part: BudgetPart | null | undefined) => plan.parts.find((p) => p.id === part) ?? plan.parts[0];
+export const partLabel = (plan: IncomePlan, part: BudgetPart | null | undefined) => partOf(plan, part)?.label ?? 'Charges';
 
 // Montant mensuel d'une partie : revenu × son pourcentage
-export const partAmount = (plan: IncomePlan, part: BudgetPart) =>
-  (plan.income * Number(plan[BUDGET_PARTS.find((p) => p.id === part)!.column])) / 100;
+export const partAmount = (plan: IncomePlan, part: BudgetPart | null | undefined) => (plan.income * (Number(partOf(plan, part)?.pct) || 0)) / 100;
+
+// Identifiant d'une nouvelle partie
+export const newPartId = () => `partie-${Date.now().toString(36)}`;
+
+type IncomePlanRow = { income: number; parts?: IncomePart[] | null; charges_pct?: number; plaisirs_pct?: number; epargne_pct?: number };
 
 export async function fetchIncomePlan() {
-  const { data, error } = await supabase.from('income_plan').select('income, charges_pct, plaisirs_pct, epargne_pct').eq('id', 1).maybeSingle();
-  const row = data as IncomePlan | null;
-  return {
-    plan: row
-      ? { income: Number(row.income), charges_pct: Number(row.charges_pct), plaisirs_pct: Number(row.plaisirs_pct), epargne_pct: Number(row.epargne_pct) }
-      : DEFAULT_PLAN,
-    error
-  };
+  const { data, error } = await supabase.from('income_plan').select('*').eq('id', 1).maybeSingle();
+  const row = data as IncomePlanRow | null;
+  if (!row) return { plan: DEFAULT_PLAN, error };
+  // Colonne "parts" pas encore remplie : les trois parties d'origine, avec leurs pourcentages enregistrés
+  const legacy = { charges: row.charges_pct, plaisirs: row.plaisirs_pct, epargne: row.epargne_pct } as Record<string, number | undefined>;
+  const parts =
+    Array.isArray(row.parts) && row.parts.length > 0
+      ? row.parts.map((p) => ({ ...p, pct: Number(p.pct) || 0 }))
+      : DEFAULT_PARTS.map((p) => ({ ...p, pct: legacy[p.id] != null ? Number(legacy[p.id]) : p.pct }));
+  return { plan: { income: Number(row.income), parts }, error };
 }
 
+// Enregistre la répartition ; les budgets d'une partie supprimée passent dans la première partie
 export async function saveIncomePlan(plan: IncomePlan) {
-  const { error } = await supabase.from('income_plan').upsert({ id: 1, ...plan, updated_at: new Date().toISOString() }, { onConflict: 'id' });
-  return error;
+  const { error } = await supabase.from('income_plan').upsert({ id: 1, income: plan.income, parts: plan.parts, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+  if (error || plan.parts.length === 0) return error;
+  const ids = plan.parts.map((p) => `"${p.id}"`).join(',');
+  const { error: moveError } = await supabase.from('budget_settings').update({ part: plan.parts[0].id }).not('part', 'in', `(${ids})`);
+  return moveError;
 }
 
 // Nombre de périodes d'un budget dans un mois (en moyenne) : 1 pour un budget au mois, ~4,35 pour une semaine...

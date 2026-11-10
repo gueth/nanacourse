@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import type { Brand, Category, IngredientWithRelations } from '@/lib/types';
+import type { Category, IngredientWithRelations } from '@/lib/types';
 import { createIngredient, saveIngredientPrice } from '@/lib/ingredients';
 import { normalizeQuantity, quantityRule, TYPE_SUGGESTIONS } from '@/lib/quantity';
 import { storeLabel, STORE_SELECT } from '@/lib/stores';
@@ -20,19 +20,17 @@ type Props = {
 // Seul le nom est obligatoire, tout le reste est facultatif :
 //  - nouveau nom : l'ingrédient est aussi créé dans la liste des ingrédients ;
 //  - ingrédient connu : ses valeurs sont pré-remplies, et celles qu'on change
-//    (catégorie, marque, type) sont enregistrées sur l'ingrédient.
+//    (catégorie, type) sont enregistrées sur l'ingrédient.
 // Pas de choix de magasin ici : le prix proposé est celui du magasin choisi pour la liste
 // (ligne "Magasin" du ticket), ou, sans magasin, le prix le plus haut connu pour l'ingrédient.
 export default function AddToListForm({ lists, onAdded }: Props) {
   const [ingredients, setIngredients] = useState<IngredientWithRelations[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [brands, setBrands] = useState<Brand[]>([]);
   const [storeName, setStoreName] = useState('');
 
   const [name, setName] = useState('');
   const [quantity, setQuantity] = useState('1');
   const [categoryId, setCategoryId] = useState('');
-  const [brandId, setBrandId] = useState('');
   const [type, setType] = useState('');
   const [note, setNote] = useState('');
   const [price, setPrice] = useState('');
@@ -42,18 +40,16 @@ export default function AddToListForm({ lists, onAdded }: Props) {
   const storeId = lists.find((l) => l.id === listId)?.store_id ?? '';
   const [saving, setSaving] = useState(false);
 
-  // Chargement des ingrédients, catégories, marques et magasins à l'ouverture du cadre
+  // Chargement des ingrédients, catégories et magasins à l'ouverture du cadre
   useEffect(() => {
     Promise.all([
-      supabase.from('ingredients').select(`*, brand:brands(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`).order('name'),
+      supabase.from('ingredients').select(`*, prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`).order('name'),
       supabase.from('categories').select('*').order('name'),
-      supabase.from('brands').select('*').order('name'),
       storeId ? supabase.from('stores').select(STORE_SELECT).eq('id', storeId).maybeSingle() : Promise.resolve({ data: null })
-    ]).then(([{ data: ings, error }, { data: cats }, { data: brs }, { data: store }]) => {
+    ]).then(([{ data: ings, error }, { data: cats }, { data: store }]) => {
       if (error) console.error(error);
       setIngredients((ings as unknown as IngredientWithRelations[]) ?? []);
       setCategories(cats ?? []);
-      setBrands(brs ?? []);
       setStoreName(store ? storeLabel(store) : '');
     });
   }, [storeId]);
@@ -82,7 +78,6 @@ export default function AddToListForm({ lists, onAdded }: Props) {
     const match = ingredients.find((i) => i.name.toLowerCase() === value.trim().toLowerCase());
     if (match) {
       setCategoryId(match.category_id ?? '');
-      setBrandId(match.brand_id ?? '');
       setType(match.type ?? '');
       setNote(match.note ?? '');
       const p = suggestedPrice(match);
@@ -111,21 +106,19 @@ export default function AddToListForm({ lists, onAdded }: Props) {
     let ingredientId = existing?.id ?? null;
     if (!existing) {
       ingredientId = await createIngredient(
-        { name, category_id: categoryId, brand_id: brandId, type, note },
+        { name, category_id: categoryId, type, note },
         storeId || undefined,
         price ? unitPrice : undefined
       );
     } else {
-      // Catégorie, marque, type ou note modifiés : mise à jour de l'ingrédient
+      // Catégorie, type ou note modifiés : mise à jour de l'ingrédient
       const changes = {
         category_id: categoryId || null,
-        brand_id: brandId || null,
         type: type.trim() || null,
         note: note.trim() || null
       };
       if (
         changes.category_id !== existing.category_id ||
-        changes.brand_id !== existing.brand_id ||
         changes.type !== existing.type ||
         changes.note !== existing.note
       ) {
@@ -249,7 +242,7 @@ export default function AddToListForm({ lists, onAdded }: Props) {
         />
       </div>
 
-      {/* Type, catégorie et marque : toujours modifiables.
+      {/* Type et catégorie : toujours modifiables.
           Pré-remplis pour un ingrédient connu ; les changements sont enregistrés sur l'ingrédient. */}
       <div>
         <label className="field-label">Type</label>
@@ -273,18 +266,6 @@ export default function AddToListForm({ lists, onAdded }: Props) {
           {categories.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div>
-        <label className="field-label">Marque</label>
-        <select value={brandId} onChange={(e) => setBrandId(e.target.value)} className="input-hand">
-          <option value="">—</option>
-          {brands.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.name}
-              {b.rating != null ? ` (${b.rating}/5)` : ''}
             </option>
           ))}
         </select>

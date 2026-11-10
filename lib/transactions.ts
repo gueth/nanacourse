@@ -449,11 +449,6 @@ export async function updateCategory(ids: string[], category: string) {
   return error;
 }
 
-export async function deleteTransaction(id: string) {
-  const { error } = await supabase.from('bank_transactions').delete().eq('id', id);
-  return error;
-}
-
 // Mémorise une correction : les prochaines opérations de ce commerçant iront dans cette catégorie
 export async function saveRule(pattern: string, category: string) {
   const { error } = await supabase.from('category_rules').upsert({ pattern, category }, { onConflict: 'pattern' });

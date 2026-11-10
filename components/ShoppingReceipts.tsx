@@ -601,7 +601,7 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
           className="w-4 h-4 accent-brick"
           title="Acheté"
         />
-        {/* Colonne 2 — article : nom, marque, et ✓ / ✗ pour un article grisé */}
+        {/* Colonne 2 — article : nom, et ✓ / ✗ pour un article grisé */}
         <span className="min-w-0 flex flex-wrap items-center gap-x-2">
           {/* Clic sur le nom : ouvre le cadre de modification de l'article.
               Appui long : marque / démarque l'article comme "prix incertain" (le clic qui suit est ignoré).
@@ -626,8 +626,6 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
             className="truncate text-left select-none enabled:hover:underline decoration-dotted underline-offset-2"
           >
             {item.ingredient?.name ?? 'Ingrédient supprimé'}
-            {/* Marque : seulement sur ordinateur (sm et plus), pour laisser la place au nom sur téléphone */}
-            {item.ingredient?.brand && <span className="hidden sm:inline opacity-60"> — {item.ingredient.brand.name}</span>}
           </button>
         {/* ✓ / ✗ pour un article grisé : diviser sa quantité par deux, ou non */}
         {status === 'reduce' && suggestedQty != null && (

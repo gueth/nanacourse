@@ -1,39 +1,53 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { PAPER } from '@/components/gazette/Lace';
 
 // Fondu (page de titre -> accueil) : un voile couleur papier de l'accueil (gris bleuté, pas le beige du thème)
 // apparaît par-dessus la page, on change de page, puis il s'efface.
-// Doit rester synchronisé avec les paliers de @keyframes page-fade (globals.css).
+// Le voile reste opaque tant que la page suivante n'est pas affichée ("ready") : sinon, si elle tarde,
+// on reverrait la page de départ entre le fondu d'entrée et celui de sortie.
+// Le composant est monté à chaque transition (et démonté à la fin) : il repart toujours de la phase d'entrée.
 const FADE_IN_MS = 250;
-const HOLD_MS = 100; // court palier opaque, laisse à la page suivante le temps de s'afficher
+const HOLD_MS = 120; // court palier opaque une fois la page suivante affichée, le temps qu'elle se dessine
 const FADE_OUT_MS = 350;
-const TOTAL_MS = FADE_IN_MS + HOLD_MS + FADE_OUT_MS;
+// Sécurité : si la page suivante ne s'affiche jamais, le voile s'efface quand même au bout de ce délai
+const MAX_WAIT_MS = 6000;
 
 type Props = {
-  active: boolean;
+  ready: boolean;
   onCovered: () => void;
   onFinished: () => void;
 };
 
-export function PageFadeTransition({ active, onCovered, onFinished }: Props) {
+export function PageFadeTransition({ ready, onCovered, onFinished }: Props) {
+  const [phase, setPhase] = useState<'in' | 'hold' | 'out'>('in');
+
+  // 1. Fondu d'entrée, puis changement de page sous le voile opaque
   useEffect(() => {
-    if (!active) return;
-    const coverTimer = setTimeout(onCovered, FADE_IN_MS);
-    const finishTimer = setTimeout(onFinished, TOTAL_MS);
-    return () => {
-      clearTimeout(coverTimer);
-      clearTimeout(finishTimer);
-    };
-  }, [active, onCovered, onFinished]);
+    const timer = setTimeout(() => {
+      setPhase('hold');
+      onCovered();
+    }, FADE_IN_MS);
+    return () => clearTimeout(timer);
+  }, [onCovered]);
 
-  if (!active) return null;
+  // 2. Page suivante affichée (ou attente trop longue) : court palier, puis fondu de sortie
+  useEffect(() => {
+    if (phase !== 'hold') return;
+    const timer = setTimeout(() => setPhase('out'), ready ? HOLD_MS : MAX_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [phase, ready]);
 
-  return (
-    <div
-      className="fixed inset-0 z-50 pointer-events-none"
-      style={{ backgroundColor: PAPER, animation: `page-fade ${TOTAL_MS}ms ease-in-out both` }}
-    />
-  );
+  // 3. Fin du fondu de sortie
+  useEffect(() => {
+    if (phase !== 'out') return;
+    const timer = setTimeout(onFinished, FADE_OUT_MS);
+    return () => clearTimeout(timer);
+  }, [phase, onFinished]);
+
+  const animation =
+    phase === 'in' ? `page-fade-in ${FADE_IN_MS}ms ease-in both` : phase === 'out' ? `page-fade-out ${FADE_OUT_MS}ms ease-out both` : undefined;
+
+  return <div className="fixed inset-0 z-50 pointer-events-none" style={{ backgroundColor: PAPER, animation }} />;
 }

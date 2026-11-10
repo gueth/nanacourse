@@ -18,15 +18,6 @@ export async function fetchProfile(): Promise<Profile> {
   return data?.[0] ?? EMPTY_PROFILE;
 }
 
-// Enregistre le profil : met à jour la ligne existante, ou crée la première.
-// Renvoie le profil enregistré, ou l'erreur Supabase rencontrée.
-export async function saveProfile(current: Profile, values: Omit<Profile, 'id'>) {
-  const { data, error } = current.id
-    ? await supabase.from('profile').update(values).eq('id', current.id).select().single()
-    : await supabase.from('profile').insert(values).select().single();
-  return { profile: (data as Profile | null) ?? null, error };
-}
-
 // Position de départ du profil, ou null si elle n'est pas renseignée
 export function profileCoords(profile: Profile) {
   return profile.latitude != null && profile.longitude != null ? { lat: profile.latitude, lng: profile.longitude } : null;

@@ -1,3 +1,7 @@
+import { useCallback, useRef, useState } from 'react';
+import { Camera, Pencil, Plus, X } from 'lucide-react';
+import { resetProfilePhoto, uploadProfilePhoto, type ProfilePhoto } from '@/lib/profileTexts';
+
 // Éléments de décor de la page Profil, façon « portfolio » : enveloppe, napperon, ruban, trombone,
 // photos teintées en bleu, ticket de caisse et timbre. Tout est dessiné en SVG/CSS (aucune image).
 
@@ -196,8 +200,162 @@ export function Stamp({ children, className = '' }: { children: React.ReactNode;
   );
 }
 
-// Section de la page de droite du carnet : titre calligraphié numéroté, puis son contenu
-export function NoteSection({ title, n, children }: { title: string; n: number; children: React.ReactNode }) {
+// Confirmation au style de la page Profil, à utiliser avant une suppression (même usage que useConfirm) :
+//   const [confirm, confirmDialog] = useProfileConfirm();
+//   if (!(await confirm('Supprimer ?', 'Supprimer « Courses » ?'))) return;
+// {confirmDialog} est à afficher au niveau de la page (pas dans un élément pivoté, qui décalerait la fenêtre).
+export type ConfirmFn = (title: string, message: string, confirmLabel?: string) => Promise<boolean>;
+export function useProfileConfirm() {
+  const [request, setRequest] = useState<{ title: string; message: string; confirmLabel?: string } | null>(null);
+  const resolveRef = useRef<(ok: boolean) => void>(() => {});
+  const confirm = useCallback<ConfirmFn>((title, message, confirmLabel) => {
+    setRequest({ title, message, confirmLabel });
+    return new Promise<boolean>((resolve) => {
+      resolveRef.current = resolve;
+    });
+  }, []);
+  const answer = (ok: boolean) => {
+    setRequest(null);
+    resolveRef.current(ok);
+  };
+  const dialog = request && (
+    <PaperModal
+      title={request.title}
+      onClose={() => answer(false)}
+      footer={
+        <div className="flex justify-end gap-2">
+          <button type="button" autoFocus onClick={() => answer(false)} className="rounded px-3 py-2 text-sm">
+            Annuler
+          </button>
+          <button type="button" onClick={() => answer(true)} className="rounded bg-brick px-4 py-2 text-sm text-white">
+            {request.confirmLabel ?? 'Supprimer'}
+          </button>
+        </div>
+      }
+    >
+      <p className="text-sm" style={serif}>
+        {request.message}
+      </p>
+    </PaperModal>
+  );
+  return [confirm, dialog] as const;
+}
+
+// Photo du profil remplaçable : la photo choisie, ou le dessin par défaut (kind).
+// Bouton appareil photo pour en choisir une autre, et ✕ pour revenir au dessin (après confirmation).
+export function EditablePhoto({ kind, photo, url, label, confirm }: { kind: 'standing' | 'portrait'; photo: ProfilePhoto; url: string; label: string; confirm: ConfirmFn }) {
+  const input = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function run(action: () => Promise<string | null>) {
+    setBusy(true);
+    setError('');
+    const message = await action();
+    setBusy(false);
+    if (message) setError(message);
+  }
+
+  const round = 'absolute flex items-center justify-center rounded-full bg-white/90 p-1.5 shadow-sm disabled:opacity-60';
+  return (
+    <div className="relative h-full w-full">
+      {url ? (
+        // eslint-disable-next-line @next/next/no-img-element -- photo du stockage Supabase, taille déjà réduite
+        <img src={url} alt={label} className={`block h-full w-full object-cover ${busy ? 'opacity-50' : ''}`} />
+      ) : (
+        <div className={busy ? 'h-full opacity-50' : 'h-full'}>
+          <BluePhoto kind={kind} />
+        </div>
+      )}
+      <input
+        ref={input}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) run(() => uploadProfilePhoto(photo, file));
+        }}
+      />
+      <button type="button" onClick={() => input.current?.click()} disabled={busy} aria-label={`Changer ${label}`} className={`${round} bottom-1 right-1`} style={{ color: PF.blue }}>
+        <Camera size={12} />
+      </button>
+      {url && (
+        <button type="button" onClick={async () => {
+            if (await confirm('Retirer la photo', `Retirer ${label} et remettre le dessin d’origine ?`, 'Retirer')) run(() => resetProfilePhoto(photo));
+          }} disabled={busy} aria-label={`Retirer ${label}`} className={`${round} left-1 top-1`} style={{ color: PF.blue }}>
+          <X size={12} />
+        </button>
+      )}
+      {error && <p className="absolute inset-x-0 bottom-0 bg-white/95 p-1 text-[8px] leading-tight text-brick">{error}</p>}
+    </div>
+  );
+}
+
+// Petit bouton rond placé à côté d'une rubrique : crayon pour la modifier, ou « + » pour y ajouter un élément
+export function EditButton({ label, onClick, add = false, className = '' }: { label: string; onClick: () => void; add?: boolean; className?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={add ? label : `Modifier « ${label} »`}
+      className={`inline-flex items-center justify-center rounded-full bg-white/80 p-1.5 align-middle shadow-sm ${className}`}
+      style={{ color: PF.blue }}
+    >
+      {add ? <Plus size={11} /> : <Pencil size={11} />}
+    </button>
+  );
+}
+
+// Fenêtre sur papier de la page Profil : titre calligraphié, contenu qui défile, pied facultatif (boutons)
+export function PaperModal({ title, onClose, footer, children }: { title: string; onClose: () => void; footer?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="flex max-h-[90dvh] w-full max-w-md flex-col shadow-xl"
+        style={{ ...paperGrain, color: PF.ink }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 pb-2 pt-3">
+          <h2 className="text-[30px] leading-none" style={{ ...script, color: PF.blue }}>
+            {title}
+          </h2>
+          <button type="button" onClick={onClose} aria-label="Fermer" className="-mr-2 p-2" style={{ color: PF.blue }}>
+            <X size={20} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-4 pb-4">{children}</div>
+        {footer && (
+          <div className="border-t px-4 py-3" style={{ borderColor: PF.pale }}>
+            {footer}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Section de la page de droite du carnet : titre calligraphié numéroté, puis son contenu.
+// onEdit : crayon à côté du titre pour modifier la rubrique ; onAdd : « + » pour y ajouter un élément
+export function NoteSection({
+  title,
+  n,
+  onEdit,
+  onAdd,
+  addLabel = 'Ajouter',
+  children
+}: {
+  title: string;
+  n: number;
+  onEdit?: () => void;
+  onAdd?: () => void;
+  addLabel?: string;
+  children: React.ReactNode;
+}) {
   return (
     <section className="mt-3 text-center">
       <h3 className="text-[26px] leading-none" style={{ ...script, color: PF.blue }}>
@@ -205,6 +363,8 @@ export function NoteSection({ title, n, children }: { title: string; n: number; 
         <sup className="ml-0.5 text-[8px]" style={serif}>
           ({n})
         </sup>
+        {onEdit && <EditButton label={title} onClick={onEdit} className="ml-1" />}
+        {onAdd && <EditButton label={addLabel} onClick={onAdd} add className="ml-1" />}
       </h3>
       <div className="mt-1 text-[10px] leading-snug" style={{ ...serif, color: PF.ink }}>
         {children}

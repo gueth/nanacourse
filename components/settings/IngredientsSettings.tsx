@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { quantityRule, TYPE_SUGGESTIONS } from '@/lib/quantity';
 import { storeLabel } from '@/lib/stores';
 import { supabase } from '@/lib/supabase';
-import type { Brand, Category, IngredientWithRelations, Store } from '@/lib/types';
+import type { Category, IngredientWithRelations, Store } from '@/lib/types';
 import FamilyList from '@/components/FamilyList';
 import PriceEditor from '@/components/PriceEditor';
 import NewIngredientForm from '@/components/NewIngredientForm';
@@ -17,7 +17,6 @@ import { EditActions, EditFields, RowActions, RowList, SearchBar } from '@/compo
 type Props = {
   ingredients: IngredientWithRelations[];
   categories: Category[];
-  brands: Brand[];
   stores: Store[];
   // Appelée après chaque modification pour recharger les données depuis Supabase
   onChange: () => void;
@@ -28,13 +27,12 @@ type EditForm = {
   name: string;
   note: string;
   category_id: string;
-  brand_id: string;
   type: string;
 };
 
 // Onglet "Ingrédients" des paramètres : liste de tous les ingrédients,
-// avec modification de toutes leurs informations (nom, catégorie, marque, type, note, photo, prix).
-export default function IngredientsSettings({ ingredients, categories, brands, stores, onChange }: Props) {
+// avec modification de toutes leurs informations (nom, catégorie, type, note, photo, prix).
+export default function IngredientsSettings({ ingredients, categories, stores, onChange }: Props) {
   const [search, setSearch] = useState('');
   const [filterCategoryId, setFilterCategoryId] = useState('');
   // Message d'erreur affiché à l'écran (ex : suppression refusée par Supabase)
@@ -44,7 +42,7 @@ export default function IngredientsSettings({ ingredients, categories, brands, s
 
   // Ingrédient en cours de modification (null = aucun) et ses valeurs temporaires
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState<EditForm>({ name: '', note: '', category_id: '', brand_id: '', type: '' });
+  const [form, setForm] = useState<EditForm>({ name: '', note: '', category_id: '', type: '' });
 
   // Formulaire d'ajout : nom pré-rempli, et compteur qui force sa réinitialisation (via "key")
   const [newIngredientName, setNewIngredientName] = useState('');
@@ -84,7 +82,6 @@ export default function IngredientsSettings({ ingredients, categories, brands, s
       name: ing.name,
       note: ing.note ?? '',
       category_id: ing.category_id ?? '',
-      brand_id: ing.brand_id ?? '',
       type: ing.type ?? ''
     });
   }
@@ -98,7 +95,6 @@ export default function IngredientsSettings({ ingredients, categories, brands, s
         name: form.name.trim(),
         note: form.note.trim() || null,
         category_id: form.category_id || null,
-        brand_id: form.brand_id || null,
         type: form.type.trim() || null
       })
       .eq('id', id);
@@ -150,7 +146,6 @@ export default function IngredientsSettings({ ingredients, categories, brands, s
           key={formKey}
           initialName={newIngredientName}
           categories={categories}
-          brands={brands}
           stores={stores}
           onCreated={() => {
             setNewIngredientName('');
@@ -209,9 +204,9 @@ export default function IngredientsSettings({ ingredients, categories, brands, s
                     )}
                     <div className="flex-1 min-w-0">
                       <p className="font-bold leading-snug line-clamp-2">{ing.name}</p>
-                      {/* Résumé : catégorie · unité · marque */}
+                      {/* Résumé : catégorie · unité */}
                       <p className="text-xs opacity-60 truncate">
-                        {[ing.category?.name ?? 'sans catégorie', ing.type, ing.brand?.name].filter(Boolean).join(' · ')}
+                        {[ing.category?.name ?? 'sans catégorie', ing.type].filter(Boolean).join(' · ')}
                       </p>
                       {/* Prix : le moins cher (avec son magasin), et le nombre d'autres prix connus */}
                       <p className="text-xs truncate">
@@ -251,18 +246,6 @@ export default function IngredientsSettings({ ingredients, categories, brands, s
                             {categories.map((c) => (
                               <option key={c.id} value={c.id}>
                                 {c.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="field-label">Marque</label>
-                          <select value={form.brand_id} onChange={(e) => setField('brand_id', e.target.value)} className="input-hand w-full">
-                            <option value="">—</option>
-                            {brands.map((b) => (
-                              <option key={b.id} value={b.id}>
-                                {b.name}
-                                {b.rating != null ? ` (${b.rating}/5)` : ''}
                               </option>
                             ))}
                           </select>

@@ -27,7 +27,7 @@ export default function ShoppingListPage() {
     Promise.all([
       supabase
         .from('ingredients')
-        .select(`*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
+        .select(`*, category:categories(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
         .order('name'),
       supabase.from('stores').select(STORE_SELECT),
       supabase.from('inventory').select('ingredient_id, quantity, low_stock')

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import type { Brand, Category, Ingredient } from '@/lib/types';
+import type { Category, Ingredient } from '@/lib/types';
 import { TYPE_SUGGESTIONS } from '@/lib/quantity';
 import type { PendingChanges } from '@/lib/pending';
 
@@ -14,17 +14,15 @@ type Props = {
 };
 
 // Formulaire de modification d'un article de la liste de courses, affiché dans un cadre au-dessus de la page.
-// Modifie les informations de l'ingrédient (nom, catégorie, marque, type, note), mais seulement
+// Modifie les informations de l'ingrédient (nom, catégorie, type, note), mais seulement
 // "en attente" sur la ligne de la liste : elles ne sont appliquées à l'ingrédient qu'à la validation de la liste.
 // La quantité, le magasin et le prix se règlent directement sur le ticket de la liste.
 export default function EditListItemForm({ item, onSaved }: Props) {
   const [ingredient, setIngredient] = useState<Ingredient | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [brands, setBrands] = useState<Brand[]>([]);
 
   const [name, setName] = useState('');
   const [categoryId, setCategoryId] = useState('');
-  const [brandId, setBrandId] = useState('');
   const [type, setType] = useState('');
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
@@ -34,9 +32,8 @@ export default function EditListItemForm({ item, onSaved }: Props) {
   useEffect(() => {
     Promise.all([
       supabase.from('ingredients').select('*').eq('id', item.ingredient_id).single(),
-      supabase.from('categories').select('*').order('name'),
-      supabase.from('brands').select('*').order('name')
-    ]).then(([{ data: ing, error }, { data: cats }, { data: brs }]) => {
+      supabase.from('categories').select('*').order('name')
+    ]).then(([{ data: ing, error }, { data: cats }]) => {
       if (error || !ing) {
         console.error(error);
         setErrorMessage("Impossible de charger cet ingrédient.");
@@ -48,11 +45,9 @@ export default function EditListItemForm({ item, onSaved }: Props) {
       const p = item.pending ?? {};
       setName(p.name ?? loaded.name);
       setCategoryId((p.category_id !== undefined ? p.category_id : loaded.category_id) ?? '');
-      setBrandId((p.brand_id !== undefined ? p.brand_id : loaded.brand_id) ?? '');
       setType((p.type !== undefined ? p.type : loaded.type) ?? '');
       setNote((p.note !== undefined ? p.note : loaded.note) ?? '');
       setCategories(cats ?? []);
-      setBrands(brs ?? []);
     });
   }, [item.ingredient_id, item.pending]);
 
@@ -66,14 +61,12 @@ export default function EditListItemForm({ item, onSaved }: Props) {
     const values = {
       name: name.trim(),
       category_id: categoryId || null,
-      brand_id: brandId || null,
       type: type.trim() || null,
       note: note.trim() || null
     };
     const pending: PendingChanges = item.pending?.price_changed ? { price_changed: true } : {};
     if (values.name !== ingredient.name) pending.name = values.name;
     if (values.category_id !== ingredient.category_id) pending.category_id = values.category_id;
-    if (values.brand_id !== ingredient.brand_id) pending.brand_id = values.brand_id;
     if (values.type !== ingredient.type) pending.type = values.type;
     if (values.note !== ingredient.note) pending.note = values.note;
 
@@ -110,18 +103,6 @@ export default function EditListItemForm({ item, onSaved }: Props) {
           {categories.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div>
-        <label className="field-label">Marque</label>
-        <select value={brandId} onChange={(e) => setBrandId(e.target.value)} className="input-hand">
-          <option value="">—</option>
-          {brands.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.name}
-              {b.rating != null ? ` (${b.rating}/5)` : ''}
             </option>
           ))}
         </select>

@@ -8,7 +8,7 @@ import { supabase } from '@/lib/supabase';
 import { readLines } from '@/lib/ocr';
 import { parseLabel } from '@/lib/labelParser';
 import { storeLabel, STORE_SELECT } from '@/lib/stores';
-import type { Brand, Category, IngredientWithRelations, Store } from '@/lib/types';
+import type { Category, IngredientWithRelations, Store } from '@/lib/types';
 import PriceEditor from '@/components/PriceEditor';
 import { SwipePages } from '@/components/SwipePages';
 import { useConfirm } from '@/components/ConfirmDialog';
@@ -19,7 +19,6 @@ export default function IngredientsPage() {
   const [confirm, confirmDialog] = useConfirm();
   const [categories, setCategories] = useState<Category[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
-  const [brands, setBrands] = useState<Brand[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [filterCategoryId, setFilterCategoryId] = useState('');
@@ -29,16 +28,12 @@ export default function IngredientsPage() {
   const [name, setName] = useState('');
   const [note, setNote] = useState('');
   const [categoryId, setCategoryId] = useState('');
-  const [brandId, setBrandId] = useState('');
   const [type, setType] = useState('');
   const [price, setPrice] = useState('');
   const [storeId, setStoreId] = useState('');
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState('');
   const [search, setSearch] = useState('');
-
-  const [newBrandName, setNewBrandName] = useState('');
-  const [newBrandRating, setNewBrandRating] = useState('');
 
   // RECHERCHE ET FILTRAGE DES INGRÉDIENTS
   const filteredIngredients = useMemo(() => {
@@ -51,19 +46,17 @@ export default function IngredientsPage() {
 
   // CHARGEMENT DES DONNÉES
   async function loadAll() {
-    const [{ data: cats }, { data: sts }, { data: brs }, { data: ings, error }] = await Promise.all([
+    const [{ data: cats }, { data: sts }, { data: ings, error }] = await Promise.all([
       supabase.from('categories').select('*').order('name'),
       supabase.from('stores').select(STORE_SELECT).order('name'),
-      supabase.from('brands').select('*').order('name'),
       supabase
         .from('ingredients')
-        .select(`*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
+        .select(`*, category:categories(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
         .order('name')
     ]);
     if (error) console.error(error);
     setCategories(cats ?? []);
     setStores(sts ?? []);
-    setBrands(brs ?? []);
     setIngredients((ings as unknown as IngredientWithRelations[]) ?? []);
     setLoading(false);
   }
@@ -72,35 +65,18 @@ export default function IngredientsPage() {
     Promise.all([
       supabase.from('categories').select('*').order('name'),
       supabase.from('stores').select(STORE_SELECT).order('name'),
-      supabase.from('brands').select('*').order('name'),
       supabase
         .from('ingredients')
-        .select(`*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
+        .select(`*, category:categories(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
         .order('name')
-    ]).then(([{ data: cats }, { data: sts }, { data: brs }, { data: ings, error }]) => {
+    ]).then(([{ data: cats }, { data: sts }, { data: ings, error }]) => {
       if (error) console.error(error);
       setCategories(cats ?? []);
       setStores(sts ?? []);
-      setBrands(brs ?? []);
-      setIngredients((ings as unknown as IngredientWithRelations[]) ?? []);
+        setIngredients((ings as unknown as IngredientWithRelations[]) ?? []);
       setLoading(false);
     });
   }, []);
-
-  // AJOUT D'UNE MARQUE (pas de page dédiée, juste nom + avis)
-  async function handleAddBrand() {
-    if (!newBrandName.trim()) return;
-    const { data: created, error } = await supabase
-      .from('brands')
-      .insert({ name: newBrandName.trim(), rating: newBrandRating ? Number(newBrandRating) : null })
-      .select()
-      .single();
-    if (error) return console.error(error);
-    setBrands((b) => [...b, created].sort((a, c) => a.name.localeCompare(c.name)));
-    setBrandId(created.id);
-    setNewBrandName('');
-    setNewBrandRating('');
-  }
 
   // AJOUT D'UN INGRÉDIENT
   async function handleSubmit(e: React.FormEvent) {
@@ -112,7 +88,6 @@ export default function IngredientsPage() {
         name: name.trim(),
         note: note.trim() || null,
         category_id: categoryId || null,
-        brand_id: brandId || null,
         type: type.trim() || null
       })
       .select()
@@ -129,7 +104,6 @@ export default function IngredientsPage() {
     setName('');
     setNote('');
     setCategoryId('');
-    setBrandId('');
     setType('');
     setPrice('');
     setStoreId('');
@@ -183,7 +157,7 @@ export default function IngredientsPage() {
   const formPage = (
     <div>
       <h1 className="title-hand text-4xl mb-1">Ingrédients</h1>
-      <p className="opacity-70 mb-6">Note, photo, catégorie, marque, type, prix par magasin.</p>
+      <p className="opacity-70 mb-6">Note, photo, catégorie, type, prix par magasin.</p>
 
       <h2 className="title-hand text-2xl mb-3">Ajouter un nouvel ingrédient</h2>
 
@@ -219,18 +193,6 @@ export default function IngredientsPage() {
             {categories.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="field-label">Marque</label>
-          <select value={brandId} onChange={(e) => setBrandId(e.target.value)} className="input-hand">
-            <option value="">—</option>
-            {brands.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name}
-                {b.rating != null ? ` (${b.rating}/5)` : ''}
               </option>
             ))}
           </select>
@@ -277,31 +239,6 @@ export default function IngredientsPage() {
           Ajouter
         </button>
       </form>
-
-      {/* MINI-FORMULAIRE MARQUE : pas de page dédiée, juste nom + avis sur 5 */}
-      <div className="card form-grid">
-        <span className="tape" />
-        <div>
-          <label className="field-label">Nouvelle marque</label>
-          <input value={newBrandName} onChange={(e) => setNewBrandName(e.target.value)} placeholder="Bonduelle" className="input-hand" />
-        </div>
-        <div>
-          <label className="field-label">Avis (/5)</label>
-          <input
-            value={newBrandRating}
-            onChange={(e) => setNewBrandRating(e.target.value)}
-            type="number"
-            min={0}
-            max={5}
-            step="0.5"
-            placeholder="4"
-            className="input-hand w-20"
-          />
-        </div>
-        <button type="button" onClick={handleAddBrand} className="btn-ghost">
-          + ajouter la marque
-        </button>
-      </div>
     </div>
   );
 
@@ -342,8 +279,7 @@ export default function IngredientsPage() {
                   <strong>{ing.name}</strong>{' '}
                   <span className="text-sm opacity-60">
                     ({ing.category?.name ?? 'sans catégorie'}
-                    {ing.type ? ` — ${ing.type}` : ''}
-                    {ing.brand ? ` — ${ing.brand.name}` : ''})
+                    {ing.type ? ` — ${ing.type}` : ''})
                   </span>
                 </p>
                 {ing.note && <p className="text-sm italic opacity-70">{ing.note}</p>}

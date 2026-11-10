@@ -3,8 +3,11 @@
 import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { MIST, NAVY } from '@/components/gazette/Lace';
 
-// Défis de l'accueil en coupons de réduction détachables : talon avec code-barres, perforation,
-// le défi en gros, un cachet ovale, et la date de validité sous un filet en pointillés.
+// Coupons détachables de l'accueil (bons d'achat et défi de la semaine) : talon avec code-barres, perforation,
+// l'intitulé en gros, un cachet ovale, et une ligne de détails sous un filet en pointillés.
+// onTear (facultatif) est appelé avant l'arrachage : s'il renvoie false (confirmation refusée), le coupon reste.
+// torn (facultatif) : coupons déjà arrachés, fournis par la page (ex : coupons gagnés, enregistrés dans Supabase) ;
+// sans lui, les coupons arrachés sont gardés dans le navigateur jusqu'au lendemain.
 // Sous chaque coupon, son trou gris (même forme de ticket, vide) est déjà là : quand on arrache le coupon
 // (même animation que l'ancienne liste de tâches), il se découvre progressivement, sans saut,
 // et reste à sa place jusqu'au lendemain.
@@ -70,8 +73,15 @@ function subscribe(listener: () => void) {
   return () => listeners.delete(listener);
 }
 
-const noSubscribe = () => () => {};
-const readDate = () => new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
+// Un coupon : petite ligne manuscrite (kicker), intitulé, cachet ovale (3 lignes) et pied (gauche / droite)
+export type CouponItem = {
+  id: string;
+  kicker: string;
+  title: string;
+  stamp: [string, string, string];
+  footer: [string, string];
+  muted?: boolean; // coupon pâli (ex : bon trop cher pour les points disponibles)
+};
 
 // Code-barres décoratif du talon : traits horizontaux d'épaisseurs variées, tirés du texte du défi
 function Barcode({ seed }: { seed: string }) {
@@ -85,12 +95,12 @@ function Barcode({ seed }: { seed: string }) {
   );
 }
 
-function Coupon({ defi, index, date, tone }: { defi: string; index: number; date: string | null; tone: string }) {
+function Coupon({ defi, tone }: { defi: CouponItem; tone: string }) {
   return (
     <span className="ticket flex h-full" style={{ backgroundColor: tone, color: NAVY }}>
       {/* Talon : code-barres */}
       <span className="flex w-[var(--stub)] shrink-0 items-center justify-center">
-        <Barcode seed={defi} />
+        <Barcode seed={defi.title} />
       </span>
       {/* Perforation */}
       <span className="my-3 border-l-[1.5px] border-dashed" style={{ borderColor: NAVY }} />
@@ -98,30 +108,42 @@ function Coupon({ defi, index, date, tone }: { defi: string; index: number; date
         <span className="flex flex-1 items-center gap-2">
           <span className="min-w-0 flex-1 text-left">
             <span className="block text-[22px] leading-none" style={script}>
-              Défi n° {String(index + 1).padStart(2, '0')}
+              {defi.kicker}
             </span>
-            <span className="mt-1 block text-[19px] font-black uppercase leading-[1.05] tracking-tight">{defi}</span>
+            <span className="mt-1 block text-[19px] font-black uppercase leading-[1.05] tracking-tight">{defi.title}</span>
           </span>
           {/* Cachet ovale */}
           <span className="flex h-[52px] w-[74px] shrink-0 flex-col items-center justify-center rounded-[50%] border text-[9px] font-bold uppercase leading-tight" style={{ borderColor: NAVY }}>
-            <span>Bon pour</span>
-            <span className="text-[15px] leading-none">1</span>
-            <span>victoire</span>
+            <span>{defi.stamp[0]}</span>
+            <span className="text-[15px] leading-none">{defi.stamp[1]}</span>
+            <span>{defi.stamp[2]}</span>
           </span>
         </span>
         <span className="mt-2 flex justify-between gap-2 border-t border-dashed pt-1 text-[8px] uppercase tracking-[0.12em]" style={{ borderColor: NAVY }}>
-          <span>À relever aujourd&apos;hui</span>
-          <span>*Valable le {date ?? '—'}</span>
+          <span>{defi.footer[0]}</span>
+          <span>{defi.footer[1]}</span>
         </span>
       </span>
     </span>
   );
 }
 
-export function DefiCoupons({ defis }: { defis: string[] }) {
+export function DefiCoupons({
+  defis,
+  onTear,
+  torn: tornFromPage
+}: {
+  defis: CouponItem[];
+  onTear?: (item: CouponItem) => Promise<boolean> | boolean;
+  torn?: Set<string>;
+}) {
   const tornRaw = useSyncExternalStore(subscribe, readTorn, () => '[]');
-  const torn = useMemo(() => new Set<string>(JSON.parse(tornRaw)), [tornRaw]);
-  const date = useSyncExternalStore(noSubscribe, readDate, () => null);
+  // Coupons arrachés à l'instant, en attendant que la page les fournisse dans "torn"
+  const [justTorn, setJustTorn] = useState<string[]>([]);
+  const torn = useMemo(
+    () => new Set<string>([...(tornFromPage ?? JSON.parse(tornRaw)), ...justTorn]),
+    [tornFromPage, tornRaw, justTorn]
+  );
   // Coupons en cours d'arrachage (animation), avant de laisser leur trou
   const [tearing, setTearing] = useState<Set<string>>(new Set());
   // Largeur des coupons, mesurée, pour tracer les tirets du contour des trous à la bonne taille
@@ -133,9 +155,11 @@ export function DefiCoupons({ defis }: { defis: string[] }) {
     return () => observer.disconnect();
   }, []);
 
-  function tear(defi: string) {
-    if (tearing.has(defi) || torn.has(defi)) return;
-    setTearing((t) => new Set(t).add(defi));
+  async function tear(item: CouponItem) {
+    const id = item.id;
+    if (tearing.has(id) || torn.has(id)) return;
+    if (onTear && !(await onTear(item))) return;
+    setTearing((t) => new Set(t).add(id));
   }
 
   function finishTear(defi: string) {
@@ -144,16 +168,17 @@ export function DefiCoupons({ defis }: { defis: string[] }) {
       next.delete(defi);
       return next;
     });
-    saveTorn([...torn, defi]);
+    if (tornFromPage) setJustTorn((list) => [...list, defi]);
+    else saveTorn([...torn, defi]);
   }
 
   return (
     <ul ref={listRef} className="mt-3 flex flex-col gap-3" style={serif}>
       {defis.map((defi, i) => {
-        const done = torn.has(defi);
-        const going = tearing.has(defi);
+        const done = torn.has(defi.id);
+        const going = tearing.has(defi.id);
         return (
-          <li key={defi} className="relative" style={{ height: HEIGHT }}>
+          <li key={defi.id} className="relative" style={{ height: HEIGHT }}>
             {/* Trou laissé par le coupon : même forme de ticket, gris, vide, bordé de tirets qui suivent son contour
                 (coins arrondis et encoches). Toujours présent sous le coupon, il se découvre pendant l'arrachage. */}
             <span className="ticket absolute inset-0 shadow-[inset_0_2px_6px_rgba(0,0,0,0.25)]" style={{ backgroundColor: HOLE }} aria-hidden />
@@ -166,11 +191,11 @@ export function DefiCoupons({ defis }: { defis: string[] }) {
               <button
                 type="button"
                 onClick={() => tear(defi)}
-                onAnimationEnd={() => going && finishTear(defi)}
-                aria-label={`Arracher le coupon du défi « ${defi} »`}
-                className={`relative block h-full w-full drop-shadow-[0_2px_2px_rgba(29,43,74,0.25)] ${going ? 'tear-off-animate' : ''}`}
+                onAnimationEnd={() => going && finishTear(defi.id)}
+                aria-label={`Arracher le coupon « ${defi.title} »`}
+                className={`relative block h-full w-full drop-shadow-[0_2px_2px_rgba(29,43,74,0.25)] ${going ? 'tear-off-animate' : ''} ${defi.muted ? 'opacity-55' : ''}`}
               >
-                <Coupon defi={defi} index={i} date={date} tone={TONES[i % TONES.length]} />
+                <Coupon defi={defi} tone={TONES[i % TONES.length]} />
               </button>
             )}
           </li>

@@ -1,11 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
-import { byPeriod, liquidAssets, monthKey, passiveIncome, shiftMonth, totals, type FinanceLine } from '@/lib/finance';
+import { byPeriod, monthKey, shiftMonth, totals, type FinanceLine } from '@/lib/finance';
 import { useFinanceLines } from '@/lib/financeQueries';
 
-// Santé financière : l'état (hémorragie, maladie, fatigue, santé, olympique), la teinte qu'il donne à la partie
-// Finances, et la prévision d'une hémorragie (période sans revenu d'activité).
+// Santé financière : l'état (hémorragie, maladie, fatigue, santé, olympique) et la teinte qu'il donne à la partie Finances.
 
 export type HealthState = 'hemorragie' | 'maladie' | 'fatigue' | 'sante' | 'olympique';
 
@@ -48,16 +47,6 @@ function readPlan(): HemorrhagePlan {
   }
   planCache = { raw, plan };
   return plan;
-}
-
-export function saveHemorrhagePlan(plan: HemorrhagePlan) {
-  try {
-    if (plan.start || plan.resume) window.localStorage.setItem(PLAN_KEY, JSON.stringify(plan));
-    else window.localStorage.removeItem(PLAN_KEY);
-  } catch {
-    // stockage indisponible (navigation privée...) : la prévision reste automatique
-  }
-  planListeners.forEach((l) => l());
 }
 
 export function useHemorrhagePlan() {
@@ -185,64 +174,3 @@ export function useFinanceTone() {
   }, [month, lines, plan]);
 }
 
-// --- Prévision d'une hémorragie ---
-
-export type HemorrhageForecast = {
-  source: 'saisie' | 'releves' | 'aucune';
-  start: Date | null; // début (prévu ou constaté) de la période sans revenu d'activité
-  resume: Date | null; // reprise prévue (saisie)
-  runOut: Date | null; // date à laquelle les liquidités seraient épuisées, sans revenu d'activité
-  runwayMonths: number | null; // nombre de mois que tiennent les liquidités (null : indéfiniment)
-  burn: number; // ce qui sort chaque mois sans revenu d'activité (dépenses moins revenus passifs)
-  liquid: number;
-  shortfall: number; // ce qui manquerait pour tenir jusqu'à la reprise (0 si on tient)
-  drop: number | null; // baisse récente des revenus d'activité (0,4 = -40 %), si elle est forte
-};
-
-const addMonths = (d: Date, months: number) => {
-  const whole = Math.floor(months);
-  const r = new Date(d.getFullYear(), d.getMonth() + whole, d.getDate());
-  r.setDate(r.getDate() + Math.round((months - whole) * 30));
-  return r;
-};
-
-// À partir des dates saisies si elles existent, sinon des relevés : début de l'hémorragie (arrêt des revenus
-// d'activité constaté), et jusqu'à quand les liquidités tiendraient au rythme des dépenses des 6 derniers mois
-export function forecastHemorrhage(lines: FinanceLine[], currentMonth: string, plan: HemorrhagePlan, now = new Date()): HemorrhageForecast {
-  const periods = byPeriod(lines.filter((l) => l.amount !== 0));
-  const lastSix = Array.from({ length: 6 }, (_, i) => shiftMonth(currentMonth, -(6 - i))).filter((p) => periods.has(p));
-  const avg = (f: (ls: FinanceLine[]) => number) => (lastSix.length ? lastSix.reduce((s, p) => s + f(periods.get(p)!), 0) / lastSix.length : 0);
-  const spent = avg((ls) => totals(ls).charges);
-  const passive = avg(passiveIncome);
-  const burn = Math.max(0, spent - passive);
-  const lastFilled = [...periods.keys()].filter((p) => p <= currentMonth).sort().pop();
-  const liquid = lastFilled ? liquidAssets(periods.get(lastFilled)!) : 0;
-  const runwayMonths = burn > 0 ? Math.max(0, liquid / burn) : null;
-
-  // Revenus d'activité des mois remplis récents : arrêt constaté, ou forte baisse
-  const work = lastSix.map((p) => ({ p, w: workIncomeOf(periods.get(p)!) }));
-  const lastPaid = [...work].reverse().find((m) => m.w > 0);
-  const stoppedFrom = lastPaid ? work.find((m) => m.p > lastPaid.p && m.w <= 0)?.p : undefined;
-  const last = work[work.length - 1];
-  const before = work.slice(0, -1).filter((m) => m.w > 0);
-  const avgBefore = before.length ? before.reduce((s, m) => s + m.w, 0) / before.length : 0;
-  const drop = last && last.w > 0 && avgBefore > 0 && last.w < avgBefore * 0.6 ? 1 - last.w / avgBefore : null;
-
-  let source: HemorrhageForecast['source'] = 'aucune';
-  let start: Date | null = null;
-  if (plan.start) {
-    source = 'saisie';
-    start = toDate(plan.start);
-  } else if (stoppedFrom) {
-    source = 'releves';
-    const [y, m] = stoppedFrom.split('-').map(Number);
-    start = new Date(y, m - 1, 1);
-  }
-  const resume = plan.resume ? toDate(plan.resume) : null;
-  // L'argent commence à fondre au début de l'hémorragie (ou dès aujourd'hui si elle a déjà commencé)
-  const from = start && start > now ? start : now;
-  const runOut = start && runwayMonths !== null ? addMonths(from, runwayMonths) : null;
-  const monthsToResume = resume ? Math.max(0, (resume.getTime() - from.getTime()) / (30.44 * 86_400_000)) : null;
-  const shortfall = monthsToResume !== null ? Math.max(0, monthsToResume * burn - liquid) : 0;
-  return { source, start, resume, runOut, runwayMonths, burn, liquid, shortfall, drop };
-}

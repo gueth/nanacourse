@@ -33,8 +33,6 @@ const ReceiptSchema = z.object({
       name: z
         .string()
         .describe('Nom court et lisible du produit en français, sans la marque, ex : « Lait demi-écrémé », « Oeufs »'),
-      brand_id: z.string().nullable().describe('Identifiant de la marque connue (liste fournie), ou null'),
-      brand_name: z.string().nullable().describe('Marque lue sur le reçu (ex : « Président »), ou null si absente'),
       category_id: z.string().nullable().describe('Identifiant de la catégorie connue la plus adaptée (liste fournie), ou null'),
       type: z
         .string()
@@ -56,10 +54,9 @@ const INSTRUCTIONS = `Ces photos montrent un reçu (ticket de caisse) de superma
 Extrais les produits achetés pour mettre à jour un stock et des prix.
 
 - Les abréviations des tickets sont fréquentes (« LT DEMI ECR PRES 1L » = lait demi-écrémé Président 1 L) :
-  donne un nom court et lisible, sans la marque, et mets la marque à part.
+  donne un nom court et lisible, sans la marque.
 - Pour chaque produit, cherche s'il correspond à un ingrédient connu (même produit, même si le nom diffère un peu).
   Mets alors son identifiant et son unité. Sinon, ingredient_id = null, propose une unité et la catégorie connue la plus adaptée.
-- Si la marque correspond à une marque connue, mets son identifiant ; sinon brand_id = null et garde brand_name.
 - Quantité : nombre d'articles (« 2 x 1,25 » = 2), ou poids en kg pour la pesée (« 0,532 kg x 2,99 €/kg » = 0.532).
   Si un même produit apparaît sur plusieurs lignes, fais une seule ligne avec la quantité totale.
 - Prix unitaire : prix d'une unité. Si une remise s'applique au produit juste au-dessus, déduis-la de son prix.
@@ -80,14 +77,13 @@ export async function POST(request: Request) {
     return Response.json({ error: `${MAX_PHOTOS} photos au maximum.` }, { status: 400 });
   }
 
-  // Données connues, pour que Claude rattache les lignes aux bons ingrédients, marques, catégories et magasin
-  const [ings, brands, cats, stores] = await Promise.all([
+  // Données connues, pour que Claude rattache les lignes aux bons ingrédients, catégories et magasin
+  const [ings, cats, stores] = await Promise.all([
     supabase.from('ingredients').select('id, name, type').order('name'),
-    supabase.from('brands').select('id, name').order('name'),
     supabase.from('categories').select('id, name').order('name'),
     supabase.from('stores').select('id, name, address, chain:chains(name)').order('name')
   ]);
-  const dbError = ings.error ?? brands.error ?? cats.error ?? stores.error;
+  const dbError = ings.error ?? cats.error ?? stores.error;
   if (dbError) {
     console.error(dbError);
     return Response.json({ error: 'Impossible de lire les données connues.' }, { status: 500 });
@@ -97,9 +93,6 @@ export async function POST(request: Request) {
   const context = [
     'Ingrédients connus (identifiant | nom | unité) :',
     list((ings.data ?? []).map((i) => `${i.id} | ${i.name} | ${i.type ?? '—'}`)),
-    '',
-    'Marques connues (identifiant | nom) :',
-    list((brands.data ?? []).map((b) => `${b.id} | ${b.name}`)),
     '',
     'Catégories connues (identifiant | nom) :',
     list((cats.data ?? []).map((c) => `${c.id} | ${c.name}`)),
@@ -150,7 +143,7 @@ export async function POST(request: Request) {
 
     // Sécurité : on ignore un identifiant qui ne fait pas partie des données connues
     const known = (rows: { id: string }[] | null) => new Set((rows ?? []).map((r) => r.id));
-    const [ingIds, brandIds, catIds, storeIds] = [known(ings.data), known(brands.data), known(cats.data), known(stores.data)];
+    const [ingIds, catIds, storeIds] = [known(ings.data), known(cats.data), known(stores.data)];
     const keep = (id: string | null, ids: Set<string>) => (id && ids.has(id) ? id : null);
 
     const result: ReceiptScanResult = {
@@ -163,7 +156,6 @@ export async function POST(request: Request) {
         .map((it) => ({
           ...it,
           ingredient_id: keep(it.ingredient_id, ingIds),
-          brand_id: keep(it.brand_id, brandIds),
           category_id: keep(it.category_id, catIds)
         }))
     };

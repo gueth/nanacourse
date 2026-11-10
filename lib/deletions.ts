@@ -14,13 +14,6 @@ export async function deleteCategory(id: string): Promise<DbError> {
   return (await supabase.from('categories').delete().eq('id', id)).error;
 }
 
-// MARQUE : les ingrédients qui l'utilisaient n'ont plus de marque
-export async function deleteBrand(id: string): Promise<DbError> {
-  const { error } = await supabase.from('ingredients').update({ brand_id: null }).eq('brand_id', id);
-  if (error) return error;
-  return (await supabase.from('brands').delete().eq('id', id)).error;
-}
-
 // SUPERMARCHÉ : ses prix sont effacés, et les articles des listes n'y sont plus rattachés
 export async function deleteStore(id: string): Promise<DbError> {
   const [{ error: pricesError }, { error: itemsError }] = await Promise.all([

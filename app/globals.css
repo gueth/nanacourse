@@ -317,48 +317,10 @@ body {
     opacity: 0.7;
     margin-bottom: 2px;
   }
-
-  .nav-tab {
-    font-family: var(--font-hand);
-    font-weight: 700;
-    font-size: 1.15rem;
-    padding: 0.35rem 0.9rem;
-    border: 2px solid var(--color-ink);
-    border-bottom: none;
-    border-radius: 8px 8px 0 0;
-    background: var(--color-card);
-  }
 }
 
 @layer components {
-  /* Bulle de dialogue statique, bout orienté vers le haut */
-  .speech-bubble {
-    position: relative;
-    padding: 12px 18px;
-    background-color: var(--color-sky);
-    color: var(--color-navy);
-    border: 4px solid var(--color-navy);
-    border-radius: 25px 255px 25px 225px / 225px 25px 255px 25px;
-    box-shadow: 4px 6px 0px var(--color-navy);
-    font-family: var(--font-hand), cursive;
-    font-weight: 700;
-    line-height: 1.25;
-  }
-
-  .speech-bubble::after {
-    content: "";
-    position: absolute;
-    top: -11px;
-    right: 30%;
-    transform: translateX(50%) rotate(15deg) skewX(25deg);
-    width: 16px;
-    height: 16px;
-    border-top: 4px solid var(--color-navy);
-    border-right: 4px solid var(--color-navy);
-    background-color: var(--color-sky);
-  }
-
-  /* Effet "papier qu'on arrache" au clic sur une tâche de la to-do list */
+  /* Effet "papier qu'on arrache" au clic sur un coupon de défi (accueil) */
   .tear-off-animate {
     animation: tear-off 0.45s ease-in forwards;
     position: relative;
@@ -420,27 +382,24 @@ body {
     }
   }
 
-  /* Transition en fondu (page de titre → accueil) : 250ms d'apparition, 100ms opaque,
-     350ms de disparition, soit 700ms au total (cf. PageFadeTransition.tsx) */
-  @keyframes page-fade {
-    0% {
+  /* Transition en fondu (page de titre → accueil) : apparition du voile, puis disparition une fois
+     la page suivante affichée (cf. PageFadeTransition.tsx) */
+  @keyframes page-fade-in {
+    from {
       opacity: 0;
     }
-    36%,
-    50% {
+    to {
       opacity: 1;
     }
-    100% {
+  }
+  @keyframes page-fade-out {
+    from {
+      opacity: 1;
+    }
+    to {
       opacity: 0;
     }
-  }
-
-  /* Fleurs de progression : chaque fleur change de couleur (au lieu d'une barre) à
-     mesure que les tâches sont arrachées */
-  .flower-shape {
-    transition: fill 0.4s ease;
-  }
-}
+  }}
 
 /* Grille de formulaire : champs bien espacés et en pleine largeur de leur colonne.
    Hors @layer exprès, pour passer devant les largeurs fixes (w-24, w-48...) des champs. */
@@ -464,252 +423,35 @@ body {
   grid-column: 1 / -1;
 }
 
-/* ===== Chargement : hamster dans sa roue (From Uiverse.io by Nawsome), voir components/HamsterLoader.tsx ===== */
-.wheel-and-hamster {
-  --dur: 1s;
-  position: relative;
-  width: 12em;
-  height: 12em;
-  font-size: 14px;
-  /* Intérieur de la roue en blanc (derrière la roue et le hamster), pour bien le voir sur le fond de l'appli */
-  border-radius: 50%;
-  background-color: #fff;
-}
-
-.wheel,
-.hamster,
-.hamster div,
-.spoke {
-  position: absolute;
-}
-
-.wheel,
-.spoke {
-  border-radius: 50%;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-}
-
-.wheel {
-  background: radial-gradient(100% 100% at center, hsla(0, 0%, 60%, 0) 47.8%, hsl(0, 0%, 60%) 48%);
-  z-index: 2;
-}
-
-.hamster {
-  animation: hamster var(--dur) ease-in-out infinite;
-  top: 50%;
-  left: calc(50% - 3.5em);
-  width: 7em;
-  height: 3.75em;
-  transform: rotate(4deg) translate(-0.8em, 1.85em);
-  transform-origin: 50% 0;
-  z-index: 1;
-}
-
-.hamster__head {
-  animation: hamsterHead var(--dur) ease-in-out infinite;
-  background: hsl(30, 90%, 55%);
-  border-radius: 70% 30% 0 100% / 40% 25% 25% 60%;
-  box-shadow: 0 -0.25em 0 hsl(30, 90%, 80%) inset, 0.75em -1.55em 0 hsl(30, 90%, 90%) inset;
-  top: 0;
-  left: -2em;
-  width: 2.75em;
-  height: 2.5em;
-  transform-origin: 100% 50%;
-}
-
-.hamster__ear {
-  animation: hamsterEar var(--dur) ease-in-out infinite;
-  background: hsl(0, 90%, 85%);
-  border-radius: 50%;
-  box-shadow: -0.25em 0 hsl(30, 90%, 55%) inset;
-  top: -0.25em;
-  right: -0.25em;
-  width: 0.75em;
-  height: 0.75em;
-  transform-origin: 50% 75%;
-}
-
-.hamster__eye {
-  animation: hamsterEye var(--dur) linear infinite;
-  background-color: hsl(0, 0%, 0%);
-  border-radius: 50%;
-  top: 0.375em;
-  left: 1.25em;
-  width: 0.5em;
-  height: 0.5em;
-}
-
-.hamster__nose {
-  background: hsl(0, 90%, 75%);
-  border-radius: 35% 65% 85% 15% / 70% 50% 50% 30%;
-  top: 0.75em;
-  left: 0;
-  width: 0.2em;
-  height: 0.25em;
-}
-
-.hamster__body {
-  animation: hamsterBody var(--dur) ease-in-out infinite;
-  background: hsl(30, 90%, 90%);
-  border-radius: 50% 30% 50% 30% / 15% 60% 40% 40%;
-  box-shadow: 0.1em 0.75em 0 hsl(30, 90%, 55%) inset, 0.15em -0.5em 0 hsl(30, 90%, 80%) inset;
-  top: 0.25em;
-  left: 2em;
-  width: 4.5em;
-  height: 3em;
-  transform-origin: 17% 50%;
-  transform-style: preserve-3d;
-}
-
-.hamster__limb--fr,
-.hamster__limb--fl {
-  clip-path: polygon(0 0, 100% 0, 70% 80%, 60% 100%, 0% 100%, 40% 80%);
-  top: 2em;
-  left: 0.5em;
-  width: 1em;
-  height: 1.5em;
-  transform-origin: 50% 0;
-}
-
-.hamster__limb--fr {
-  animation: hamsterFRLimb var(--dur) linear infinite;
-  background: linear-gradient(hsl(30, 90%, 80%) 80%, hsl(0, 90%, 75%) 80%);
-  transform: rotate(15deg) translateZ(-1px);
-}
-
-.hamster__limb--fl {
-  animation: hamsterFLLimb var(--dur) linear infinite;
-  background: linear-gradient(hsl(30, 90%, 90%) 80%, hsl(0, 90%, 85%) 80%);
-  transform: rotate(15deg);
-}
-
-.hamster__limb--br,
-.hamster__limb--bl {
-  border-radius: 0.75em 0.75em 0 0;
-  clip-path: polygon(0 0, 100% 0, 100% 30%, 70% 90%, 70% 100%, 30% 100%, 40% 90%, 0% 30%);
-  top: 1em;
-  left: 2.8em;
-  width: 1.5em;
-  height: 2.5em;
-  transform-origin: 50% 30%;
-}
-
-.hamster__limb--br {
-  animation: hamsterBRLimb var(--dur) linear infinite;
-  background: linear-gradient(hsl(30, 90%, 80%) 90%, hsl(0, 90%, 75%) 90%);
-  transform: rotate(-25deg) translateZ(-1px);
-}
-
-.hamster__limb--bl {
-  animation: hamsterBLLimb var(--dur) linear infinite;
-  background: linear-gradient(hsl(30, 90%, 90%) 90%, hsl(0, 90%, 85%) 90%);
-  transform: rotate(-25deg);
-}
-
-.hamster__tail {
-  animation: hamsterTail var(--dur) linear infinite;
-  background: hsl(0, 90%, 85%);
-  border-radius: 0.25em 50% 50% 0.25em;
-  box-shadow: 0 -0.2em 0 hsl(0, 90%, 75%) inset;
-  top: 1.5em;
-  right: -0.5em;
-  width: 1em;
-  height: 0.5em;
-  transform: rotate(30deg) translateZ(-1px);
-  transform-origin: 0.25em 0.25em;
-}
-
-.spoke {
-  animation: spoke var(--dur) linear infinite;
-  background: radial-gradient(100% 100% at center, hsl(0, 0%, 60%) 4.8%, hsla(0, 0%, 60%, 0) 5%),
-    linear-gradient(hsla(0, 0%, 55%, 0) 46.9%, hsl(0, 0%, 65%) 47% 52.9%, hsla(0, 0%, 65%, 0) 53%) 50% 50% / 99% 99% no-repeat;
-}
-
-@keyframes hamster {
-  from, to { transform: rotate(4deg) translate(-0.8em, 1.85em); }
-  50% { transform: rotate(0) translate(-0.8em, 1.85em); }
-}
-@keyframes hamsterHead {
-  from, 25%, 50%, 75%, to { transform: rotate(0); }
-  12.5%, 37.5%, 62.5%, 87.5% { transform: rotate(8deg); }
-}
-@keyframes hamsterEye {
-  from, 90%, to { transform: scaleY(1); }
-  95% { transform: scaleY(0); }
-}
-@keyframes hamsterEar {
-  from, 25%, 50%, 75%, to { transform: rotate(0); }
-  12.5%, 37.5%, 62.5%, 87.5% { transform: rotate(12deg); }
-}
-@keyframes hamsterBody {
-  from, 25%, 50%, 75%, to { transform: rotate(0); }
-  12.5%, 37.5%, 62.5%, 87.5% { transform: rotate(-2deg); }
-}
-@keyframes hamsterFRLimb {
-  from, 25%, 50%, 75%, to { transform: rotate(50deg) translateZ(-1px); }
-  12.5%, 37.5%, 62.5%, 87.5% { transform: rotate(-30deg) translateZ(-1px); }
-}
-@keyframes hamsterFLLimb {
-  from, 25%, 50%, 75%, to { transform: rotate(-30deg); }
-  12.5%, 37.5%, 62.5%, 87.5% { transform: rotate(50deg); }
-}
-@keyframes hamsterBRLimb {
-  from, 25%, 50%, 75%, to { transform: rotate(-60deg) translateZ(-1px); }
-  12.5%, 37.5%, 62.5%, 87.5% { transform: rotate(20deg) translateZ(-1px); }
-}
-@keyframes hamsterBLLimb {
-  from, 25%, 50%, 75%, to { transform: rotate(20deg); }
-  12.5%, 37.5%, 62.5%, 87.5% { transform: rotate(-60deg); }
-}
-@keyframes hamsterTail {
-  from, 25%, 50%, 75%, to { transform: rotate(30deg) translateZ(-1px); }
-  12.5%, 37.5%, 62.5%, 87.5% { transform: rotate(10deg) translateZ(-1px); }
-}
-@keyframes spoke {
-  from { transform: rotate(0); }
-  to { transform: rotate(-1turn); }
-}
-
-/* Page de titre : fond bleu poudré et napperon en dentelle */
+/* Page de titre : fond uni sous la carte-contrat, de la même couleur que le bas de l'écran des cartes du jour
+   (variable --m-bg3 de la phase du cycle, posée sur la page par app/page.tsx) */
 .title-page {
-  background-color: #7597c2;
-  background-image: radial-gradient(ellipse at 50% 45%, #8eaed4 0%, #7597c2 55%, #5a7cab 100%);
+  background-color: var(--m-bg3, #ecdde8);
+}
+/* Carte-contrat : carte plastifiée posée à plat, avec une ombre douce */
+.contract-card {
+  box-shadow: 0 1px 2px rgba(29, 43, 74, 0.18), 0 10px 28px rgba(29, 43, 74, 0.22);
+}
+/* Le tampon tombe sur la carte une fois signée */
+.contract-stamp {
+  animation: contractStamp 0.45s cubic-bezier(0.3, 1.4, 0.5, 1) both;
+}
+@keyframes contractStamp {
+  from { opacity: 0; transform: scale(1.6) rotate(-14deg); }
+  to { opacity: 1; transform: scale(1) rotate(-6deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .contract-stamp {
+    animation: none;
+    transform: rotate(-6deg);
+  }
 }
 .lace-enter {
   animation: laceEnter 1.2s ease-out both;
 }
-.lace-hint {
-  color: #f4f8fc;
-  animation: laceHint 2.4s ease-in-out 1.2s infinite both;
-}
 @keyframes laceEnter {
   from { opacity: 0; transform: scale(0.94); }
   to { opacity: 1; transform: scale(1); }
-}
-@keyframes laceHint {
-  0%, 100% { opacity: 0.25; }
-  50% { opacity: 0.8; }
-}
-
-/* Menu circulaire de l'accueil : les entrées arrivent en tournoyant comme une toupie autour du bouton */
-.arc-spin-in {
-  animation: arcSpinIn 0.75s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-.arc-spin-out {
-  animation: arcSpinOut 0.4s ease-in both;
-}
-@keyframes arcSpinIn {
-  0% { transform: rotate(-540deg) scale(0.1); opacity: 0; }
-  60% { opacity: 1; }
-  80% { transform: rotate(12deg) scale(1.04); }
-  100% { transform: rotate(0deg) scale(1); opacity: 1; }
-}
-@keyframes arcSpinOut {
-  from { transform: rotate(0deg) scale(1); opacity: 1; }
-  to { transform: rotate(360deg) scale(0.1); opacity: 0; }
 }
 
 /* Accueil et page de titre : fond d'écran blanc (au lieu du papier beige des autres pages),
@@ -822,6 +564,32 @@ body:has(.gazette) {
   }
 }
 
+/* Page Crédits : les crédits montent du bas de l'écran jusqu'à en sortir par le haut, à vitesse constante
+   (durée donnée par la page) ; ils s'effacent en haut, et avant d'atteindre la boîte à musique en bas */
+.credits-roll {
+  animation-name: creditsRoll;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+  will-change: transform;
+}
+/* Départ juste sous la zone visible du masque (qui s'efface à 72 % de la hauteur) : les crédits apparaissent dès le début */
+@keyframes creditsRoll {
+  from { transform: translateY(68vh); }
+  to { transform: translateY(-100%); }
+}
+.credits-mask {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 12%, #000 58%, transparent 72%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 12%, #000 58%, transparent 72%);
+}
+/* « Merci d'avoir joué » et les boutons de fin apparaissent en fondu */
+.credits-thanks {
+  animation: creditsThanks 1.2s ease-out both;
+}
+@keyframes creditsThanks {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* Coupon détachable (défis de l'accueil) : coins arrondis, encoches rondes au milieu des petits côtés,
    et demi-cercles en haut et en bas de la perforation qui sépare le talon (largeur --stub) du coupon */
 .ticket {
@@ -839,57 +607,6 @@ body:has(.gazette) {
     radial-gradient(circle at var(--stub) 0, transparent 7px, #000 7.5px),
     radial-gradient(circle at var(--stub) 100%, transparent 7px, #000 7.5px);
   mask-composite: intersect;
-}
-
-/* Impression du ticket de caisse (liste de courses, ouverte depuis l'accueil, cf. ReceiptPrinter.tsx) */
-/* Fente de l'imprimante : barre bleu nuit creusée, d'où sort le ticket */
-.printer-slot {
-  position: relative;
-  z-index: 2;
-  height: 14px;
-  margin-inline: -6px;
-  border-radius: 7px;
-  background: #1d2b4a;
-  box-shadow: inset 0 4px 4px rgba(0, 0, 0, 0.55), 0 2px 3px rgba(29, 43, 74, 0.25);
-}
-/* Le ticket sort du milieu de la fente : tout ce qui est au-dessus reste caché */
-.printer-out {
-  overflow: hidden;
-  margin-top: -7px;
-  padding-top: 7px;
-}
-/* Sortie par à-coups, comme une imprimante thermique (durée et nombre d'à-coups selon la longueur de la liste) */
-.receipt-printing {
-  animation: receipt-print var(--print-ms, 1400ms) steps(var(--print-steps, 20), end) both;
-}
-@keyframes receipt-print {
-  from {
-    transform: translateY(-100%);
-  }
-  to {
-    transform: translateY(0);
-  }
-}
-/* Arraché d'un coup sec : le ticket est tiré vers le haut puis retombe */
-.receipt-tearing {
-  animation: receipt-tear 350ms ease-out;
-}
-@keyframes receipt-tear {
-  0% {
-    transform: translateY(0);
-  }
-  35% {
-    transform: translateY(-7px) rotate(-0.6deg);
-  }
-  100% {
-    transform: translateY(0) rotate(0);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .receipt-printing,
-  .receipt-tearing {
-    animation-duration: 1ms;
-  }
 }
 
 /* Cadres (popins) au style de la gazette : papier gris, bleu nuit, double filet, caractères à empattements */
@@ -943,4 +660,270 @@ body:has(.gazette) {
   background-color: transparent;
   color: #1d2b4a;
   border: 1px solid #1d2b4a;
+}
+
+/* PAGE DE TITRE, PREMIER ÉCRAN : cartes du jour sur un fond pastel rose et lilas,
+   qui glisse vers le bleu du napperon en bas pour que le défilement soit continu */
+.morning-page {
+  /* Couleurs par défaut ; remplacées par celles de la phase du cycle (variables --m-*, voir lib/cycle.ts) */
+  background: linear-gradient(180deg, var(--m-bg1, #ece4ee) 0%, var(--m-bg2, #e9d6e6) 35%, var(--m-bg3, #ecdde8) 72%);
+}
+.morning-glow {
+  background:
+    radial-gradient(42% 30% at 72% 46%, var(--m-glow1, rgba(226, 140, 196, 0.55)), transparent 70%),
+    radial-gradient(38% 26% at 22% 56%, var(--m-glow2, rgba(255, 214, 178, 0.6)), transparent 70%),
+    radial-gradient(50% 30% at 50% 18%, var(--m-glow3, rgba(214, 178, 226, 0.6)), transparent 70%);
+  filter: blur(18px);
+}
+/* Salutation : lettres blanches teintées de rose, qui se fondent dans le fond */
+.morning-title {
+  background: linear-gradient(180deg, #ffffff 0%, var(--m-title1, #fbe3f4) 45%, var(--m-title2, #f2b8de) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 6px 24px rgba(214, 120, 180, 0.35));
+}
+/* Carte de la liste de courses : dégradé mauve, comme une photo */
+.morning-list {
+  background: linear-gradient(160deg, var(--m-card1, #b98ab4) 0%, var(--m-card2, #8c5c8e) 100%);
+}
+/* Entrée des cartes, l'une après l'autre (le délai est donné par la carte) */
+.morning-card-in {
+  animation: morningCardIn 0.7s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+/* Léger flottement permanent, chaque carte à son rythme */
+.morning-card-float {
+  animation: morningFloat 6s ease-in-out infinite;
+}
+.morning-hint {
+  animation: morningHint 1.8s ease-in-out infinite;
+}
+@keyframes morningCardIn {
+  from { opacity: 0; transform: translateY(48px) scale(0.88); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes morningFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+@keyframes morningHint {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(4px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .morning-card-in,
+  .morning-card-float,
+  .morning-hint {
+    animation: none;
+  }
+}
+
+/* Paramètres : un classeur de dossiers roses empilés les uns sous les autres. D'un dossier fermé on ne voit que
+   le bord du haut, avec un onglet qui dépasse (décalé de gauche à droite d'un dossier à l'autre) et son nom écrit à la main.
+   Le dossier ouvert s'agrandit et pousse les autres en haut et en bas. */
+html:has(.classeur),
+body:has(.classeur) {
+  background-color: #c89ba5;
+}
+.classeur {
+  --spine: 40px; /* hauteur du bord visible d'un dossier fermé (plus que l'onglet du dossier suivant, posé dessus) */
+  --tab-h: 34px; /* hauteur de l'onglet qui dépasse */
+  --tab-w: 40%; /* assez large pour « Supermarchés » en entier */
+  --folder: #efcbd2;
+  --folder-ink: #3b2226;
+  /* Couleurs de l'application, accordées au carton rose pour tout ce qui est dans les dossiers */
+  --color-ink: #3b2226;
+  --color-card: #fffaf9;
+  --color-paper: #f6dde2;
+  --color-line: #ddb0ba;
+  --color-brick: #b03f5a;
+  --color-mustard: #9c4a66;
+  padding-top: max(env(safe-area-inset-top), 6px);
+  background-color: #c89ba5;
+  color: var(--folder-ink);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (min-width: 640px) {
+  .classeur {
+    --spine: 48px;
+    --tab-h: 40px;
+    --tab-w: 220px;
+  }
+}
+/* Barre du haut (retour, scan d'un reçu), posée sur le fond au-dessus des dossiers ;
+   l'onglet du premier dossier dépasse dans l'espace laissé sous elle */
+.classeur-bar {
+  margin-bottom: var(--tab-h);
+  color: var(--folder-ink);
+}
+.folder {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+  flex: 0 0 var(--spine);
+  transition: flex-grow 0.55s cubic-bezier(0.3, 0.75, 0.2, 1);
+  /* carton rose finement côtelé */
+  background-color: var(--folder);
+  background-image: repeating-linear-gradient(to right, rgba(120, 55, 70, 0.07) 0 1px, transparent 1px 4px);
+  border-top-right-radius: 14px;
+  box-shadow: 0 -5px 12px rgba(90, 35, 50, 0.22);
+}
+.folder-open {
+  flex-grow: 1;
+}
+.folder-spine {
+  position: relative;
+  flex: 0 0 var(--spine);
+  width: 100%;
+  cursor: pointer;
+}
+.folder-open .folder-spine {
+  cursor: default;
+}
+/* L'onglet qui dépasse au-dessus du dossier, sur le précédent */
+.folder-bump {
+  position: absolute;
+  bottom: calc(100% - 1px);
+  width: var(--tab-w);
+  height: var(--tab-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px 12px 0 0;
+  background-color: var(--folder);
+  background-image: repeating-linear-gradient(to right, rgba(120, 55, 70, 0.07) 0 1px, transparent 1px 4px);
+  box-shadow: 0 -4px 8px rgba(90, 35, 50, 0.16);
+}
+/* Nom écrit directement sur l'onglet, à la main comme les titres des dossiers */
+.folder-label {
+  /* hauteur de ligne généreuse : les boucles de la calligraphie dépassent haut et bas */
+  padding: 2px 6px 0;
+  white-space: nowrap;
+  font-family: var(--font-script), cursive;
+  font-size: 20px;
+  line-height: 1.35;
+  color: var(--folder-ink);
+  opacity: 0.75;
+}
+@media (min-width: 640px) {
+  .folder-label {
+    font-size: 24px;
+  }
+}
+/* Dossier ouvert : son nom plus foncé, souligné d'un trait */
+.folder-open .folder-label {
+  opacity: 1;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.folder-body {
+  position: relative;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+/* Le contenu du dossier apparaît une fois le dossier presque ouvert */
+.folder-content {
+  animation: folderContent 0.4s ease-out 0.25s both;
+}
+@keyframes folderContent {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+.folder-serif {
+  font-family: var(--font-serif), Georgia, serif;
+}
+.folder-script {
+  font-family: var(--font-script), cursive;
+}
+.folder-small {
+  padding: 8px 2px;
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+@media (prefers-reduced-motion: reduce) {
+  .folder {
+    transition: none;
+  }
+  .folder-content {
+    animation: none;
+  }
+}
+
+/* Contenu des dossiers : fiches blanches posées dans le carton, champs encadrés, boutons arrondis,
+   à la place des fiches de recette et des écritures à la main du reste de l'application.
+   (Dans la couche « components » pour que les classes utilitaires d'un élément gardent le dernier mot.) */
+@layer components {
+  .classeur .card {
+    border: none;
+    border-radius: 14px;
+    background-color: var(--color-card);
+    box-shadow: 0 8px 22px -12px rgba(90, 35, 50, 0.45);
+    margin-bottom: 1.25rem;
+  }
+  .classeur .card::after,
+  .classeur .tape {
+    display: none;
+  }
+  .classeur .title-hand {
+    font-family: var(--font-serif), Georgia, serif;
+    font-weight: 600;
+    color: var(--folder-ink);
+    font-size: 1.25rem;
+  }
+  .classeur .field-label {
+    font-family: inherit;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    opacity: 0.65;
+    margin-bottom: 4px;
+  }
+  .classeur .input-hand:not(.receipt *) {
+    background-color: #fff;
+    border: 1px solid var(--color-line);
+    border-radius: 10px;
+    padding: 0.45rem 0.7rem;
+    font-family: inherit;
+    color: var(--folder-ink);
+  }
+  .classeur select.input-hand:not(.receipt *) {
+    padding-right: 1.9rem;
+    background-position: right 0.65rem center;
+  }
+  .classeur .input-hand:not(.receipt *):focus {
+    border-color: var(--folder-ink);
+    border-style: solid;
+    box-shadow: 0 0 0 3px rgba(176, 63, 90, 0.15);
+  }
+  .classeur .btn-hand {
+    font-family: inherit;
+    font-weight: 600;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    border-radius: 9999px;
+    padding: 0.6rem 1.3rem;
+    background-color: var(--folder-ink);
+    color: #fbe9ec;
+    box-shadow: none;
+  }
+  .classeur .btn-hand:hover {
+    transform: none;
+    box-shadow: 0 3px 8px rgba(90, 35, 50, 0.3);
+  }
+  .classeur .btn-ghost {
+    font-family: inherit;
+    font-weight: 600;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--folder-ink);
+    text-decoration-style: dotted;
+  }
 }

@@ -81,8 +81,6 @@ export function Sommaire({ entries, top }: { entries: SommaireEntry[]; top: numb
             <div className="relative px-5 pb-3 pt-4 text-left shadow-[0_6px_14px_rgba(29,43,74,0.28)]" style={{ backgroundColor: PAPER, color: NAVY }}>
               {/* Ombre du pli, qui s'efface quand la feuille finit de se déplier */}
               <div className="sommaire-crease pointer-events-none absolute inset-0" aria-hidden />
-              {/* Marque du pli, au milieu de la feuille */}
-              <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px opacity-25" style={{ backgroundColor: NAVY }} aria-hidden />
 
               <button type="button" onClick={close} aria-label="Fermer le sommaire" className="absolute right-2 top-2 p-1.5">
                 <X size={18} />
@@ -98,7 +96,11 @@ export function Sommaire({ entries, top }: { entries: SommaireEntry[]; top: numb
               <nav className="mt-3">
                 <ul className="space-y-2.5" style={serif}>
                   {entries.map((entry, i) => (
-                    <li key={entry.href}>
+                    <li key={entry.href} className="relative">
+                      {/* Marque du pli : entre la première et la deuxième entrée, sur toute la largeur de la feuille */}
+                      {i === 0 && entries.length > 1 && (
+                        <div className="pointer-events-none absolute -inset-x-5 top-[calc(100%+5px)] h-px opacity-25" style={{ backgroundColor: NAVY }} aria-hidden />
+                      )}
                       <Link
                         ref={i === 0 ? firstLink : undefined}
                         href={entry.href}

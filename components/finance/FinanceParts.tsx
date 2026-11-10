@@ -1,6 +1,5 @@
 'use client';
 
-import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { AlertTriangle, ChevronLeft, ChevronRight, Plus, X } from 'lucide-react';
@@ -394,21 +393,6 @@ export function SectionBlock({
   );
 }
 
-// Ligne de total mise en valeur (patrimoine net, épargne du mois...)
-export function TotalRow({ label, value, color, note }: { label: string; value: number; color: string; note?: string }) {
-  return (
-    <div className="mt-2 rounded-sm px-4 py-3" style={{ backgroundColor: FIN.navy, color: FIN.paper }}>
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="text-[11px] uppercase tracking-[0.25em]">{label}</span>
-        <span className="text-[17px] font-bold" style={{ color }}>
-          {formatEuros(value)}
-        </span>
-      </div>
-      {note && <p className="mt-1 text-[10px] opacity-70">{note}</p>}
-    </div>
-  );
-}
-
 // Encadré de contenu : titre calligraphié, sous-titre facultatif
 export function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
@@ -426,60 +410,12 @@ export function Panel({ title, subtitle, children }: { title: string; subtitle?:
   );
 }
 
-// Fenêtre au-dessus de la page, aux couleurs des Finances.
-// Se ferme avec la croix, la touche Échap ou un clic en dehors du cadre.
-export function FinanceModal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4" style={{ backgroundColor: 'rgba(43,58,85,0.55)' }} onClick={onClose}>
-      {/* stopPropagation : un clic DANS le cadre ne doit pas le fermer */}
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className="mt-12 w-full max-w-md rounded-sm border px-4 pb-4 pt-3"
-        style={{ backgroundColor: FIN.paper, borderColor: FIN.line, color: FIN.navy }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-start justify-between gap-2">
-          <h2 className="text-[32px] leading-tight" style={script}>
-            {title}
-          </h2>
-          <button type="button" onClick={onClose} aria-label="Fermer" className="mt-2 p-1" style={{ color: FIN.slate }}>
-            <X size={20} />
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
-
 // Barre de progression (0 à 1), avec la couleur fournie
 export function Meter({ value, color }: { value: number; color: string }) {
   return (
     <div className="h-2 w-full overflow-hidden rounded-full" style={{ backgroundColor: FIN.line }}>
       <div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${Math.min(100, Math.max(0, value * 100))}%`, backgroundColor: color }} />
     </div>
-  );
-}
-
-// Étiquette "certain" / "estimation", pour distinguer les résultats sûrs des projections
-export function Certainty({ estimate }: { estimate?: boolean }) {
-  return (
-    <span
-      className="rounded-full px-1.5 py-px text-[8px] uppercase tracking-[0.15em]"
-      style={estimate ? { backgroundColor: '#f1e6d2', color: FIN.gold } : { backgroundColor: '#dfe9e2', color: FIN.sage }}
-    >
-      {estimate ? 'estimation' : 'certain'}
-    </span>
   );
 }
 

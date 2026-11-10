@@ -1,4 +1,4 @@
-import { Caveat, Courier_Prime, Great_Vibes, Grenze_Gotisch, Playfair_Display, UnifrakturMaguntia } from 'next/font/google';
+import { Archivo_Narrow, Caveat, Courier_Prime, Great_Vibes, Grenze_Gotisch, Playfair_Display, Reenie_Beanie, UnifrakturMaguntia } from 'next/font/google';
 import './globals.css';
 import { PageShell } from '@/components/PageShell';
 
@@ -11,6 +11,9 @@ const blackletter = UnifrakturMaguntia({ subsets: ['latin'], variable: '--font-b
 // Gothique plus lisible, pour les petits titres (ex : « Sommaire » du menu de l'accueil)
 const gothic = Grenze_Gotisch({ subsets: ['latin'], variable: '--font-gothic', weight: '600' });
 const playfair = Playfair_Display({ subsets: ['latin'], variable: '--font-serif', style: ['normal', 'italic'] });
+// Carte-contrat de la page de titre : capitales étroites du nom de la maison, et écriture fine au stylo des champs remplis
+const archivoNarrow = Archivo_Narrow({ subsets: ['latin'], variable: '--font-narrow', weight: '700' });
+const reenie = Reenie_Beanie({ subsets: ['latin'], variable: '--font-pen', weight: '400' });
 
 export const metadata = {
   title: 'Courses',
@@ -19,7 +22,7 @@ export const metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="fr" className={`${caveat.variable} ${courierPrime.variable} ${greatVibes.variable} ${blackletter.variable} ${gothic.variable} ${playfair.variable}`}>
+    <html lang="fr" className={`${caveat.variable} ${courierPrime.variable} ${greatVibes.variable} ${blackletter.variable} ${gothic.variable} ${playfair.variable} ${archivoNarrow.variable} ${reenie.variable}`}>
       <body>
         <PageShell>{children}</PageShell>
       </body>

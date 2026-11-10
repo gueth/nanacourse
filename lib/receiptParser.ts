@@ -1,5 +1,5 @@
 import type { OcrBox, OcrLine } from '@/lib/ocr';
-import { bestMatch, keywords, normalizeText, parsePrice, sentenceCase } from '@/lib/textMatch';
+import { bestMatch, normalizeText, parsePrice, sentenceCase } from '@/lib/textMatch';
 
 // Endroit du ticket d'où vient une information : numéro de la photo et rectangle de la ligne lue
 export type ReceiptSource = { image: number; box: OcrBox };
@@ -9,8 +9,6 @@ export type ReceiptItem = {
   raw: string; // texte tel qu'imprimé (ex : « LT DEMI ECR PRES 1L »), sert à mémoriser les correspondances
   ingredient_id: string | null; // ingrédient connu correspondant, ou null
   name: string; // nom proposé pour un nouvel ingrédient
-  brand_id: string | null;
-  brand_name: string | null;
   category_id: string | null;
   type: string | null; // « kg » pour une pesée, sinon l'unité de l'ingrédient connu
   quantity: number;
@@ -31,7 +29,6 @@ export type ReceiptScanResult = {
 
 type Known = {
   ingredients: { id: string; name: string; type: string | null; category_id: string | null }[];
-  brands: { id: string; name: string }[];
   stores: { id: string; name: string; chain: string | null; address: string | null }[];
   // Correspondances déjà validées : texte du reçu (normalisé) -> ingrédient
   aliases: Record<string, string>;
@@ -48,6 +45,26 @@ const CHAINS = [
 const ITEM = /^(.*?[a-zà-ÿ].*?)\s+(-?\d{1,4}[.,]\d{2})\s*(?:€|eur)?\s*(?:[a-z0-9]{1,2})?\s*\*?\s*$/i;
 // « 2 x 1,25 » : quantité × prix unitaire
 const MULTIPLY = /(\d{1,3})\s*[x×*]\s*(\d{1,4}[.,]\d{2})/i;
+// « 1,2x3 » : prix unitaire × quantité (le prix de la ligne est alors le prix unitaire fois la quantité)
+const UNIT_TIMES_QTY = /(\d{1,4}[.,]\d{1,2})\s*[x×*]\s*(\d{1,3})(?![\d.,])/i;
+// Ligne d'en-tête des colonnes, juste avant les articles : « DÉSIGNATION ... PRIX », « LIBELLÉ  MONTANT »...
+const COLUMN_NAMES = /d[ée]signation|libell[ée]|description|produits?|articles?|d[ée]tail/i;
+const COLUMN_PRICES = /prix|montant|\bp\.?\s?u\b|\btotal\b|qt[ée]|quantit/i;
+// Ligne qui contient un total : jamais un article
+const ANY_TOTAL = /\btotal\b/i;
+
+// Quantité imprimée sur une ligne, dans l'un des formats du ticket : pesée (« 0,532 kg x 2,99 »),
+// quantité × prix unitaire (« 2 x 1,25 ») ou prix unitaire × quantité (« 1,2x3 »).
+// "index" et "length" situent le texte trouvé, pour le retirer du nom du produit.
+function quantityIn(text: string) {
+  const weight = text.match(WEIGHT);
+  if (weight) return { quantity: parsePrice(weight[1]), unit: parsePrice(weight[2]), perKg: true, index: weight.index ?? 0, length: weight[0].length };
+  const multiply = text.match(MULTIPLY);
+  if (multiply) return { quantity: Number(multiply[1]), unit: parsePrice(multiply[2]), perKg: false, index: multiply.index ?? 0, length: multiply[0].length };
+  const unitFirst = text.match(UNIT_TIMES_QTY);
+  if (unitFirst) return { quantity: Number(unitFirst[2]), unit: parsePrice(unitFirst[1]), perKg: false, index: unitFirst.index ?? 0, length: unitFirst[0].length };
+  return null;
+}
 // « 0,532 kg x 2,99 €/kg » : pesée
 const WEIGHT = /(\d+[.,]\d{1,3})\s*kg\s*[x×*@]?\s*(\d{1,4}[.,]\d{2})/i;
 // Remises sur le produit juste au-dessus
@@ -126,19 +143,41 @@ export function parseReceipt(lines: OcrLine[], known: Known): ReceiptScanResult 
   // Nom de produit imprimé seul sur sa ligne, sans prix (ex : « BANANES » au-dessus de la ligne de pesée)
   let nameOnly: { raw: string; confidence: number; source: ReceiptSource } | null = null;
 
-  for (const line of all) {
+  // Les articles commencent après la ligne d'en-tête des colonnes (« DÉSIGNATION ... PRIX », « LIBELLÉ  MONTANT »),
+  // si le ticket en a une : l'en-tête du magasin, au-dessus, n'est pas lu comme des articles
+  const columnsIndex = all.findIndex((l) => COLUMN_NAMES.test(l.text) && COLUMN_PRICES.test(l.text) && !/\d[.,]\d{2}/.test(l.text));
+  const zone = columnsIndex >= 0 ? all.slice(columnsIndex + 1) : all;
+  // Les lignes d'articles sont serrées les unes sous les autres : un grand espace vertical (plus de 1,8 fois la hauteur
+  // d'une ligne) marque la fin de la liste des articles. Hauteur de référence : la médiane des lignes lues.
+  const heights = zone.map((l) => l.box.y1 - l.box.y0).filter((h) => h > 0).sort((a, b) => a - b);
+  const lineHeight = heights.length ? heights[Math.floor(heights.length / 2)] : 0;
+  let previous: OcrLine | null = null;
+
+  for (const line of zone) {
     const text = line.text.trim();
     const confidence = line.confidence;
     const source = sourceOf(line);
 
+    // Grand espace depuis la ligne précédente (sur la même photo) une fois des articles lus : fin des articles
+    const gap = previous && previous.image === line.image ? line.box.y0 - previous.box.y1 : 0;
+    if (drafts.length > 0 && lineHeight > 0 && gap > lineHeight * 1.8) break;
+    previous = line;
+
+    // Ligne qui contient un total : jamais un article ; après les articles, elle marque la fin de la liste
+    if (ANY_TOTAL.test(text)) {
+      if (drafts.length > 0) break;
+      nameOnly = null;
+      continue;
+    }
+
     // Ligne de quantité ou de pesée (pas de nom devant) : elle précise le produit voisin
-    const qtyMatch = text.match(WEIGHT) ?? text.match(MULTIPLY);
-    if (qtyMatch && lettersIn(text.slice(0, qtyMatch.index)) < 3) {
-      const isWeight = WEIGHT.test(qtyMatch[0]);
-      const quantity = parsePrice(qtyMatch[1]);
-      const unit = parsePrice(qtyMatch[2]);
+    const qtyMatch = quantityIn(text);
+    if (qtyMatch && lettersIn(text.slice(0, qtyMatch.index).replace(/[x×]/gi, '')) < 3) {
+      const isWeight = qtyMatch.perKg;
+      const quantity = qtyMatch.quantity;
+      const unit = qtyMatch.unit;
       // Montant de la ligne en fin de ligne s'il est imprimé, sinon quantité × prix unitaire
-      const after = text.slice((qtyMatch.index ?? 0) + qtyMatch[0].length);
+      const after = text.slice(qtyMatch.index + qtyMatch.length);
       const totalMatch = after.match(/(\d{1,4}[.,]\d{2})\s*(?:€|eur)?\s*(?:[a-z0-9]{1,2})?\s*\*?\s*$/i);
       const total = totalMatch ? parsePrice(totalMatch[1]) : Math.round(quantity * unit * 100) / 100;
       const last = drafts[drafts.length - 1];
@@ -181,12 +220,26 @@ export function parseReceipt(lines: OcrLine[], known: Known): ReceiptScanResult 
     if (END.test(label) && drafts.length > 0) break;
     if (IGNORE.test(label)) continue;
 
+    // Quantité imprimée sur la ligne du produit (« YAOURT 1,2x3 3,60 », « COCA 2 x 1,25 2,50 ») : le prix en fin
+    // de ligne est celui de la ligne (prix unitaire × quantité) ; s'il n'est que le prix unitaire, on le multiplie
+    const inline = quantityIn(label);
+    let quantity = 1;
+    let perKg = false;
+    let total = amount;
+    let nameText = label;
+    if (inline) {
+      quantity = inline.quantity;
+      perKg = inline.perKg;
+      nameText = `${label.slice(0, inline.index)} ${label.slice(inline.index + inline.length)}`;
+      if (quantity > 1 && Math.abs(amount - inline.unit) <= 0.01) total = Math.round(inline.unit * quantity * 100) / 100;
+    }
+
     // Nom nettoyé : codes article en tête et symboles retirés
-    const raw = label.replace(/^\d{3,}\s+/, '').replace(/[^a-zà-ÿ0-9%.,'’/ -]/gi, ' ').replace(/\s+/g, ' ').trim();
+    const raw = nameText.trim().replace(/^\d{3,}\s+/, '').replace(/[^a-zà-ÿ0-9%.,'’/ -]/gi, ' ').replace(/\s+/g, ' ').trim();
     if (lettersIn(raw) < 2) continue;
 
-    const draft: Draft = { raw, total: amount, quantity: 1, perKg: false, confidence, sources: [source] };
-    if (pending && Math.abs(pending.quantity * pending.unit - amount) <= 0.05) {
+    const draft: Draft = { raw, total, quantity, perKg, confidence, sources: [source] };
+    if (!inline && pending && Math.abs(pending.quantity * pending.unit - amount) <= 0.05) {
       draft.quantity = pending.quantity;
       draft.perKg = pending.perKg;
       draft.sources.unshift(pending.source);
@@ -205,20 +258,9 @@ export function parseReceipt(lines: OcrLine[], known: Known): ReceiptScanResult 
     const match = alias ? { item: alias, score: 1 } : bestMatch(d.raw, known.ingredients, (i) => i.name);
     const ingredient = match?.item;
 
-    // Marque : une marque connue dont tous les mots apparaissent dans la ligne
-    const rawWords = keywords(d.raw);
-    const brand = known.brands.find((b) => {
-      const bw = keywords(b.name);
-      return bw.length > 0 && bw.every((w) => rawWords.includes(w));
-    });
-
-    // Nom proposé : la ligne sans la marque, ni poids ou contenance
-    const brandWords = brand ? new Set(keywords(brand.name)) : new Set<string>();
+    // Nom proposé : la ligne sans poids ni contenance
     const name = sentenceCase(
       d.raw
-        .split(' ')
-        .filter((w) => !brandWords.has(normalizeText(w)))
-        .join(' ')
         .replace(/\b\d+([.,]\d+)?\s?(kg|g|l|cl|ml)\b/gi, '')
         .replace(/\bx\s?\d+\b/gi, '')
         .replace(/\s+/g, ' ')
@@ -231,8 +273,6 @@ export function parseReceipt(lines: OcrLine[], known: Known): ReceiptScanResult 
       raw: d.raw,
       ingredient_id: ingredient?.id ?? null,
       name: name || d.raw,
-      brand_id: brand?.id ?? null,
-      brand_name: null,
       category_id: ingredient?.category_id ?? null,
       type: d.perKg ? 'kg' : (ingredient?.type ?? null),
       quantity: d.quantity,
@@ -259,8 +299,14 @@ export function countArticles(items: { quantity: number; type: string | null }[]
   return items.reduce((n, it) => n + (it.type === 'kg' ? 1 : Math.max(1, Math.round(it.quantity))), 0);
 }
 
-// Total à comparer à la somme des produits : celui de la ligne « à payer » s'il y en a une, sinon le dernier total imprimé
-export function printedTotal(totals: ReceiptScanResult['totals']) {
+// Total à payer : quand le ticket imprime plusieurs totaux, c'est le plus grand (les autres sont des sous-totaux,
+// des totaux de remises...)
+export function toPayTotal(totals: ReceiptScanResult['totals']) {
   if (totals.length === 0) return null;
-  return (totals.find((t) => t.toPay) ?? totals[totals.length - 1]).amount;
+  return totals.reduce((best, t) => (t.amount > best.amount ? t : best));
+}
+
+// Total à comparer à la somme des produits
+export function printedTotal(totals: ReceiptScanResult['totals']) {
+  return toPayTotal(totals)?.amount ?? null;
 }

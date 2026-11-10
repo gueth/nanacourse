@@ -37,6 +37,10 @@ create table if not exists income_plan (
   updated_at timestamptz not null default now()
 );
 
+-- Lignes de répartition modifiables (Profil > Répartition) : liste JSON de { id, label, hint, pct }.
+-- Vide : les trois parties d'origine, avec les pourcentages des colonnes ci-dessus.
+alter table income_plan add column if not exists parts jsonb;
+
 -- Partie du revenu dans laquelle entre chaque budget, et plafond en euros ou en pourcentage de cette partie
 alter table budget_settings add column if not exists part text not null default 'charges';
 alter table budget_settings add column if not exists amount_mode text not null default 'euros';

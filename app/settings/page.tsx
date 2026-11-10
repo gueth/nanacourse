@@ -1,40 +1,39 @@
 'use client';
 
 import { Suspense, useState } from 'react';
-import { ReceiptText } from 'lucide-react';
+import { ArrowLeft, ReceiptText } from 'lucide-react';
 import Modal from '@/components/Modal';
 import ReceiptScan from '@/components/ReceiptScan';
 import { STORE_SELECT } from '@/lib/stores';
 import { useCached } from '@/lib/cache';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import type { Brand, Category, Chain, IngredientWithRelations, Store } from '@/lib/types';
+import type { Category, Chain, IngredientWithRelations, Store } from '@/lib/types';
 import CategoriesSettings from '@/components/settings/CategoriesSettings';
-import BrandsSettings from '@/components/settings/BrandsSettings';
 import IngredientsSettings from '@/components/settings/IngredientsSettings';
 import StoresSettings from '@/components/settings/StoresSettings';
 import ListsSettings from '@/components/settings/ListsSettings';
+import ChallengesSettings from '@/components/settings/ChallengesSettings';
 
 // Les onglets de la page Paramètres
 const TABS = [
   { id: 'categories', label: 'Catégories' },
-  { id: 'brands', label: 'Marques' },
   { id: 'stores', label: 'Supermarchés' },
   { id: 'ingredients', label: 'Ingrédients' },
-  { id: 'lists', label: 'Listes' }
+  { id: 'lists', label: 'Listes' },
+  { id: 'defis', label: 'Défis' }
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
 
-// Charge en une fois tout ce dont les onglets Catégories, Marques, Supermarchés et Ingrédients ont besoin
+// Charge en une fois tout ce dont les onglets Catégories, Supermarchés et Ingrédients ont besoin
 function fetchAll() {
   return Promise.all([
     supabase.from('categories').select('*').order('name'),
-    supabase.from('brands').select('*').order('name'),
     supabase.from('stores').select(STORE_SELECT).order('name'),
     supabase
       .from('ingredients')
-      .select(`*, category:categories(*), brand:brands(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
+      .select(`*, category:categories(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
       .order('name'),
     // Enseignes (libellé + couleur), gérées dans l'onglet Supermarchés
     supabase.from('chains').select('*').order('name')
@@ -63,11 +62,10 @@ function SettingsContent() {
   // CHARGEMENT (ET RECHARGEMENT APRÈS CHAQUE MODIFICATION) DES DONNÉES
   // Gardées en mémoire entre deux visites (lib/cache) : affichées tout de suite, puis rechargées en arrière-plan
   const query = useCached('courses:parametres', async () => {
-    const [{ data: cats }, { data: brs }, { data: sts }, { data: ings, error }, { data: chs }] = await fetchAll();
+    const [{ data: cats }, { data: sts }, { data: ings, error }, { data: chs }] = await fetchAll();
     if (error) console.error(error);
     return {
       categories: (cats as Category[]) ?? [],
-      brands: (brs as Brand[]) ?? [],
       stores: (sts as Store[]) ?? [],
       chains: (chs as Chain[]) ?? [],
       ingredients: (ings as unknown as IngredientWithRelations[]) ?? []
@@ -77,58 +75,92 @@ function SettingsContent() {
   // Cadre du scan de reçu ouvert ou non
   const [receiptOpen, setReceiptOpen] = useState(false);
 
-  if (!query.data) return <p>Chargement...</p>;
-  const { categories, brands, stores, chains, ingredients } = query.data;
+  const data = query.data;
 
+  // Contenu du dossier ouvert
+  function content(id: TabId) {
+    if (!data) return <p>Chargement...</p>;
+    const { categories, stores, chains, ingredients } = data;
+    switch (id) {
+      case 'categories':
+        return <CategoriesSettings categories={categories} onChange={loadAll} />;
+      case 'stores':
+        return <StoresSettings stores={stores} chains={chains} onChange={loadAll} />;
+      case 'ingredients':
+        return <IngredientsSettings ingredients={ingredients} categories={categories} stores={stores} onChange={loadAll} />;
+      // Les listes chargent elles-mêmes leurs données (avec leurs articles)
+      case 'lists':
+        return <ListsSettings />;
+      // Les défis chargent eux-mêmes leurs données (défis, points, bons récupérés)
+      case 'defis':
+        return <ChallengesSettings />;
+    }
+  }
+
+  // UN CLASSEUR : les dossiers roses sont empilés les uns sous les autres. D'un dossier fermé on ne voit que le bord
+  // du haut et son onglet, décalé d'un dossier à l'autre comme des intercalaires. Toucher un dossier l'ouvre :
+  // il s'agrandit et pousse les autres en haut et en bas, où il ne reste que leur bord.
   return (
-    <div>
-      {/* Titre, et à droite le scan d'un reçu : il met à jour les ingrédients (informations et prix) et les magasins */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-        <h1 className="title-hand text-3xl sm:text-4xl">Paramètres</h1>
-        <button onClick={() => setReceiptOpen(true)} className="btn-hand inline-flex items-center gap-1.5">
-          <ReceiptText size={18} /> Scanner un reçu
+    <div className="classeur fixed inset-0 flex flex-col">
+      {/* En haut de la page, au-dessus des dossiers : retour, et scan d'un reçu
+          (il met à jour les ingrédients, leurs prix et les magasins) */}
+      <div className="classeur-bar flex shrink-0 items-center justify-between gap-2 whitespace-nowrap px-4 sm:px-6">
+        <button type="button" onClick={() => router.back()} className="folder-small inline-flex items-center gap-1">
+          <ArrowLeft size={14} /> Retour
+        </button>
+        <button type="button" onClick={() => setReceiptOpen(true)} className="folder-small inline-flex items-center gap-1">
+          <ReceiptText size={14} /> Scanner un reçu
         </button>
       </div>
-      {receiptOpen && (
+      {TABS.map((t, i) => {
+        const open = tab === t.id;
+        // Onglets en escalier, de gauche à droite
+        const tabLeft = `calc(10px + ${i} * (100% - 20px - var(--tab-w)) / ${TABS.length - 1})`;
+        return (
+          <section key={t.id} className={`folder ${open ? 'folder-open' : ''}`} style={{ zIndex: i + 1 }} aria-label={t.label}>
+            {/* Bord du dossier, avec l'onglet qui dépasse en haut et son étiquette */}
+            <button
+              type="button"
+              onClick={() => setTab(t.id)}
+              aria-current={open ? 'page' : undefined}
+              aria-label={open ? `${t.label} (ouvert)` : `Ouvrir ${t.label}`}
+              className="folder-spine"
+            >
+              <span className="folder-bump" style={{ left: tabLeft }}>
+                <span className="folder-label">{t.label}</span>
+              </span>
+            </button>
+
+            {/* Intérieur du dossier : seulement celui qui est ouvert */}
+            <div className="folder-body">
+              {open && (
+                <div className="folder-content h-full overflow-y-auto overscroll-contain px-4 pb-10 pt-5 sm:px-6">
+                  {/* En-tête : nom de l'application et titre du dossier */}
+                  <div className="mx-auto max-w-3xl">
+                  <p className="folder-script text-[26px] leading-none">nana</p>
+                  <h1 className="mb-5 mt-1 leading-none">
+                    <span className="folder-serif text-[34px] sm:text-[44px]">mes </span>
+                    <span className="folder-script text-[42px] sm:text-[54px]">{t.label.toLowerCase()}</span>
+                  </h1>
+                  {content(t.id)}
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        );
+      })}
+
+      {receiptOpen && data && (
         <Modal title="Scanner un reçu" onClose={() => setReceiptOpen(false)} wide>
           <ReceiptScan
-            ingredients={ingredients}
+            ingredients={data.ingredients}
             onDone={() => {
               setReceiptOpen(false);
               loadAll();
             }}
           />
         </Modal>
-      )}
-
-      {/* BARRE D'ONGLETS : une seule ligne, qui défile horizontalement sur téléphone ; l'onglet actif est mis en avant */}
-      <div className="flex gap-1 overflow-x-auto no-scrollbar border-b-2 border-ink mb-5 -mx-4 px-4 sm:mx-0 sm:px-0">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            aria-current={tab === t.id ? 'page' : undefined}
-            className={`nav-tab shrink-0 whitespace-nowrap ${tab === t.id ? '' : 'opacity-50'}`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'categories' && <CategoriesSettings categories={categories} onChange={loadAll} />}
-      {tab === 'brands' && <BrandsSettings brands={brands} onChange={loadAll} />}
-      {tab === 'stores' && <StoresSettings stores={stores} chains={chains} onChange={loadAll} />}
-      {/* Les listes chargent elles-mêmes leurs données (avec leurs articles) */}
-      {tab === 'lists' && <ListsSettings />}
-      {/* Le budget charge lui-même ses réglages et les dépenses de la période */}
-      {tab === 'ingredients' && (
-        <IngredientsSettings
-          ingredients={ingredients}
-          categories={categories}
-          brands={brands}
-          stores={stores}
-          onChange={loadAll}
-        />
       )}
     </div>
   );

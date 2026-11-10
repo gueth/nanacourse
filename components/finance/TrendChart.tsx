@@ -3,9 +3,6 @@
 import { useState } from 'react';
 import { FIN } from '@/components/finance/FinanceParts';
 
-// Couleurs des séries, validées (daltonisme, contraste) sur le fond papier : bleu puis or, toujours dans cet ordre
-export const SERIES_COLORS = ['#3f6fa8', '#b5832e'];
-
 export type Series = { name: string; color: string; values: (number | null)[] };
 
 // Graphique d'évolution mois par mois : barres (côte à côte si plusieurs séries) ou courbe.

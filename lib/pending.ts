@@ -7,7 +7,6 @@ import { saveIngredientPrice } from '@/lib/ingredients';
 export type PendingChanges = {
   name?: string;
   category_id?: string | null;
-  brand_id?: string | null;
   type?: string | null;
   note?: string | null;
   // Le prix de la ligne a été modifié à la main
@@ -15,7 +14,7 @@ export type PendingChanges = {
 };
 
 // Champs de l'ingrédient concernés (le reste de PendingChanges ne touche pas l'ingrédient)
-const INGREDIENT_FIELDS = ['name', 'category_id', 'brand_id', 'type', 'note'] as const;
+const INGREDIENT_FIELDS = ['name', 'category_id', 'type', 'note'] as const;
 
 // À la validation d'une liste, pour les articles achetés (barrés) seulement : applique aux ingrédients
 // les modifications en attente, et mémorise leur prix unitaire dans le magasin de la liste.
@@ -32,7 +31,7 @@ export async function applyPendingChanges(
 ) {
   const failures: string[] = [];
 
-  // 1. Informations de l'ingrédient (nom, catégorie, marque, unité, note)
+  // 1. Informations de l'ingrédient (nom, catégorie, unité, note)
   for (const item of boughtItems) {
     const p = item.pending;
     if (!p) continue;

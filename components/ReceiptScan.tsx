@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Check, ChevronDown, Store as StoreIcon } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import type { Brand, Category, Ingredient, Store, Chain } from '@/lib/types';
+import type { Category, Ingredient, Store, Chain } from '@/lib/types';
 import { createIngredient, saveIngredientPrice } from '@/lib/ingredients';
 import { budgetFor, recordExpense, today } from '@/lib/budget';
 import { useShoppingBudgets } from '@/lib/coursesQueries';
@@ -13,11 +13,11 @@ import StoreOptions from '@/components/StoreOptions';
 import PhotoPicker, { usePhotos } from '@/components/PhotoPicker';
 // Lecture gratuite dans le navigateur (Tesseract.js) puis analyse du texte du reçu
 import { readLines } from '@/lib/ocr';
-import { countArticles, parseReceipt, printedTotal, type ReceiptItem, type ReceiptScanResult, type ReceiptSource } from '@/lib/receiptParser';
+import { countArticles, parseReceipt, printedTotal, toPayTotal, type ReceiptItem, type ReceiptScanResult, type ReceiptSource } from '@/lib/receiptParser';
 import { loadAliases, rememberAliases } from '@/lib/receiptAliases';
 
 const MAX_PHOTOS = 4;
-// Valeur des listes déroulantes pour "créer un nouvel élément" (marque, magasin)
+// Valeur des listes déroulantes pour "créer un nouvel élément" (magasin)
 const NEW = '__new__';
 
 type Props = {
@@ -42,20 +42,16 @@ type ResultRow = {
   unitPrice: string; // prix d'une unité, '' = inconnu
   type: string;
   categoryId: string;
-  brandId: string; // '' = aucune, NEW = nouvelle marque créée avec brandName
-  brandName: string;
   confidence: ReceiptItem['confidence'];
   sources: ReceiptSource[]; // lignes du ticket d'où vient le produit (extraits de la photo affichés pour vérifier)
 };
 
 // Valeurs proposées pour une ligne : celles de l'ingrédient connu quand elles sont renseignées
 // (on ne les écrase pas), sinon celles lues sur le reçu (elles complètent l'ingrédient).
-function rowDetails(known: Ingredient | undefined, it: Pick<ReceiptItem, 'type' | 'category_id' | 'brand_id' | 'brand_name'>) {
+function rowDetails(known: Ingredient | undefined, it: Pick<ReceiptItem, 'type' | 'category_id'>) {
   return {
     type: known?.type ?? it.type ?? '',
-    categoryId: known?.category_id ?? it.category_id ?? '',
-    brandId: known?.brand_id ?? it.brand_id ?? (it.brand_name ? NEW : ''),
-    brandName: it.brand_name ?? ''
+    categoryId: known?.category_id ?? it.category_id ?? ''
   };
 }
 
@@ -113,7 +109,6 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
 
   // Listes de choix
   const [categories, setCategories] = useState<Category[]>([]);
-  const [brands, setBrands] = useState<Brand[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   // Enseignes connues (une enseigne lue sur le reçu est créée si elle n'existe pas)
   const [chainList, setChainList] = useState<Chain[]>([]);
@@ -124,8 +119,9 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
   // Informations du magasin lues sur le reçu, et celles modifiables (proposées pour le magasin choisi)
   const [scannedStore, setScannedStore] = useState<StoreDetails>({ chain: '', name: '', address: '' });
   const [store, setStore] = useState<StoreDetails>({ chain: '', name: '', address: '' });
-  // Compter le reçu dans le budget (décoché par défaut : la validation d'une liste le fait déjà)
-  const [countInBudget, setCountInBudget] = useState(false);
+  // Total final de la facture : le plus important. Proposé d'après le ticket, modifiable si la lecture s'est trompée ;
+  // c'est ce montant qui est enregistré dans le budget
+  const [billTotal, setBillTotal] = useState('');
   // Budget dans lequel le reçu compte ('' = le premier budget)
   const budgets = useShoppingBudgets().data;
   const [budgetId, setBudgetId] = useState(defaultBudgetId ?? '');
@@ -139,12 +135,10 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
   useEffect(() => {
     Promise.all([
       supabase.from('categories').select('*').order('name'),
-      supabase.from('brands').select('*').order('name'),
       supabase.from('stores').select(STORE_SELECT).order('name'),
       supabase.from('chains').select('*').order('name')
-    ]).then(([{ data: cats }, { data: brs }, { data: sts }, { data: chs }]) => {
+    ]).then(([{ data: cats }, { data: sts }, { data: chs }]) => {
       setCategories(cats ?? []);
-      setBrands(brs ?? []);
       setStores(sts ?? []);
       setChainList(chs ?? []);
     });
@@ -162,12 +156,11 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
       );
       const result = parseReceipt(lines, {
         ingredients,
-        brands,
         // L'analyse compare les enseignes par leur libellé
         stores: stores.map((s) => ({ id: s.id, name: s.name, address: s.address, chain: s.chain?.name ?? null })),
         aliases: loadAliases()
       });
-      if (result.items.length === 0) {
+      if (result.items.length === 0 && result.totals.length === 0) {
         setStep('pick');
         return setError('Aucun produit lu : reprends la photo bien à plat, nette et éclairée, le ticket en entier dans le cadre.');
       }
@@ -176,6 +169,9 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
       setScannedStore(scanned);
       setArticleCount(result.article_count);
       setPrintedTotals(result.totals);
+      // Total final proposé : celui imprimé sur le ticket, sinon la somme des produits lus
+      const read = printedTotal(result.totals) ?? result.items.reduce((sum, it) => sum + (it.unit_price ?? 0) * it.quantity, 0);
+      setBillTotal(read > 0 ? read.toFixed(2) : '');
       setStoreId(matchedId);
       // Magasin nouveau : ses informations lues sont dépliées, pour être vérifiées
       setStoreOpen(matchedId === NEW);
@@ -223,8 +219,7 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
     updateRow(row.key, {
       ingredientId,
       type: known?.type ?? row.type,
-      categoryId: known?.category_id ?? row.categoryId,
-      brandId: known?.brand_id ?? row.brandId
+      categoryId: known?.category_id ?? row.categoryId
     });
   }
 
@@ -236,7 +231,17 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
     : [];
   // Enseignes connues, proposées pendant la saisie
   const chains = chainList.map((c) => c.name).sort((a, b) => a.localeCompare(b));
-  const total = applied.reduce((sum, r) => sum + (Number(r.unitPrice) || 0) * (Number(r.quantity.replace(',', '.')) || 0), 0);
+  // Total final saisi (ou proposé), et ce qu'il faut pour enregistrer :
+  //  - toujours le total final, et le budget où le reçu est enregistré ;
+  //  - le supermarché dès qu'au moins un produit est coché (ses prix y sont mémorisés)
+  const billAmount = Math.round((Number(billTotal.replace(',', '.')) || 0) * 100) / 100;
+  const chosenBudget = budgetFor(budgets, budgetId || null);
+  const storeValid = storeId === NEW ? !!(store.name.trim() || store.chain.trim()) : !!storeId;
+  const missing = [
+    billAmount <= 0 && 'le total de la facture',
+    budgets && budgets.length > 0 && !chosenBudget && 'le budget',
+    applied.length > 0 && !storeValid && 'le supermarché'
+  ].filter((m): m is string => !!m);
 
   // ENREGISTREMENT des lignes cochées
   async function save() {
@@ -268,35 +273,16 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
       }
     }
 
-    // 2. Les nouvelles marques (une seule création par nom, même si plusieurs lignes l'utilisent)
-    const createdBrands = new Map<string, string>();
-    async function brandIdFor(row: ResultRow) {
-      if (row.brandId !== NEW) return row.brandId;
-      const name = row.brandName.trim();
-      if (!name) return '';
-      const key = name.toLowerCase();
-      if (!createdBrands.has(key)) {
-        const { data, error: brandError } = await supabase.from('brands').insert({ name }).select().single();
-        if (brandError || !data) {
-          failures.push(`marque « ${name} »`);
-          return '';
-        }
-        createdBrands.set(key, data.id);
-      }
-      return createdBrands.get(key)!;
-    }
-
-    // 3. Chaque ligne : ingrédient créé ou complété, et prix mémorisé pour ce magasin
+    // 2. Chaque ligne : ingrédient créé ou complété, et prix mémorisé pour ce magasin
     // Correspondances validées (texte du reçu -> ingrédient), reconnues directement au prochain reçu
     const aliases: { raw: string; ingredientId: string }[] = [];
     // Articles de la nouvelle liste active (mode asActiveList) : prix de la ligne = prix unitaire x quantité
     const listItems: { ingredient_id: string; quantity: number; expected_price: number | null; store_id: string | null }[] = [];
     for (const row of applied) {
-      const brandId = await brandIdFor(row);
       let id = row.ingredientId;
       const known = ingredients.find((i) => i.id === id);
       if (!id) {
-        const created = await createIngredient({ name: row.name, type: row.type, category_id: row.categoryId, brand_id: brandId });
+        const created = await createIngredient({ name: row.name, type: row.type, category_id: row.categoryId });
         if (!created) {
           failures.push(`ingrédient « ${row.name} »`);
           continue;
@@ -306,7 +292,6 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
         // Ingrédient connu : on enregistre seulement les informations qui ont changé (complétées ou corrigées)
         const changes: Record<string, string | null> = {};
         if ((known.category_id ?? '') !== row.categoryId) changes.category_id = row.categoryId || null;
-        if ((known.brand_id ?? '') !== brandId) changes.brand_id = brandId || null;
         if ((known.type ?? '') !== row.type.trim()) changes.type = row.type.trim() || null;
         if (Object.keys(changes).length > 0) {
           const { error: updateError } = await supabase.from('ingredients').update(changes).eq('id', id);
@@ -332,7 +317,7 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
 
     rememberAliases(aliases);
 
-    // 4. Mode « liste active » : le reçu devient une liste de courses, activée à la place de l'ancienne
+    // 3. Mode « liste active » : le reçu devient une liste de courses, activée à la place de l'ancienne
     if (asActiveList && listItems.length > 0) {
       const { error: offError } = await supabase.from('shopping_lists').update({ is_active: false }).eq('is_active', true);
       if (offError) failures.push("désactivation de l'ancienne liste");
@@ -341,7 +326,7 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
         .from('shopping_lists')
         .insert({
           name: fields.name ? `Reçu ${label}` : 'Reçu',
-          estimated_price: Math.round(total * 100) / 100,
+          estimated_price: billAmount,
           is_active: true,
           activated_at: new Date().toISOString(),
           date: today(),
@@ -357,9 +342,11 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
       }
     }
 
-    // 5. Le reçu compte dans le budget choisi, si demandé (pas en mode « liste active » : la validation de la liste le fera)
-    if (!asActiveList && countInBudget && total > 0) {
-      await recordExpense(total, fields.name ? `Reçu ${label}` : 'Reçu', budgetFor(budgets, budgetId || null)?.settings.id);
+    // 4. Le total final de la facture est enregistré dans le budget choisi (en mode « liste active », c'est la validation
+    //    de la liste qui le fera ; sans produit coché, il n'y a pas de liste : le total est enregistré tout de suite)
+    if (billAmount > 0 && (!asActiveList || listItems.length === 0)) {
+      const expenseError = await recordExpense(billAmount, fields.name ? `Reçu ${label}` : 'Reçu', chosenBudget?.settings.id);
+      if (expenseError) failures.push('total dans le budget');
     }
 
     if (failures.length > 0) {
@@ -433,6 +420,8 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
   // comparés à ce qui est imprimé sur le ticket
   const readArticles = countArticles(rows.map((r) => ({ quantity: Number(r.quantity.replace(',', '.')) || 0, type: r.type.trim() || null })));
   const readSum = Math.round(rows.reduce((sum, r) => sum + (Number(r.unitPrice) || 0) * (Number(r.quantity.replace(',', '.')) || 0), 0) * 100) / 100;
+  // Total à payer : le plus grand des totaux imprimés
+  const payLine = toPayTotal(printedTotals);
   const ticketTotal = printedTotal(printedTotals);
   const distinctTotals = [...new Set(printedTotals.map((t) => t.amount.toFixed(2)))];
   const sumOk = ticketTotal !== null && Math.abs(readSum - ticketTotal) < 0.01;
@@ -441,10 +430,48 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
   return (
     <div>
       {stepper}
-      {rows.length === 0 && !error && <p className="mb-4 opacity-70">Aucun produit lu sur ce reçu.</p>}
+      {rows.length === 0 && !error && (
+        <p className="mb-4 opacity-70">Aucun produit lu sur ce reçu{printedTotals.length > 0 ? ' : vérifie le total et enregistre-le dans ton budget.' : '.'}</p>
+      )}
 
-      {rows.length > 0 && (
+      {(rows.length > 0 || printedTotals.length > 0) && (
         <>
+          {/* FACTURE : le total final (le plus important), modifiable, et le budget où le reçu est enregistré */}
+          <div className="mb-3 rounded-sm border-2 border-ink px-3 py-3">
+            <label className="block">
+              <span className="field-label">Total de la facture</span>
+              <span className="flex items-baseline gap-1">
+                <input
+                  value={billTotal}
+                  onChange={(e) => setBillTotal(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="0,00"
+                  className="input-hand w-full min-w-0 text-right text-2xl font-bold"
+                  aria-label="Total de la facture"
+                />
+                <span className="text-xl font-bold">€</span>
+              </span>
+            </label>
+            <p className="mt-1 text-xs opacity-70">
+              {ticketTotal !== null ? `Lu sur le ticket : ${ticketTotal.toFixed(2)} €` : 'Total non lu sur le ticket : vérifie-le.'}
+              {ticketTotal !== null && Math.abs(billAmount - ticketTotal) >= 0.01 && ' · modifié'}
+            </p>
+            {budgets && budgets.length > 0 ? (
+              <label className="mt-3 block text-sm">
+                <span className="field-label">{asActiveList ? 'Budget de la liste' : 'Budget où enregistrer ce reçu'}</span>
+                <select value={chosenBudget?.settings.id ?? ''} onChange={(e) => setBudgetId(e.target.value)} className="input-hand w-full">
+                  {budgets.map((b) => (
+                    <option key={b.settings.id} value={b.settings.id}>
+                      {b.settings.name} (reste {b.remaining.toFixed(2)} €)
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <p className="mt-3 text-xs text-brick">Aucun budget : crée-en un dans Profil › Budget pour y enregistrer tes reçus.</p>
+            )}
+          </div>
+
           {/* Contrôles : enseigne (en gros en haut du ticket), nombre d'articles et total, comparés à ce qui a été lu */}
           <div className="mb-3 space-y-1.5 rounded-sm border-2 border-line px-3 py-2 text-sm">
             <p className="flex items-center gap-2">
@@ -477,8 +504,8 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
               </span>
             </p>
             {/* Ligne du total sur la photo, pour vérifier sa lecture */}
-            {printedTotals.length > 0 && photos[printedTotals[printedTotals.length - 1].source.image] && (
-              <LineCrop src={photos[printedTotals[printedTotals.length - 1].source.image].url} box={printedTotals[printedTotals.length - 1].source.box} />
+            {payLine && photos[payLine.source.image] && (
+              <LineCrop src={photos[payLine.source.image].url} box={payLine.source.box} />
             )}
           </div>
 
@@ -511,6 +538,12 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
               </span>
               <ChevronDown size={18} className={`shrink-0 transition-transform ${storeOpen ? 'rotate-180' : ''}`} />
             </button>
+            {applied.length > 0 && !storeValid && (
+              <p className="px-3 pb-2 text-xs text-brick">
+                Obligatoire : {applied.length > 1 ? 'les prix des produits cochés sont mémorisés' : 'le prix du produit coché est mémorisé'} pour ce
+                supermarché.
+              </p>
+            )}
             {storeOpen && (
               <div className="grid gap-2 border-t-2 border-dashed border-line px-3 pb-3 pt-2 text-sm">
                 <select value={storeId} onChange={(e) => changeStore(e.target.value)} className="input-hand w-full" aria-label="Magasin">
@@ -561,30 +594,31 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
           </div>
 
           {/* Produits : une carte par ligne du reçu */}
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <p className="text-xs opacity-70">Vérifie chaque produit. Les lignes peu sûres sont décochées.</p>
-            <button
-              type="button"
-              onClick={() => setRows((r) => r.map((row) => ({ ...row, apply: applied.length !== rows.length })))}
-              className="shrink-0 text-xs underline decoration-dotted underline-offset-4"
-            >
-              {applied.length === rows.length ? 'Tout décocher' : 'Tout cocher'}
-            </button>
-          </div>
+          {rows.length > 0 && (
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-xs opacity-70">Vérifie chaque produit. Les lignes peu sûres sont décochées.</p>
+              <button
+                type="button"
+                onClick={() => setRows((r) => r.map((row) => ({ ...row, apply: applied.length !== rows.length })))}
+                className="shrink-0 text-xs underline decoration-dotted underline-offset-4"
+              >
+                {applied.length === rows.length ? 'Tout décocher' : 'Tout cocher'}
+              </button>
+            </div>
+            )}
 
           <ul className="mb-4 space-y-2 text-sm">
             {rows.map((row, index) => {
               const known = ingredients.find((i) => i.id === row.ingredientId);
               const rule = quantityRule(row.type);
               const low = row.confidence === 'basse';
-              // Détails (catégorie, marque, unité) dépliés d'office pour un nouvel ingrédient
+              // Détails (catégorie, unité) dépliés d'office pour un nouvel ingrédient
               const detailsOpen = openDetails[row.key] ?? !row.ingredientId;
               const lineTotal = (Number(row.unitPrice) || 0) * (Number(row.quantity.replace(',', '.')) || 0);
               // Informations que la ligne va ajouter à un ingrédient connu (champ vide jusque-là)
               const completes = known
                 ? [
                     !known.category_id && row.categoryId && 'catégorie',
-                    !known.brand_id && row.brandId && 'marque',
                     !known.type && row.type.trim() && 'unité'
                   ].filter(Boolean)
                 : [];
@@ -670,7 +704,7 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
                     <span className="pb-1.5 text-right font-bold">{lineTotal > 0 ? `${lineTotal.toFixed(2)} €` : '—'}</span>
                   </div>
 
-                  {/* Détails de l'ingrédient : nom (nouvel ingrédient), catégorie, marque, unité */}
+                  {/* Détails de l'ingrédient : nom (nouvel ingrédient), catégorie, unité */}
                   <button
                     type="button"
                     onClick={() => setOpenDetails((d) => ({ ...d, [row.key]: !detailsOpen }))}
@@ -678,7 +712,7 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
                     className="ml-9 mt-1.5 flex items-center gap-1 py-1 text-xs opacity-70"
                   >
                     <ChevronDown size={14} className={`transition-transform ${detailsOpen ? 'rotate-180' : ''}`} />
-                    Catégorie, marque, unité
+                    Catégorie, unité
                     {completes.length > 0 && <span className="text-herb">· complète : {completes.join(', ')}</span>}
                   </button>
                   {detailsOpen && (
@@ -702,26 +736,12 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
                           </option>
                         ))}
                       </select>
-                      <select
-                        value={row.brandId}
-                        onChange={(e) => updateRow(row.key, { brandId: e.target.value })}
-                        className="input-hand w-full min-w-0"
-                        aria-label="Marque"
-                      >
-                        <option value="">Marque —</option>
-                        {row.brandName && <option value={NEW}>+ Nouvelle : {row.brandName}</option>}
-                        {brands.map((b) => (
-                          <option key={b.id} value={b.id}>
-                            {b.name}
-                          </option>
-                        ))}
-                      </select>
                       <input
                         value={row.type}
                         onChange={(e) => updateRow(row.key, { type: e.target.value })}
                         list="receipt-types"
                         placeholder="unité (kg, pièce…)"
-                        className="input-hand col-span-2 w-full"
+                        className="input-hand w-full min-w-0"
                         aria-label="Unité"
                       />
                     </div>
@@ -742,37 +762,6 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
               compté dans le budget quand tu la valideras.
             </p>
           )}
-          {!asActiveList && (
-            <label className="mb-3 flex cursor-pointer items-start gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={countInBudget}
-                onChange={(e) => setCountInBudget(e.target.checked)}
-                className="mt-0.5 h-5 w-5 shrink-0 accent-brick"
-              />
-              <span>
-                Compter ce reçu dans le budget
-                <span className="block text-xs opacity-60">Inutile si tu valides aussi la liste de courses correspondante.</span>
-              </span>
-            </label>
-          )}
-          {/* Budget auquel le reçu est associé (Profil > Budget) : celui du reçu, ou celui de la nouvelle liste active */}
-          {(countInBudget || asActiveList) && budgets && budgets.length > 0 && (
-            <label className="mb-3 block text-sm">
-              <span className="field-label">{asActiveList ? 'Budget de la liste' : 'Budget'}</span>
-              <select
-                value={budgetFor(budgets, budgetId || null)?.settings.id ?? ''}
-                onChange={(e) => setBudgetId(e.target.value)}
-                className="input-hand w-full"
-              >
-                {budgets.map((b) => (
-                  <option key={b.settings.id} value={b.settings.id}>
-                    {b.settings.name} (reste {b.remaining.toFixed(2)} €)
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
         </>
       )}
 
@@ -780,17 +769,20 @@ export default function ReceiptScan({ ingredients, onDone, defaultBudgetId, asAc
 
       {/* Barre d'action fixée en bas de l'écran : total et enregistrement, toujours à portée de pouce */}
       <div className="sticky bottom-0 -mx-1 mt-2 rounded-sm border-t-2 border-line bg-white/90 px-2 pb-3 pt-2 backdrop-blur">
-        {rows.length > 0 && (
-          <p className="mb-2 flex items-baseline justify-between text-sm">
-            <span className="opacity-70">
-              {applied.length} produit{applied.length > 1 ? 's' : ''} coché{applied.length > 1 ? 's' : ''}
-            </span>
-            <b className="text-base">{total.toFixed(2)} €</b>
-          </p>
+        {step !== 'saving' && (rows.length > 0 || printedTotals.length > 0) && (
+          <>
+            <p className="mb-1 flex items-baseline justify-between text-sm">
+              <span className="opacity-70">
+                Facture · {applied.length} produit{applied.length > 1 ? 's' : ''} coché{applied.length > 1 ? 's' : ''}
+              </span>
+              <b className="text-base">{billAmount.toFixed(2)} €</b>
+            </p>
+            {missing.length > 0 && <p className="mb-1 text-xs text-brick">Il manque {missing.join(', ')}.</p>}
+          </>
         )}
         <div className="flex items-center gap-3">
-          {rows.length > 0 && (
-            <button onClick={save} disabled={step === 'saving' || applied.length === 0} className="btn-hand flex-1 py-3">
+          {(rows.length > 0 || printedTotals.length > 0) && (
+            <button onClick={save} disabled={step === 'saving' || missing.length > 0} className="btn-hand flex-1 py-3">
               {step === 'saving' ? 'Enregistrement…' : 'Enregistrer'}
             </button>
           )}
