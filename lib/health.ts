@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { byPeriod, monthKey, shiftMonth, totals, type FinanceLine } from '@/lib/finance';
-import { useFinanceLines } from '@/lib/financeQueries';
+import { useCoverage, useFinanceLines } from '@/lib/financeQueries';
+import { knownLines } from '@/lib/coverage';
 
 // Santé financière : l'état (hémorragie, maladie, fatigue, santé, olympique) et la teinte qu'il donne à la partie Finances.
 
@@ -13,12 +14,15 @@ export const INFLATION = 0.02;
 
 // Teinte de chaque état : "dark" pour l'en-tête et les accents, "pale" pour le fond des pages Finances
 export const HEALTH_TONES: Record<HealthState, { dark: string; pale: string }> = {
-  hemorragie: { dark: '#9b2f37', pale: '#f4e3e4' },
-  // Orange et jaune adoucis (terre cuite et miel), plus reposants pour l'œil
-  maladie: { dark: '#c07a52', pale: '#f8eee6' },
-  fatigue: { dark: '#a99047', pale: '#f7f2e2' },
-  sante: { dark: '#3d5a80', pale: '#e6edf5' },
-  olympique: { dark: '#3d6b4c', pale: '#e2ede5' }
+  hemorragie: { dark: '#aa333c', pale: '#f4e3e4' },
+  // Orange et jaune adoucis (terre cuite et miel), plus reposants pour l'œil.
+  // Toutes les teintes "dark" ont la même luminosité : aucune ne paraît plus foncée que les autres, et le texte clair
+  // de l'en-tête reste lisible partout (contraste d'environ 5,8 pour 1)
+  maladie: { dark: '#875131', pale: '#f8eee6' },
+  fatigue: { dark: '#6d5d2e', pale: '#f7f2e2' },
+  sante: { dark: '#416089', pale: '#e6edf5' },
+  // Vert vif (#0ed145) assombri pour l'en-tête et les accents, fond du même vert éclairci
+  olympique: { dark: '#096d2d', pale: '#d4f0dc' }
 };
 
 // --- Dates d'arrêt et de reprise des revenus d'activité, saisies par l'utilisateur ---
@@ -75,15 +79,26 @@ const workIncomeOf = (ls: FinanceLine[]) => ls.filter((l) => l.section === 'reve
 // Du plus grave au meilleur :
 //  - hémorragie : plus aucun revenu d'activité (ou arrêt déclaré par l'utilisateur) ;
 //  - maladie : on travaille, mais on dépense plus qu'on ne gagne (ou on est à découvert) ;
-//  - olympique : budget tenu, et on investit (rubrique Placements du bilan) ;
-//  - fatigue : budget tenu sans investir, mais le patrimoine progresse moins vite que l'inflation ;
+//  - olympique : budget tenu, et on épargne au moins 20 % de ses revenus (la part « Épargne » de la répartition 40/40/20) ;
+//  - fatigue : budget tenu, mais le patrimoine progresse moins vite que l'inflation ;
 //  - santé : budget tenu, et le patrimoine progresse au moins au rythme de l'inflation.
 // null : pas encore assez de chiffres.
-export function assessHealth(lines: FinanceLine[], currentMonth: string, span: number | 'now', plan: HemorrhagePlan = EMPTY_PLAN) {
+// "unknown" : mois dont le bilan ou le compte de résultat n'est pas connu faute de relevé (lib/coverage) ; ils sont
+// laissés de côté, comme sur le Bilan et l'accueil.
+export const SAVINGS_TARGET = 0.2;
+const NOTHING_UNKNOWN = { bilan: new Set<string>(), result: new Set<string>() };
+export function assessHealth(
+  lines: FinanceLine[],
+  currentMonth: string,
+  span: number | 'now',
+  plan: HemorrhagePlan = EMPTY_PLAN,
+  unknown: { bilan: Set<string>; result: Set<string> } = NOTHING_UNKNOWN
+) {
   const periods = byPeriod(lines.filter((l) => l.amount !== 0));
-  // Mois analysables : ceux qui ont des revenus ou des dépenses au compte de résultat (un mois qui n'a que des soldes
-  // reportés, faute de relevé importé, n'en fait pas partie : il serait sinon jugé « sans revenu »)
+  // Mois analysables : ceux qui ont des revenus ou des dépenses au compte de résultat, et dont le résultat est connu
+  // (un mois qui n'a que des soldes, ou dont le relevé du compte courant manque, n'en fait pas partie)
   const hasResult = (p: string) => {
+    if (unknown.result.has(p)) return false;
     const tt = totals(periods.get(p) ?? []);
     return tt.produits + tt.charges > 0;
   };
@@ -101,9 +116,13 @@ export function assessHealth(lines: FinanceLine[], currentMonth: string, span: n
   const overdraft = L.some((l) => /d[ée]couvert/i.test(l.label) && l.amount > 0);
   const periodLines = (done.length ? done : [ref]).map((p) => periods.get(p) ?? []);
   const workIncome = periodLines.reduce((s, ls) => s + workIncomeOf(ls), 0) / (periodLines.length || 1);
-  const investing = L.some((l) => l.section === 'placements' && l.amount > 0);
+  // Part des revenus mise de côté en moyenne : 20 % ou plus, c'est la part « Épargne » de la répartition tenue
+  const income = recent.length ? recent.reduce((s, ls) => s + totals(ls).produits, 0) / recent.length : t.produits;
+  const savingsRate = income > 0 ? savings / income : 0;
   // Progression du patrimoine sur la période, comparée à celle qu'aurait demandé l'inflation
-  const startLines = periods.get(shiftMonth(done.length ? done[0] : ref, -1));
+  // (seulement entre deux bilans connus : un relevé manquant laisserait un solde inconnu)
+  const startMonth = shiftMonth(done.length ? done[0] : ref, -1);
+  const startLines = unknown.bilan.has(startMonth) || unknown.bilan.has(ref) ? undefined : periods.get(startMonth);
   const months = isNow ? 1 : Math.max(1, done.length);
   const wealthStart = startLines ? totals(startLines).patrimoine : null;
   const inflationNeed = wealthStart !== null ? (Math.max(0, wealthStart) * INFLATION * months) / 12 : 0;
@@ -115,7 +134,7 @@ export function assessHealth(lines: FinanceLine[], currentMonth: string, span: n
       ? 'hemorragie'
       : savings < 0 || overdraft
         ? 'maladie'
-        : investing
+        : savingsRate >= SAVINGS_TARGET
           ? 'olympique'
           : wealthGrowth !== null && wealthGrowth < inflationNeed
             ? 'fatigue'
@@ -126,8 +145,8 @@ export function assessHealth(lines: FinanceLine[], currentMonth: string, span: n
       ? `Tu as indiqué que tes revenus d'activité se sont arrêtés le ${toDate(plan.start!).toLocaleDateString('fr-FR')}.`
       : "Aucun salaire ni revenu d'activité n'apparaît dans ton compte de résultat sur cette période.",
     maladie: overdraft ? 'Une ligne de découvert est inscrite à ton bilan.' : `Tu dépenses en moyenne ${euros(-savings)} de plus que tu ne gagnes chaque mois.`,
-    olympique: `Tu épargnes ${euros(savings)} par mois en moyenne, et une partie de ton argent est placée.`,
-    fatigue: `Ton patrimoine a progressé de ${euros(wealthGrowth ?? 0)}, moins que les ${euros(inflationNeed)} qu'il aurait fallu pour suivre l'inflation : place une partie de ton épargne.`,
+    olympique: `Tu épargnes ${euros(savings)} par mois en moyenne, soit ${Math.round(savingsRate * 100)} % de tes revenus.`,
+    fatigue: `Ton patrimoine a progressé de ${euros(wealthGrowth ?? 0)}, moins que les ${euros(inflationNeed)} qu'il aurait fallu pour suivre l'inflation : mets davantage de côté.`,
     sante:
       wealthGrowth !== null ? `Ton patrimoine a progressé de ${euros(wealthGrowth)}, au moins autant que l'inflation.` : `Tu épargnes ${euros(savings)} par mois en moyenne.`
   }[state];
@@ -137,7 +156,15 @@ export function assessHealth(lines: FinanceLine[], currentMonth: string, span: n
 // Mois affiché par la page Finances ouverte (Bilan, Budget : flèches du mois) ; null = le mois en cours
 let viewedMonth: string | null = null;
 const viewedListeners = new Set<() => void>();
+// Dernier mois affiché, gardé en changeant de page : Bilan et Budget s'ouvrent sur le mois qu'on regardait
+let rememberedMonth: string | null = null;
+export const rememberedFinanceMonth = () => rememberedMonth;
+// En retournant à l'accueil, les Finances se rouvriront sur le mois en cours
+export const forgetFinanceMonth = () => {
+  rememberedMonth = null;
+};
 function setViewedMonth(month: string | null) {
+  if (month) rememberedMonth = month;
   if (viewedMonth === month) return;
   viewedMonth = month;
   viewedListeners.forEach((l) => l());
@@ -167,10 +194,13 @@ export function useFinanceTone() {
   );
   const month = viewed ?? currentMonth;
   const lines = useFinanceLines(currentMonth, 13).data;
+  const coverage = useCoverage().data;
   const plan = useHemorrhagePlan();
   return useMemo(() => {
-    const health = month && lines ? assessHealth(lines, month, 'now', plan) : null;
+    // Mêmes règles que le Bilan : soldes des relevés manquants écartés, mois incomplets laissés de côté
+    const known = lines ? knownLines(lines, coverage) : null;
+    const health = month && known ? assessHealth(known.lines, month, 'now', plan, { bilan: known.unknownBilan, result: known.unknownResult }) : null;
     return { state: health?.state ?? null, ...HEALTH_TONES[health?.state ?? 'sante'] };
-  }, [month, lines, plan]);
+  }, [month, lines, coverage, plan]);
 }
 

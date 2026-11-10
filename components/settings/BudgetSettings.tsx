@@ -1,12 +1,29 @@
 'use client';
 
 import { useState } from 'react';
-import { ceilingFor, describeBudgetError, partAmount, partLabel, partOf, periodLabel, saveBudget, type BudgetPart, type BudgetSettings as Settings, type IncomePlan, type PeriodUnit } from '@/lib/budget';
+import {
+  ceilingFor,
+  describeBudgetError,
+  partAmount,
+  partLabel,
+  partOf,
+  periodLabel,
+  saveBudget,
+  shoppingCategoryOf,
+  type BudgetPart,
+  type BudgetSettings as Settings,
+  type IncomePlan,
+  type PeriodUnit
+} from '@/lib/budget';
+import { useCategories } from '@/lib/financeQueries';
+import { byLabel, CATEGORIES } from '@/lib/transactions';
 
 // Formulaire d'un budget (Profil > Budgets) : un nom, sa partie de la répartition du revenu, la somme à ne pas
 // dépasser sur une période (en euros, ou en pourcentage de sa partie), la marge si des prix manquent, et la durée
 // de la période (en jours, semaines ou mois) au bout de laquelle le budget se réactive.
 // Chaque liste de courses (Paramètres > Listes) et chaque reçu scanné est rattaché à l'un de ces budgets.
+// Chaque budget mène aussi à une catégorie des Finances (« Courses » par défaut) : ses achats y sont retrouvés à l'import
+// des relevés, et sa limite mensuelle dans les Finances est la somme des budgets de courses qui y mènent.
 
 const euros = (n: number) => `${n.toFixed(2).replace('.', ',')} €`;
 
@@ -22,6 +39,10 @@ export function BudgetForm({ initial, plan, onSaved, onCancel }: { initial: Sett
   const [periodValue, setPeriodValue] = useState(String(initial.period_value));
   const [periodUnit, setPeriodUnit] = useState<PeriodUnit>(initial.period_unit);
   const [startDate, setStartDate] = useState(initial.start_date);
+  const [category, setCategory] = useState(shoppingCategoryOf(initial));
+  // Catégories des Finances (chargées une fois, partagées avec les pages Finances)
+  const categoriesLoaded = useCategories().data !== undefined;
+  const expenseCategories = categoriesLoaded ? CATEGORIES.filter((c) => c.kind === 'variable' || c.kind === 'fixed').sort(byLabel) : [];
   const [errorMessage, setErrorMessage] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -45,7 +66,8 @@ export function BudgetForm({ initial, plan, onSaved, onCancel }: { initial: Sett
       missing_margin: Number(margin),
       period_value: Number(periodValue),
       period_unit: periodUnit,
-      start_date: startDate
+      start_date: startDate,
+      category
     });
     setSaving(false);
     if (error) return setErrorMessage(describeBudgetError(error));
@@ -64,6 +86,17 @@ export function BudgetForm({ initial, plan, onSaved, onCancel }: { initial: Sett
           {plan.parts.map((p) => (
             <option key={p.id} value={p.id}>
               {p.label} ({euros(partAmount(plan, p.id))} / mois)
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="w-full">
+        <label className="field-label">Catégorie dans les Finances</label>
+        <select value={category} onChange={(e) => setCategory(e.target.value)} className="input-hand w-full">
+          {!expenseCategories.some((c) => c.id === category) && <option value={category}>Courses</option>}
+          {expenseCategories.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.label}
             </option>
           ))}
         </select>

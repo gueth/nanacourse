@@ -4,14 +4,16 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, Check } from 'lucide-react';
 import { Sommaire } from '@/components/gazette/Sommaire';
-import { RewardsCorner, WeeklyChallenge } from '@/components/gazette/ChallengeCorner';
+import { RewardsCorner } from '@/components/gazette/ChallengeCorner';
 import { MessagesButton } from '@/components/MessagesButton';
 import ShoppingReceipts from '@/components/ShoppingReceipts';
 import { SwipePages } from '@/components/SwipePages';
 import { TrendChart } from '@/components/finance/TrendChart';
 import { Bow, Flourish, LaceEdge, LaceFrame, MIST, NAVY, PAPER, Rosette } from '@/components/gazette/Lace';
 import { byPeriod, formatEuros, monthIndicators, monthKey, monthLabel, monthEndLabel, shiftMonth, totals } from '@/lib/finance';
-import { useFinanceLines } from '@/lib/financeQueries';
+import { useCoverage, useFinanceLines } from '@/lib/financeQueries';
+import { knownLines } from '@/lib/coverage';
+import { SAVINGS_TARGET } from '@/lib/health';
 import { useParcours } from '@/lib/parcours';
 import { unlockCreditsAudio } from '@/lib/creditsAudio';
 import { formatIssue, gazetteIssue } from '@/lib/gazette';
@@ -19,7 +21,7 @@ import { formatIssue, gazetteIssue } from '@/lib/gazette';
 // Accueil : la gazette du jour, en bleu nuit sur papier blanc, ornée de dentelle, sur deux pages que l'on fait glisser.
 // Page de gauche, le journal : à la une le bilan et le compte de résultat du dernier mois rempli, puis les graphiques
 // de santé financière et le parcours vers l'autonomie. Page de droite : le ticket de caisse de la liste de courses
-// active, les bons d'achat (points des défis) et le défi de la semaine en brève.
+// active et les coupons à gagner avec les points des défis (les défis en cours restent dans Paramètres > Défis).
 
 const serif = { fontFamily: 'var(--font-serif), Georgia, serif' };
 const blackletter = { fontFamily: 'var(--font-blackletter), serif' };
@@ -143,7 +145,8 @@ function Masthead({ today }: { today: Date | null }) {
             entries={[
               { label: 'Finances', href: '/banque/comptes', page: 2 },
               { label: 'Profil', href: '/profile', page: 3 },
-              { label: 'Paramètres', href: '/settings?tab=lists', page: 4 }
+              { label: 'Garde-manger', href: '/inventory', page: 4 },
+              { label: 'Paramètres', href: '/settings?tab=lists', page: 5 }
             ]}
           />
         </div>
@@ -173,23 +176,30 @@ function Masthead({ today }: { today: Date | null }) {
 
 // À LA UNE : bilan et compte de résultat du dernier mois rempli, avec la tendance des derniers mois
 function FinanceNews({ currentMonth }: { currentMonth: string }) {
-  const { data: lines } = useFinanceLines(currentMonth, 13);
+  const { data: rawLines } = useFinanceLines(currentMonth, 13);
+  const coverage = useCoverage().data;
 
   const news = useMemo(() => {
-    if (!lines) return null;
+    if (!rawLines) return null;
+    // Mêmes règles que le Bilan (lib/coverage) : les soldes des relevés manquants sont écartés, et un mois dont le bilan
+    // ou le résultat n'est pas connu n'est pas compté dans les chiffres qui en dépendent
+    const { lines, unknownBilan, unknownResult } = knownLines(rawLines, coverage);
     const periods = byPeriod(lines.filter((l) => l.amount !== 0));
     const filled = [...periods.keys()].sort();
-    // Mois de référence : le dernier mois terminé rempli, ou à défaut le mois en cours
-    const ref = filled.filter((p) => p < currentMonth).pop() ?? (periods.has(currentMonth) ? currentMonth : null);
-    // Six derniers mois terminés, pour les graphiques
+    // Mois de référence : le dernier mois terminé rempli dont le résultat est connu, ou à défaut le mois en cours
+    const ref =
+      filled.filter((p) => p < currentMonth && !unknownResult.has(p)).pop() ??
+      (periods.has(currentMonth) && !unknownResult.has(currentMonth) ? currentMonth : null);
+    // Six derniers mois terminés, pour les graphiques : résultat et bilan, chacun seulement s'il est connu
     const months = Array.from({ length: 6 }, (_, i) => shiftMonth(currentMonth, -(6 - i)));
-    const monthly = months.map((m) => (periods.has(m) ? totals(periods.get(m)!) : null));
+    const resultMonthly = months.map((m) => (periods.has(m) && !unknownResult.has(m) ? totals(periods.get(m)!) : null));
+    const bilanMonthly = months.map((m) => (periods.has(m) && !unknownBilan.has(m) ? totals(periods.get(m)!) : null));
 
     // Chiffres des articles de la rubrique Santé : moyennes des mois remplis, meilleur et pire mois,
-    // et évolution du patrimoine entre le premier et le dernier bilan de la période
-    const withIncome = months.map((month, i) => ({ month, t: monthly[i] })).filter((m) => m.t && m.t.produits > 0) as { month: string; t: ReturnType<typeof totals> }[];
+    // et évolution du patrimoine entre le premier et le dernier bilan connu de la période
+    const withIncome = months.map((month, i) => ({ month, t: resultMonthly[i] })).filter((m) => m.t && m.t.produits > 0) as { month: string; t: ReturnType<typeof totals> }[];
     const byResult = [...withIncome].sort((a, b) => b.t.resultat - a.t.resultat);
-    const withWealth = months.map((month, i) => ({ month, t: monthly[i] })).filter((m) => m.t && m.t.actif + m.t.dettes > 0) as { month: string; t: ReturnType<typeof totals> }[];
+    const withWealth = months.map((month, i) => ({ month, t: bilanMonthly[i] })).filter((m) => m.t && m.t.actif + m.t.dettes > 0) as { month: string; t: ReturnType<typeof totals> }[];
     const first = withWealth[0];
     const last = withWealth[withWealth.length - 1];
     const health = {
@@ -199,19 +209,32 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
       best: byResult.length > 1 ? { month: byResult[0].month, resultat: byResult[0].t.resultat } : null,
       worst: byResult.length > 1 ? { month: byResult[byResult.length - 1].month, resultat: byResult[byResult.length - 1].t.resultat } : null,
       wealth: withWealth.length > 1 ? { fromMonth: first.month, from: first.t.patrimoine, toMonth: last.month, to: last.t.patrimoine } : null,
-      // Taux d'épargne moyen, et nombre de mois où le repère de 10 % est atteint
+      // Taux d'épargne moyen, et nombre de mois où le repère des 20 % (la part « Épargne » de la répartition) est atteint
       avgRate: withIncome.length ? withIncome.reduce((s, m) => s + m.t.resultat / m.t.produits, 0) / withIncome.length : null,
-      aboveTen: withIncome.filter((m) => m.t.resultat / m.t.produits >= 0.1).length
+      aboveTarget: withIncome.filter((m) => m.t.resultat / m.t.produits >= SAVINGS_TARGET).length
     };
-    // Chiffres clés du dernier mois terminé (le mois en cours n'a pas encore son relevé)
+    // Chiffres clés du dernier mois terminé (le mois en cours n'a pas encore son relevé) : patrimoine et réserve
+    // seulement si son bilan est connu, épargne seulement si son résultat l'est
     const lastDone = filled.filter((p) => p < currentMonth).pop() ?? null;
-    const keyFigures = lastDone ? { month: lastDone, ...monthIndicators(lines, lastDone) } : null;
-    return { ref, t: ref ? totals(periods.get(ref)!) : null, months, monthly, health, keyFigures };
-  }, [lines, currentMonth]);
+    const indicators = lastDone ? monthIndicators(lines, lastDone) : null;
+    const keyFigures =
+      lastDone && indicators
+        ? {
+            month: lastDone,
+            ...indicators,
+            patrimoine: unknownBilan.has(lastDone) ? null : indicators.patrimoine,
+            reserve: unknownBilan.has(lastDone) ? null : indicators.reserve,
+            savings: unknownResult.has(lastDone) ? null : indicators.savings,
+            savingsRate: unknownResult.has(lastDone) ? null : indicators.savingsRate
+          }
+        : null;
+    const bilanKnown = !!ref && !unknownBilan.has(ref);
+    return { ref, t: ref ? totals(periods.get(ref)!) : null, bilanKnown, months, resultMonthly, bilanMonthly, health, keyFigures };
+  }, [rawLines, coverage, currentMonth]);
 
   if (!news) return <Printing />;
 
-  const { ref, t, months, monthly, health, keyFigures } = news;
+  const { ref, t, bilanKnown, months, resultMonthly, bilanMonthly, health, keyFigures } = news;
   if (!ref || !t) {
     return (
       <article className="mt-5 text-center">
@@ -242,8 +265,10 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
         <div className="mt-2 border-t-2 pt-2" style={{ borderColor: NAVY }}>
           <p className="text-[13px] italic leading-snug" style={serif}>
             {saved
-              ? `Ton patrimoine net s’établit à ${formatEuros(t.patrimoine)}${rate !== null ? `, avec ${rate} % de tes revenus épargnés` : ''}.`
-              : `Les dépenses ont dépassé les revenus de ${formatEuros(-t.resultat)} ; ton patrimoine net s’établit à ${formatEuros(t.patrimoine)}.`}
+              ? bilanKnown
+                ? `Ton patrimoine net s’établit à ${formatEuros(t.patrimoine)}${rate !== null ? `, avec ${rate} % de tes revenus épargnés` : ''}.`
+                : `${rate !== null ? `${rate} % de tes revenus épargnés` : 'Un mois d’épargne'} ; le patrimoine attend un relevé manquant.`
+              : `Les dépenses ont dépassé les revenus de ${formatEuros(-t.resultat)}${bilanKnown ? ` ; ton patrimoine net s’établit à ${formatEuros(t.patrimoine)}` : ''}.`}
           </p>
         </div>
         <div className="mt-3">
@@ -261,7 +286,13 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
             reporté à ton bilan arrêté au {monthEndLabel(ref)}.
           </p>
           <p className="mt-2 break-inside-avoid">
-            Ce que tu possèdes vaut <b>{formatEuros(t.actif)}</b>, pour <b>{formatEuros(t.dettes)}</b> de dettes.{' '}
+            {bilanKnown ? (
+              <>
+                Ce que tu possèdes vaut <b>{formatEuros(t.actif)}</b>, pour <b>{formatEuros(t.dettes)}</b> de dettes.{' '}
+              </>
+            ) : (
+              <>Il manque un relevé de compte pour arrêter le bilan de ce mois. </>
+            )}
             <Link href="/banque/comptes" className="italic underline underline-offset-2">
               Suite en page Bilan.
             </Link>
@@ -291,9 +322,9 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
             <p className="mb-1 text-center text-[10px] font-bold uppercase tracking-[0.2em]" style={serif}>
               Bilan
             </p>
-            <LeaderRow label="Actif" value={formatEuros(t.actif)} />
-            <LeaderRow label="Dettes" value={formatEuros(t.dettes)} />
-            <LeaderRow label="Net" value={formatEuros(t.patrimoine)} strong />
+            <LeaderRow label="Actif" value={bilanKnown ? formatEuros(t.actif) : '—'} />
+            <LeaderRow label="Dettes" value={bilanKnown ? formatEuros(t.dettes) : '—'} />
+            <LeaderRow label="Net" value={bilanKnown ? formatEuros(t.patrimoine) : '—'} strong />
           </div>
           <div className="border-l pl-4" style={{ borderColor: NAVY }}>
             <p className="mb-1 text-center text-[10px] font-bold uppercase tracking-[0.2em]" style={serif}>
@@ -315,7 +346,11 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
           </p>
           <div className="mt-2 grid grid-cols-2 gap-2" style={serif}>
             {[
-              { label: 'Patrimoine net', value: formatEuros(keyFigures.patrimoine), note: `au ${monthEndLabel(keyFigures.month)}` },
+              {
+                label: 'Patrimoine net',
+                value: keyFigures.patrimoine !== null ? formatEuros(keyFigures.patrimoine) : '—',
+                note: keyFigures.patrimoine !== null ? `au ${monthEndLabel(keyFigures.month)}` : 'relevé manquant'
+              },
               {
                 label: 'Réserve de sécurité',
                 value: keyFigures.reserve !== null ? `${keyFigures.reserve.toLocaleString('fr-FR', { maximumFractionDigits: 1 })} mois` : '—',
@@ -324,7 +359,7 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
               {
                 label: "Taux d'épargne",
                 value: keyFigures.savingsRate !== null ? `${Math.round(keyFigures.savingsRate * 100)} %` : '—',
-                note: `${formatEuros(keyFigures.savings)} sur le mois`
+                note: keyFigures.savings !== null ? `${formatEuros(keyFigures.savings)} sur le mois` : 'relevé manquant'
               },
               { label: 'Dividendes', value: formatEuros(keyFigures.dividends), note: 'et intérêts perçus' }
             ].map((c) => (
@@ -351,8 +386,8 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
             height={150}
             format={(n) => formatEuros(Math.round(n))}
             series={[
-              { name: 'Revenus', color: LIGHT_BLUE, values: monthly.map((m) => m?.produits ?? null) },
-              { name: 'Dépenses', color: NAVY, values: monthly.map((m) => m?.charges ?? null) }
+              { name: 'Revenus', color: LIGHT_BLUE, values: resultMonthly.map((m) => m?.produits ?? null) },
+              { name: 'Dépenses', color: NAVY, values: resultMonthly.map((m) => m?.charges ?? null) }
             ]}
           />
         </Figure>
@@ -392,7 +427,7 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
             width={200}
             height={150}
             format={(n) => formatEuros(Math.round(n))}
-            series={[{ name: 'Patrimoine net', color: NAVY, values: monthly.map((m) => (m && m.actif + m.dettes > 0 ? m.patrimoine : null)) }]}
+            series={[{ name: 'Patrimoine net', color: NAVY, values: bilanMonthly.map((m) => (m && m.actif + m.dettes > 0 ? m.patrimoine : null)) }]}
           />
         </Figure>
         <p className="text-justify">
@@ -409,7 +444,7 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
           ) : (
             <>Ton patrimoine net s&apos;affichera ici mois après mois, dès que deux bilans seront remplis.</>
           )}{' '}
-          Il évolue avec ton épargne, tes remboursements de dettes et la valeur de tes placements.
+          Il évolue avec ton épargne, tes emprunts et tes remboursements de dettes.
         </p>
       </div>
 
@@ -421,17 +456,17 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
             width={200}
             height={150}
             format={(n) => `${Math.round(n)} %`}
-            reference={{ value: 10, label: 'repère 10 %' }}
-            series={[{ name: "Taux d'épargne", color: NAVY, values: monthly.map((m) => (m && m.produits > 0 ? (m.resultat / m.produits) * 100 : null)) }]}
+            reference={{ value: SAVINGS_TARGET * 100, label: 'repère 20 %' }}
+            series={[{ name: "Taux d'épargne", color: NAVY, values: resultMonthly.map((m) => (m && m.produits > 0 ? (m.resultat / m.produits) * 100 : null)) }]}
           />
         </Figure>
         <p className="text-justify">
           {health.avgRate !== null ? (
             <>
               Tu mets de côté en moyenne <b>{Math.round(health.avgRate * 100)} %</b> de tes revenus.{' '}
-              {health.aboveTen === health.filled
-                ? 'Le repère des 10 % est atteint chaque mois : belle régularité.'
-                : `Le repère des 10 % est atteint ${health.aboveTen} mois sur ${health.filled}.`}
+              {health.aboveTarget === health.filled
+                ? 'Le repère des 20 % (la part « Épargne » de ta répartition) est atteint chaque mois : belle régularité.'
+                : `Le repère des 20 % est atteint ${health.aboveTarget} mois sur ${health.filled}.`}
             </>
           ) : (
             <>Ton taux d&apos;épargne s&apos;affichera ici dès qu&apos;un mois de revenus sera rempli.</>
@@ -550,10 +585,6 @@ export default function Accueil() {
 
               {/* BONS D'ACHAT : récupérés avec les points des défis réussis */}
               <RewardsCorner ribbon={(title) => <Ribbon>{title}</Ribbon>} />
-
-              {/* BRÈVES : le défi de la semaine, en coupon détachable */}
-              <WeeklyChallenge ribbon={(title) => <Ribbon>{title}</Ribbon>} />
-
               {footer}
             </div>
           ]}

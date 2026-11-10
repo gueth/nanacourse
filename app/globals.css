@@ -275,16 +275,21 @@ body {
     opacity: 0.4;
   }
   /* Listes déroulantes de toute l'application : on retire le style natif du navigateur
-     et on garde le soulignement pointillé, avec une petite flèche dessinée à la main */
+     et on garde le soulignement pointillé, avec une petite flèche à la couleur de l'encre du thème
+     (deux demi-carrés en dégradé : ils suivent --color-ink, contrairement à une image) */
   select.input-hand {
     appearance: none;
     cursor: pointer;
     color: var(--color-ink);
     padding-right: 1.75rem;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%232b2118' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--color-ink) 50%),
+      linear-gradient(135deg, var(--color-ink) 50%, transparent 50%);
     background-repeat: no-repeat;
-    background-position: right 0.3rem center;
-    background-size: 0.75rem;
+    background-position:
+      calc(100% - 0.75rem) 55%,
+      calc(100% - 0.45rem) 55%;
+    background-size: 0.3rem 0.3rem;
   }
   select.input-hand:hover {
     border-bottom-color: var(--color-ink);
@@ -462,10 +467,11 @@ body:has(.home-screen) {
   background-image: none;
 }
 
-/* Page Finances : fond bleu brume jusque dans les zones visibles quand on tire la page au-delà de ses bords */
+/* Page Finances : fond de la teinte de santé (--fin-page-bg, posé par useFinanceToneVars ; bleu brume par défaut)
+   jusque dans les zones visibles quand on tire la page au-delà de ses bords */
 html:has(.finance-screen),
 body:has(.finance-screen) {
-  background-color: #e8edf4;
+  background-color: var(--fin-page-bg, #e8edf4);
   background-image: none;
 }
 
@@ -894,7 +900,12 @@ body:has(.classeur) {
   }
   .classeur select.input-hand:not(.receipt *) {
     padding-right: 1.9rem;
-    background-position: right 0.65rem center;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--folder-ink) 50%),
+      linear-gradient(135deg, var(--folder-ink) 50%, transparent 50%);
+    background-position:
+      calc(100% - 1.05rem) 55%,
+      calc(100% - 0.75rem) 55%;
   }
   .classeur .input-hand:not(.receipt *):focus {
     border-color: var(--folder-ink);
@@ -926,4 +937,38 @@ body:has(.classeur) {
     color: var(--folder-ink);
     text-decoration-style: dotted;
   }
+}
+
+/* Listes déroulantes des Finances : papier clair, filet bleu-gris, flèche à la couleur du thème de santé
+   (--fin-accent, posé par chaque page Finances). Hors des couches Tailwind pour passer devant ses utilitaires. */
+select.fin-select {
+  appearance: none;
+  cursor: pointer;
+  background-color: #f8f7f4;
+  border: 1px solid #c9d2df;
+  border-radius: 2px;
+  color: #2b3a55;
+  font-family: inherit;
+  padding-right: 1.75rem;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--fin-accent, #4a566b) 50%),
+    linear-gradient(135deg, var(--fin-accent, #4a566b) 50%, transparent 50%);
+  background-repeat: no-repeat;
+  background-position:
+    calc(100% - 0.8rem) 55%,
+    calc(100% - 0.5rem) 55%;
+  background-size: 0.3rem 0.3rem;
+}
+select.fin-select:hover,
+select.fin-select:focus {
+  border-color: var(--fin-accent, #4a566b);
+  outline: none;
+}
+select.fin-select:focus-visible {
+  box-shadow: 0 0 0 3px rgba(74, 86, 107, 0.18);
+}
+select.fin-select option,
+select.fin-select optgroup {
+  background-color: #f8f7f4;
+  color: #2b3a55;
 }

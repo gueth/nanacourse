@@ -1,6 +1,7 @@
 import { supabase } from '@/lib/supabase';
 import { addLine, fetchOrSeedLines, importMayWrite, SECTIONS, setLineAmount, shiftMonth, updateLine } from '@/lib/finance';
 import type { ParsedTransaction, StatementSummary } from '@/lib/bankImport';
+import type { Coverage, ManualNote, TrackedAccount } from '@/lib/coverage';
 
 // Opérations bancaires importées depuis les relevés, classées par catégorie, et budget par catégorie.
 // Tables : voir supabase/finance_coach.sql
@@ -28,6 +29,7 @@ export type Category = {
   keywords: string[];
   custom?: boolean; // catégorie créée par l'utilisateur (table custom_categories)
   group?: string | null; // grande catégorie qui la regroupe (table category_groups), null si elle n'est pas regroupée
+  annual?: string; // dépense annuelle (table planned_expenses) dont c'est la sous-catégorie, dans « Dépenses annuelles »
 };
 
 // Le mot-clé le plus long (donc le plus précis) l'emporte : "GRAND FRAIS" (courses) passe avant "FRAIS" (frais bancaires) ;
@@ -62,6 +64,9 @@ export const CATEGORIES: Category[] = [
   { id: 'fonctionnel', label: 'Fonctionnel (applis, démarches)', kind: 'fixed', essential: true, sign: -1, section: 'engagements', line: 'Fonctionnel', keywords: ['CANVA', 'GOOGLE', 'APPLE.COM', 'ICLOUD', 'MICROSOFT', 'ADOBE', 'OPENAI', 'CHATGPT', 'ANTHROPIC', 'CLAUDE.AI', 'NOTION', 'DROPBOX', 'ACADEMIA', 'LA POSTE', 'LAPOSTE', 'ANTS', 'TIMBRE*', 'PHOTOMATON', 'IMPRESSION', 'PREFECTURE', 'MAIRIE', 'TOEIC', 'SCOLARITE', 'INSCRIPTION', 'CONCOURS'] },
   // Remboursement d'une dette envers une personne (prêt d'un proche, avance...) : les crédits bancaires vont dans « Crédits »
   { id: 'dette', label: 'Dettes', kind: 'fixed', sign: -1, section: 'engagements', line: 'Remboursements de dettes', keywords: ['DETTE', 'DETTES'] },
+  // Ce que l'on se doit à soi-même (lib/selfDebt) : une opération classée ici (ex. virement vers un livret) la rembourse.
+  // Ne se supprime pas.
+  { id: 'dette_moi', label: 'Dette à moi-même', kind: 'fixed', sign: -1, section: 'engagements', line: 'Dette à moi-même', keywords: [] },
   { id: 'credit', label: 'Crédits', kind: 'fixed', essential: true, sign: -1, section: 'engagements', line: 'Remboursements de crédit', keywords: ['ECHEANCE', 'ECH PRET', 'PRET', 'CREDIT', 'COFIDIS', 'CETELEM', 'SOFINCO', 'FLOA', 'ONEY', 'FRANFINANCE', 'YOUNITED'] },
   { id: 'impots', label: 'Impôts', kind: 'fixed', essential: true, sign: -1, section: 'engagements', line: 'Impôts', keywords: ['DGFIP', 'IMPOT', 'TRESOR PUBLIC', 'FINANCES PUBLIQUES', 'TAXE'] },
   { id: 'voyages', label: 'Voyages', kind: 'variable', sign: -1, section: 'loisirs', line: 'Voyages', keywords: ['AIRBNB', 'BOOKING', 'HOTEL', 'AIR FRANCE', 'EASYJET', 'RYANAIR', 'TRANSAVIA', 'VOLOTEA', 'VUELING', 'EXPEDIA', 'FLIXBUS'] },
@@ -81,12 +86,16 @@ export const categoryById = (id: string) => CATEGORIES.find((c) => c.id === id) 
 export const byLabel = (a: Category, b: Category) => a.label.localeCompare(b.label, 'fr', { sensitivity: 'base' });
 
 // --- Gestion des catégories ---
-// Toute catégorie peut être supprimée, sauf les deux « Autres » : les opérations d'une catégorie supprimée y retournent.
+// Toute catégorie peut être supprimée, sauf les deux « Autres » (les opérations d'une catégorie supprimée y retournent),
+// « Dette à moi-même » et les sous-catégories des dépenses annuelles (elles suivent la liste des dépenses annuelles).
 // - catégories personnelles (table custom_categories) : ajoutées à la fin de CATEGORIES, sans mots-clés
 //   (ce sont les choix « retenus », table category_rules, qui y classent les opérations suivantes)
 // - catégories de base supprimées (table removed_categories) : retirées de CATEGORIES et ignorées par le classement automatique
 
 export const DEFAULT_CATEGORY_IDS = ['autre_depense', 'autre_revenu'];
+export const SELF_DEBT_ID = 'dette_moi';
+// Catégories qui ne se suppriment pas (ni ne se renomment ou se déplacent, pour les dépenses annuelles)
+export const isLockedCategory = (c: Category) => DEFAULT_CATEGORY_IDS.includes(c.id) || c.id === SELF_DEBT_ID || !!c.annual;
 
 export type CustomCategory = { id: string; label: string; kind: 'income' | 'variable'; section: string };
 
@@ -96,7 +105,8 @@ export type CustomCategory = { id: string; label: string; kind: 'income' | 'vari
 // seulement dans ses sous-catégories. Tables : category_groups (les grandes catégories) et category_settings
 // (pour chaque catégorie : sa grande catégorie, et un nom choisi par l'utilisateur).
 export type GroupKind = 'expense' | 'income';
-export type CategoryGroup = { id: string; label: string; kind: GroupKind; monthly_limit: number | null };
+// virtual : la grande catégorie « Dépenses annuelles », construite par l'appli (ni modifiable ni supprimable)
+export type CategoryGroup = { id: string; label: string; kind: GroupKind; monthly_limit: number | null; virtual?: boolean };
 type CategorySetting = { category: string; group_id: string | null; label: string | null };
 
 // Sens d'une catégorie, pour la ranger dans une grande catégorie (les virements entre comptes n'en ont pas)
@@ -107,8 +117,22 @@ let customCategories: CustomCategory[] = [];
 let removedBase: string[] = [];
 let groups: CategoryGroup[] = [];
 let settings: CategorySetting[] = [];
+let planned: PlannedExpense[] = [];
 
-export const categoryGroups = () => groups;
+// Dépenses annuelles : chacune est une sous-catégorie de la grande catégorie « Dépenses annuelles »,
+// avec pour limite mensuelle un douzième de son montant, à partir du mois de sa création
+export const ANNUAL_GROUP_ID = 'depenses_annuelles';
+export const annualCategoryId = (plannedId: string) => `annuel_${plannedId}`;
+export const annualPlans = () => planned;
+const annualGroup = (): CategoryGroup => ({
+  id: ANNUAL_GROUP_ID,
+  label: 'Dépenses annuelles',
+  kind: 'expense',
+  monthly_limit: planned.reduce((s, p) => s + p.amount / 12, 0),
+  virtual: true
+});
+
+export const categoryGroups = () => (planned.length ? [...groups, annualGroup()] : groups);
 // Sous-catégories d'une grande catégorie, par ordre alphabétique
 export const groupMembers = (groupId: string) => CATEGORIES.filter((c) => c.group === groupId).sort(byLabel);
 
@@ -127,6 +151,17 @@ const toCategory = (c: CustomCategory): Category => ({
 // avec le nom choisi et la grande catégorie de chacune
 function rebuildCategories() {
   const all = [...BASE_CATEGORIES.filter((c) => !removedBase.includes(c.id)), ...customCategories.map(toCategory)];
+  const annual: Category[] = planned.map((p) => ({
+    id: annualCategoryId(p.id),
+    label: p.label,
+    kind: 'fixed',
+    sign: -1,
+    section: 'engagements',
+    line: 'Dépenses annuelles',
+    keywords: [],
+    annual: p.id,
+    group: ANNUAL_GROUP_ID
+  }));
   CATEGORIES.splice(
     0,
     CATEGORIES.length,
@@ -134,19 +169,20 @@ function rebuildCategories() {
       const s = settings.find((x) => x.category === c.id);
       const group = s?.group_id && groups.some((g) => g.id === s.group_id) ? s.group_id : null;
       return { ...c, label: s?.label || c.label, group };
-    })
+    }),
+    ...annual
   );
 }
 
-export const removedBaseCategories = () => BASE_CATEGORIES.filter((c) => removedBase.includes(c.id));
-
 export async function loadCategories() {
-  const [custom, removed, groupRows, settingRows] = await Promise.all([
+  const [custom, removed, groupRows, settingRows, plannedRows] = await Promise.all([
     supabase.from('custom_categories').select('id, label, kind, section').order('created_at'),
     supabase.from('removed_categories').select('id'),
     supabase.from('category_groups').select('id, label, kind, monthly_limit').order('created_at'),
-    supabase.from('category_settings').select('category, group_id, label')
+    supabase.from('category_settings').select('category, group_id, label'),
+    fetchPlanned()
   ]);
+  if (!plannedRows.error) planned = plannedRows.planned;
   if (!custom.error) customCategories = (custom.data as CustomCategory[]) ?? [];
   if (!removed.error) removedBase = ((removed.data as { id: string }[]) ?? []).map((r) => r.id);
   // Tables des grandes catégories absentes (script SQL pas encore lancé) : tout s'affiche sans regroupement
@@ -213,7 +249,7 @@ export async function dissolveCategoryGroup(id: string) {
 // (les deux « Autres », qui ne se suppriment pas, sont seulement sorties du regroupement)
 export async function deleteCategoryGroup(id: string) {
   for (const c of groupMembers(id)) {
-    const error = DEFAULT_CATEGORY_IDS.includes(c.id) ? await setCategoryGroup(c.id, null) : await deleteCategory(c);
+    const error = isLockedCategory(c) ? await setCategoryGroup(c.id, null) : await deleteCategory(c);
     if (error) return error;
   }
   return dissolveCategoryGroup(id);
@@ -232,7 +268,7 @@ export async function addCustomCategory(label: string, kind: CustomCategory['kin
 // Supprime une catégorie : ses opérations retournent dans « Autres dépenses » ou « Autres entrées » selon leur sens,
 // ses choix retenus et sa limite de budget sont retirés
 export async function deleteCategory(category: Category) {
-  if (DEFAULT_CATEGORY_IDS.includes(category.id)) return null;
+  if (isLockedCategory(category)) return null;
   for (const query of [
     supabase.from('bank_transactions').update({ category: 'autre_revenu' }).eq('category', category.id).gt('amount', 0),
     supabase.from('bank_transactions').update({ category: 'autre_depense' }).eq('category', category.id).lte('amount', 0),
@@ -251,15 +287,6 @@ export async function deleteCategory(category: Category) {
   settings = settings.filter((s) => s.category !== category.id);
   rebuildCategories();
   return null;
-}
-
-// Rétablit les catégories de base supprimées, puis reclasse les opérations restées dans « Autres »
-export async function restoreBaseCategories() {
-  const { error } = await supabase.from('removed_categories').delete().in('id', removedBase);
-  if (error) return error;
-  removedBase = [];
-  rebuildCategories();
-  return (await reclassifyOthers()).error;
 }
 
 // "Carte X1234 CARREFOUR City 12/10" -> "CARTE X1234 CARREFOUR CITY 12/10" (majuscules, sans accents)
@@ -353,31 +380,97 @@ export async function fetchTransactions(fromDate: string, toDate: string) {
   return { transactions: ((data as Transaction[]) ?? []).map(toTransaction), error };
 }
 
-// Repère les virements entre deux de mes comptes : même montant en sens inverse, à 3 jours près, sur deux comptes différents
-type TransferCandidate = { id?: string; date: string; amount: number; account: string; category: string };
-function markTransfers(rows: TransferCandidate[], existing: TransferCandidate[]) {
-  const all = [...rows, ...existing];
-  const days = (a: string, b: string) => Math.abs(new Date(a).getTime() - new Date(b).getTime()) / 86400000;
+// Virements entre deux de mes comptes : même montant en sens inverse, à quelques jours près (week-end, date de valeur), sur deux comptes différents
+type TransferCandidate = { date: string; amount: number; account: string };
+const TRANSFER_DAYS = 4;
+const dayGap = (a: string, b: string) => Math.abs(new Date(a).getTime() - new Date(b).getTime()) / 86400000;
+const shiftDay = (date: string, days: number) => new Date(new Date(date).getTime() + days * 86400000).toISOString().slice(0, 10);
+const cents = (n: number) => Math.round(n * 100);
+
+// Associe chaque opération de "rows" à son double sur un autre compte (pris dans "rows" ou "others"), le plus proche en date.
+// Chaque opération ne sert qu'une fois : deux virements de 100 € le même jour vont avec deux opérations distinctes.
+// Les opérations déjà classées en virement (libellé d'un livret, virement à son nom) cherchent aussi leur double :
+// c'est ce qui permet de reconnaître, sur le compte courant, l'opération qui correspond à un versement sur le livret.
+function pairTransfers<T extends TransferCandidate>(rows: T[], others: T[] = []) {
+  const pairs = new Map<T, T>();
+  const all = [...rows, ...others];
   for (const t of rows) {
-    if (t.category === 'virement_interne') continue;
-    const twin = all.find(
-      (o) => o !== t && o.account !== t.account && o.amount === -t.amount && days(o.date, t.date) <= 3
-    );
-    if (twin) {
-      t.category = 'virement_interne';
-      twin.category = 'virement_interne';
+    if (pairs.has(t)) continue;
+    let best: T | null = null;
+    let bestGap = Infinity;
+    for (const o of all) {
+      if (o === t || pairs.has(o) || o.account === t.account || cents(o.amount) !== -cents(t.amount)) continue;
+      const gap = dayGap(o.date, t.date);
+      if (gap <= TRANSFER_DAYS && gap < bestGap) {
+        best = o;
+        bestGap = gap;
+      }
+    }
+    if (best) {
+      pairs.set(t, best);
+      pairs.set(best, t);
     }
   }
-  return existing.filter((e) => e.category === 'virement_interne');
+  return pairs;
 }
 
-// Enregistre les opérations d'un relevé (les doublons sont ignorés) ; renvoie le nombre de nouvelles opérations
+// Toutes les opérations enregistrées entre deux dates (par paquets de 1000, la limite d'une requête)
+async function fetchAllTransactions(fromDate?: string, toDate?: string) {
+  const list: Transaction[] = [];
+  for (let start = 0; ; start += 1000) {
+    let query = supabase.from('bank_transactions').select('*').order('date').range(start, start + 999);
+    if (fromDate) query = query.gte('date', fromDate);
+    if (toDate) query = query.lte('date', toDate);
+    const { data, error } = await query;
+    if (error) return { transactions: list, error };
+    list.push(...((data as Transaction[]) ?? []).map(toTransaction));
+    if (!data || data.length < 1000) return { transactions: list, error: null };
+  }
+}
+
+// Reconnaît les virements entre mes comptes déjà enregistrés (sur toute la période, ou entre deux dates)
+// et classe les deux opérations de chaque paire en « Virements entre mes comptes ».
+// Renvoie les opérations reclassées.
+export async function linkTransfers(fromDate?: string, toDate?: string) {
+  const { transactions, error } = await fetchAllTransactions(fromDate, toDate);
+  if (error) return { changed: [] as Transaction[], error };
+  const pairs = pairTransfers(transactions);
+  const changed = [...pairs.keys()].filter((t) => t.category !== 'virement_interne');
+  if (changed.length) {
+    for (let i = 0; i < changed.length; i += 200) {
+      const err = await updateCategory(changed.slice(i, i + 200).map((t) => t.id), 'virement_interne');
+      if (err) return { changed: [], error: err };
+    }
+  }
+  return { changed, error: null };
+}
+
+// Remet à jour le compte de résultat des mois donnés avec toutes leurs opérations
+export async function refreshStatements(months: string[]) {
+  const filled: string[] = [];
+  for (const month of [...new Set(months)].sort()) {
+    const { transactions, error } = await fetchTransactions(`${month}-01`, lastDayOf(month));
+    if (error) return { filled, error };
+    const r = await reportToStatement(month, transactions, 'replace');
+    if (r.error) return { filled, error: r.error };
+    if (r.filled) filled.push(month);
+  }
+  return { filled, error: null };
+}
+
 // Livrets et comptes d'épargne réglementée : un virement ne peut aller que vers (ou venir de) un compte du titulaire
 export const isSavingsAccount = (account: string) => /livret|\blep\b|ldds|\bpel\b|\bcel\b|epargne|épargne/i.test(account);
 const TRANSFER_LABEL = /^(VIR|VIREMENT|VIRT)\b/;
+// Opération qui sera classée en virement entre mes comptes d'après le relevé seul (avant de chercher son double)
+const isStatedTransfer = (t: ParsedTransaction, account: string) =>
+  t.category === 'virement_interne' || (isSavingsAccount(account) && TRANSFER_LABEL.test(normalizeLabel(t.label)));
+
+// Enregistre les opérations d'un relevé (les doublons sont ignorés) ; renvoie le nombre de nouvelles opérations,
+// et les opérations d'autres comptes reconnues comme l'autre moitié d'un virement de ce relevé (reclassées)
 
 export async function importTransactions(parsed: ParsedTransaction[], account: string) {
-  if (parsed.length === 0) return { inserted: 0, error: null };
+  const linked = [] as Transaction[];
+  if (parsed.length === 0) return { inserted: 0, linked, error: null };
   const { data: ruleRows } = await supabase.from('category_rules').select('pattern, category');
   const rules = (ruleRows as Rule[]) ?? [];
   const rows = parsed.map((t) => ({
@@ -386,15 +479,8 @@ export async function importTransactions(parsed: ParsedTransaction[], account: s
     amount: t.amount,
     account,
     import_key: `${account}|${t.importKey}`,
-    category: t.category ?? (isSavingsAccount(account) && TRANSFER_LABEL.test(normalizeLabel(t.label)) ? 'virement_interne' : categorize(t.label, t.amount, rules))
+    category: isStatedTransfer(t, account) ? 'virement_interne' : (t.category ?? categorize(t.label, t.amount, rules))
   }));
-
-  // Virements entre comptes : comparés aussi aux opérations déjà importées sur la même période
-  const dates = rows.map((r) => r.date).sort();
-  const { transactions: existing } = await fetchTransactions(dates[0], dates[dates.length - 1]);
-  const existingRows = existing.map((e) => ({ ...e }));
-  const changed = markTransfers(rows, existingRows).filter((e) => existing.find((o) => o.id === e.id)?.category !== 'virement_interne');
-  if (changed.length) await updateCategory(changed.map((e) => e.id!), 'virement_interne');
 
   let inserted = 0;
   for (let i = 0; i < rows.length; i += 500) {
@@ -402,10 +488,16 @@ export async function importTransactions(parsed: ParsedTransaction[], account: s
       .from('bank_transactions')
       .upsert(rows.slice(i, i + 500), { onConflict: 'import_key', ignoreDuplicates: true })
       .select('id');
-    if (error) return { inserted, error };
+    if (error) return { inserted, linked, error };
     inserted += data?.length ?? 0;
   }
-  return { inserted, error: null };
+
+  // Virements entre comptes : une fois le relevé enregistré, chaque opération cherche son double sur les autres comptes
+  // (quel que soit l'ordre d'import des relevés), quelques jours avant et après la période du relevé
+  const dates = rows.map((r) => r.date).sort();
+  const { changed, error } = await linkTransfers(shiftDay(dates[0], -TRANSFER_DAYS), shiftDay(dates[dates.length - 1], TRANSFER_DAYS));
+  if (error) return { inserted, linked, error };
+  return { inserted, linked: changed.filter((t) => t.account !== account), error: null };
 }
 
 // Relevé comparé aux opérations déjà enregistrées sur le même compte et la même période :
@@ -417,6 +509,9 @@ export type StatementCheck = {
   present: number; // opérations du relevé déjà enregistrées
   added: ParsedTransaction[]; // opérations du relevé absentes de la base
   removed: Transaction[]; // opérations enregistrées sur la période, absentes du relevé (remplacées si on confirme)
+  linked: number; // opérations du relevé retrouvées en sens inverse sur un autre compte : virements entre mes comptes
+  linkedAccounts: string[]; // comptes où ces doubles ont été retrouvés
+  unlinked: ParsedTransaction[]; // virements annoncés par le relevé (livret, virement à son nom) sans double sur un autre compte
 };
 
 export async function checkStatement(parsed: ParsedTransaction[], account: string, summary?: StatementSummary) {
@@ -425,14 +520,56 @@ export async function checkStatement(parsed: ParsedTransaction[], account: strin
   const to = [summary?.to, dates[dates.length - 1]].filter(Boolean).sort().reverse()[0]!;
   const { data, error } = await supabase.from('bank_transactions').select('*').eq('account', account).gte('date', from).lte('date', to);
   if (error) return { check: null, error };
-  const existing = ((data as Transaction[]) ?? []).map(toTransaction);
+  // Les opérations ajoutées à la main ne viennent d'aucun relevé : elles ne sont ni comparées ni remplacées
+  const existing = ((data as Transaction[]) ?? []).map(toTransaction).filter((e) => !isManual(e));
   const keys = new Set(parsed.map((t) => `${account}|${t.importKey}`));
   const existingKeys = new Set(existing.map((e) => e.import_key));
   const added = parsed.filter((t) => !existingKeys.has(`${account}|${t.importKey}`));
   const removed = existing.filter((e) => !keys.has(e.import_key));
   const status: StatementCheck['status'] =
     existing.length === 0 ? 'new' : added.length === 0 && removed.length === 0 ? 'same' : 'different';
-  return { check: { status, present: parsed.length - added.length, added, removed } as StatementCheck, error: null };
+
+  // Virements : les opérations du relevé sont comparées à celles des autres comptes, quelques jours autour de la période
+  const { data: otherData, error: otherError } = await supabase
+    .from('bank_transactions')
+    .select('*')
+    .neq('account', account)
+    .gte('date', shiftDay(from, -TRANSFER_DAYS))
+    .lte('date', shiftDay(to, TRANSFER_DAYS));
+  if (otherError) return { check: null, error: otherError };
+  const others = ((otherData as Transaction[]) ?? []).map(toTransaction);
+  const candidates = parsed.map((t): TransferCandidate & { parsed: ParsedTransaction | null } => ({ date: t.date, amount: t.amount, account, parsed: t }));
+  const pairs = pairTransfers(
+    candidates,
+    others.map((o) => ({ date: o.date, amount: o.amount, account: o.account, parsed: null }))
+  );
+  const linked = candidates.filter((c) => pairs.has(c));
+  const linkedAccounts = [...new Set(linked.map((c) => pairs.get(c)!.account))];
+  const unlinked = candidates.filter((c) => !pairs.has(c) && isStatedTransfer(c.parsed!, account)).map((c) => c.parsed!);
+  return {
+    check: { status, present: parsed.length - added.length, added, removed, linked: linked.length, linkedAccounts, unlinked } as StatementCheck,
+    error: null
+  };
+}
+
+// Opérations ajoutées à la main (hors relevé) : clé d'import « manuel|… ». Ce sont les seules qu'on peut supprimer,
+// et un relevé réimporté ne les remplace jamais.
+const MANUAL_PREFIX = 'manuel|';
+export const isManual = (t: Pick<Transaction, 'import_key'>) => t.import_key.startsWith(MANUAL_PREFIX);
+
+export async function addManualTransaction(fields: Pick<Transaction, 'date' | 'label' | 'amount' | 'account' | 'category'>) {
+  const { data, error } = await supabase
+    .from('bank_transactions')
+    .insert({ ...fields, import_key: `${MANUAL_PREFIX}${crypto.randomUUID()}` })
+    .select()
+    .single();
+  return { transaction: data ? toTransaction(data as Transaction) : null, error };
+}
+
+// Supprime une opération ajoutée à la main (une opération venue d'un relevé n'est jamais supprimée ici)
+export async function deleteManualTransaction(id: string) {
+  const { error } = await supabase.from('bank_transactions').delete().eq('id', id).like('import_key', `${MANUAL_PREFIX}%`);
+  return error;
 }
 
 // Efface les anciennes opérations remplacées par un relevé réimporté
@@ -469,8 +606,9 @@ export async function saveBudget(category: string, limit: number | null) {
   return error;
 }
 
-// Dépenses annuelles à anticiper (assurance, impôts, vacances...) : mises de côté chaque mois
-export type PlannedExpense = { id: string; label: string; amount: number; due_month: number };
+// Dépenses annuelles à anticiper (assurance, impôts, vacances...) : mises de côté chaque mois.
+// Chacune devient une sous-catégorie de « Dépenses annuelles » (voir annualCategoryId).
+export type PlannedExpense = { id: string; label: string; amount: number; due_month: number; created_at: string };
 
 export async function fetchPlanned() {
   const { data, error } = await supabase.from('planned_expenses').select('*').order('due_month');
@@ -479,11 +617,23 @@ export async function fetchPlanned() {
 
 export async function addPlanned(label: string, amount: number, dueMonth: number) {
   const { data, error } = await supabase.from('planned_expenses').insert({ label, amount, due_month: dueMonth }).select().single();
-  return { planned: data ? ({ ...data, amount: Number(data.amount) } as PlannedExpense) : null, error };
+  const row = data ? ({ ...data, amount: Number(data.amount) } as PlannedExpense) : null;
+  if (row) {
+    planned = [...planned, row].sort((a, b) => a.due_month - b.due_month);
+    rebuildCategories();
+  }
+  return { planned: row, error };
 }
 
+// Supprime une dépense annuelle : les opérations classées dans sa sous-catégorie retournent dans « Autres dépenses »
 export async function deletePlanned(id: string) {
+  const moved = await supabase.from('bank_transactions').update({ category: 'autre_depense' }).eq('category', annualCategoryId(id));
+  if (moved.error) return moved.error;
   const { error } = await supabase.from('planned_expenses').delete().eq('id', id);
+  if (!error) {
+    planned = planned.filter((p) => p.id !== id);
+    rebuildCategories();
+  }
   return error;
 }
 
@@ -585,8 +735,9 @@ export function detectUnusual(monthTx: Transaction[], history: Transaction[]) {
   return unusual;
 }
 
-// Phrases simples sur l'évolution des dépenses : ce mois-ci comparé à la moyenne des 3 mois précédents
-export function spendingInsights(month: string, transactions: Transaction[]) {
+// Catégories de dépenses qui bougent nettement (au moins 30 € et 25 %) : ce mois-ci comparé à la moyenne
+// des 3 mois précédents, de la plus forte variation à la plus faible (diff > 0 : hausse)
+export function spendingChanges(month: string, transactions: Transaction[]) {
   const months = [...new Set(transactions.map((t) => monthOf(t.date)))].filter((m) => m < month).sort().slice(-3);
   if (months.length === 0) return [];
   const current = summarize(transactions.filter((t) => monthOf(t.date) === month)).byCategory;
@@ -600,23 +751,7 @@ export function spendingInsights(month: string, transactions: Transaction[]) {
     const diff = (current.get(id) ?? 0) - avg;
     if (Math.abs(diff) >= Math.max(30, avg * 0.25)) changes.push({ category: id, diff, avg });
   }
-  const span = months.length === 1 ? 'le mois précédent' : `ta moyenne des ${months.length} mois précédents`;
-  return changes
-    .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff))
-    .slice(0, 4)
-    .map(({ category, diff }) => {
-      const label = categoryById(category).label;
-      const euros = Math.round(Math.abs(diff)).toLocaleString('fr-FR');
-      return diff > 0
-        ? {
-            tone: 'warn' as const,
-            text: `Tes dépenses « ${label} » ont augmenté de ${euros} € par rapport à ${span}. Si tu gardes ce rythme, ton épargne sera inférieure de ${Math.round(Math.abs(diff) * 3).toLocaleString('fr-FR')} € sur un trimestre.`
-          }
-        : {
-            tone: 'good' as const,
-            text: `Bien joué : tes dépenses « ${label} » ont baissé de ${euros} € par rapport à ${span}, soit ${Math.round(Math.abs(diff) * 12).toLocaleString('fr-FR')} € sur un an à ce rythme.`
-          };
-    });
+  return changes.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
 }
 
 // Reporte les totaux du mois dans le compte de résultat (une ligne par catégorie, créée si besoin), à partir de toutes
@@ -627,7 +762,8 @@ export function spendingInsights(month: string, transactions: Transaction[]) {
 // Renvoie le nombre de lignes écrites et de lignes saisies à la main laissées telles quelles.
 export async function reportToStatement(period: string, monthTx: Transaction[], mode: 'replace' | 'import' = 'replace') {
   const totals = new Map<string, { section: string; line: string; amount: number }>();
-  for (const t of monthTx) {
+  // Seuls les comptes courants font le résultat du mois : les opérations des livrets (intérêts compris) n'y entrent pas
+  for (const t of monthTx.filter((x) => !isSavingsAccount(x.account))) {
     const cat = categoryById(t.category);
     if (!cat.section || !cat.line || cat.kind === 'transfer') continue;
     const key = `${cat.section}|${cat.line.toLowerCase()}`;
@@ -670,7 +806,8 @@ export async function reportToStatement(period: string, monthTx: Transaction[], 
   return result;
 }
 
-const lastDayOf = (month: string) => {
+// Dernier jour d'un mois (AAAA-MM) : "2026-11" -> "2026-11-30"
+export const lastDayOf = (month: string) => {
   const [y, m] = month.split('-').map(Number);
   return `${month}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
 };
@@ -749,22 +886,67 @@ export async function countTransactions(month: string) {
   return { count: count ?? 0, error };
 }
 
-// Comptes suivis par relevés : chacun avec le premier mois où il a des opérations importées (il est attendu dans le bilan
-// à partir de ce mois-là), et les comptes qui ont des opérations dans le mois demandé (noms en minuscules dans "present").
-// Un compte attendu sans opération ni solde inscrit par un relevé ce mois-ci a un relevé manquant.
-export type TrackedAccount = { account: string; first: string };
-export async function fetchStatementCoverage(month: string) {
+// Veille d'une date (AAAA-MM-JJ)
+const dayBefore = (date: string) => new Date(new Date(date).getTime() - 86400000).toISOString().slice(0, 10);
+
+// Mois pour lesquels un relevé apporte des informations sur son compte : mois de ses opérations, mois de sa période,
+// soldes de fin de mois qu'il imprime, et mois d'avant quand il commence le 1er (son ancien solde en est le solde de fin)
+export function statementMonths(transactions: { date: string }[], summary?: StatementSummary) {
+  const months = new Set(transactions.map((t) => monthOf(t.date)));
+  for (const m of summary?.monthEnds ?? []) months.add(m.month);
+  if (summary?.from && summary.to) {
+    for (let m = monthOf(summary.from); m <= monthOf(summary.to); m = shiftMonth(m, 1)) months.add(m);
+    if (summary.from.endsWith('-01')) months.add(monthOf(dayBefore(summary.from)));
+  }
+  return [...months].sort();
+}
+
+// Inscrit les mois couverts par un relevé pour un compte (table "statement_months", voir supabase/finances_coherence.sql) :
+// un mois déjà couvert par un autre relevé est simplement mis à jour. Sans la table, l'import continue :
+// les relevés manquants sont alors repérés par les opérations seules.
+export async function recordStatementMonths(account: string, months: string[]) {
+  if (months.length === 0) return;
+  const updated_at = new Date().toISOString();
+  const { error } = await supabase.from('statement_months').upsert(
+    months.map((month) => ({ account, month, updated_at })),
+    { onConflict: 'account,month' }
+  );
+  if (error) console.error(error);
+}
+
+// Relevés présents, mois par mois (règles dans lib/coverage) : comptes suivis par relevés avec leur premier mois,
+// couples compte et mois renseignés par un relevé (table "statement_months", ou opérations importées) ou par une
+// opération ajoutée à la main, et le nombre d'opérations ajoutées à la main par compte et par mois.
+export async function fetchCoverage(): Promise<{ coverage: Coverage; error: { message: string } | null }> {
   const firsts = new Map<string, TrackedAccount>();
+  const covered = new Set<string>();
+  const manual = new Map<string, ManualNote>();
+  const track = (account: string, month: string) => {
+    const key = account.toLowerCase();
+    const known = firsts.get(key);
+    if (!known || month < known.first) firsts.set(key, { account: known?.account ?? account, first: month });
+    covered.add(`${key}|${month}`);
+  };
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await supabase.from('bank_transactions').select('account, date').order('date').range(from, from + 999);
-    if (error) return { tracked: [] as TrackedAccount[], present: [] as string[], error };
-    for (const r of (data as { account: string; date: string }[]) ?? []) {
-      const key = r.account.toLowerCase();
-      if (!firsts.has(key)) firsts.set(key, { account: r.account, first: monthOf(r.date) });
+    const { data, error } = await supabase.from('bank_transactions').select('account, date, import_key').order('date').range(from, from + 999);
+    if (error) return { coverage: { tracked: [], covered: [], manual: [] }, error };
+    for (const r of (data as { account: string; date: string; import_key: string }[]) ?? []) {
+      const month = monthOf(r.date);
+      if (!isManual(r)) {
+        track(r.account, month);
+        continue;
+      }
+      // Opération ajoutée à la main : elle compte pour le mois de son compte (et le signale), sans rendre le compte
+      // « suivi par relevés » à elle seule
+      covered.add(`${r.account.toLowerCase()}|${month}`);
+      const key = `${r.account.toLowerCase()}|${month}`;
+      const note = manual.get(key) ?? { account: r.account, month, count: 0 };
+      manual.set(key, { ...note, count: note.count + 1 });
     }
     if (!data || data.length < 1000) break;
   }
-  const { data, error } = await supabase.from('bank_transactions').select('account').gte('date', `${month}-01`).lte('date', lastDayOf(month));
-  const present = [...new Set(((data as { account: string }[]) ?? []).map((r) => r.account.toLowerCase()))];
-  return { tracked: [...firsts.values()], present, error };
+  // Mois renseignés par les relevés (la table peut ne pas exister encore : on s'en passe)
+  const months = await supabase.from('statement_months').select('account, month');
+  for (const r of (months.data as { account: string; month: string }[]) ?? []) track(r.account, r.month);
+  return { coverage: { tracked: [...firsts.values()], covered: [...covered], manual: [...manual.values()] }, error: null };
 }

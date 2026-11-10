@@ -13,9 +13,11 @@ import { supabase } from '@/lib/supabase';
 //     label text not null,
 //     amount numeric not null default 0,
 //     position int not null default 0,
+//     auto boolean not null default false, -- montant inscrit par l'appli (relevés, budgets), jamais saisi à la main
 //     created_at timestamptz not null default now()
 //   );
 //   create index finance_lines_period on finance_lines (period);
+// (sur une table déjà créée, la colonne « auto » est ajoutée par supabase/finances_coherence.sql)
 
 export type Statement = 'bilan' | 'resultat';
 
@@ -55,9 +57,6 @@ export const SECTIONS: Section[] = [
   { id: 'engagements', statement: 'resultat', side: 'charges', title: 'Engagements', template: ['Assurances', 'Abonnements', 'Remboursements de crédit', 'Impôts'] },
   { id: 'loisirs', statement: 'resultat', side: 'charges', title: 'Loisirs', template: ['Sorties', 'Voyages', 'Cadeaux'] }
 ];
-
-// Ligne "Courses" du compte de résultat : on peut y reporter les courses enregistrées dans l'appli
-export const GROCERIES = { section: 'vie_courante', label: 'Courses' };
 
 // --- Mois (AAAA-MM) ---
 
@@ -134,16 +133,13 @@ export async function seedMonth(period: string, from: FinanceLine[] | null) {
   return error;
 }
 
-// Lignes d'un mois, après l'avoir rempli s'il était vide : avec les lignes du mois précédent, à zéro pour le compte de résultat
-// et pour les montants venus des relevés (un solde de compte n'est inscrit que par le relevé du mois), ou à défaut avec le modèle
+// Lignes d'un mois, après l'avoir rempli s'il était vide : avec les intitulés du mois précédent, ou à défaut avec le modèle.
+// Aucun montant n'est reporté d'un mois sur l'autre : seuls les relevés et les budgets du mois en inscrivent.
 export async function fetchOrSeedLines(period: string) {
   const first = await fetchLines(period);
   if (first.error || first.lines.length > 0) return first;
   const before = await fetchLines(shiftMonth(period, -1));
-  const error = await seedMonth(
-    period,
-    before.lines.length > 0 ? before.lines.map((l) => (l.statement === 'resultat' || l.auto ? { ...l, amount: 0, auto: false } : l)) : null
-  );
+  const error = await seedMonth(period, before.lines.length > 0 ? before.lines.map((l) => ({ ...l, amount: 0, auto: false })) : null);
   return error ? { lines: [] as FinanceLine[], error } : fetchLines(period);
 }
 
@@ -196,18 +192,6 @@ export async function updateLine(id: string, changes: Partial<Pick<FinanceLine, 
 export async function deleteLine(id: string) {
   const { error } = await supabase.from('finance_lines').delete().eq('id', id);
   return error;
-}
-
-// Total des courses enregistrées dans l'appli pendant le mois (table "expenses")
-export async function groceriesTotal(period: string) {
-  const [y, m] = period.split('-').map(Number);
-  const { data, error } = await supabase
-    .from('expenses')
-    .select('amount')
-    .gte('spent_at', new Date(y, m - 1, 1).toISOString())
-    .lt('spent_at', new Date(y, m, 1).toISOString());
-  if (error) console.error(error);
-  return Math.round(((data ?? []) as { amount: number }[]).reduce((s, e) => s + Number(e.amount), 0) * 100) / 100;
 }
 
 // Lignes de plusieurs mois d'un coup (de "from" à "to" inclus, au format AAAA-MM)

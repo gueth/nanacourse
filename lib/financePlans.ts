@@ -1,107 +1,24 @@
-import { supabase } from '@/lib/supabase';
+// Messages d'erreur lisibles pour les tables des Finances (les placements ont été retirés de l'appli)
 
-// Placements (mis à jour à l'import d'un relevé de livret). Tables : voir supabase/finance_coach.sql
-
-const toNumbers = <T extends object>(row: T, keys: (keyof T)[]) => {
-  const copy = { ...row };
-  for (const k of keys) copy[k] = Number(copy[k]) as T[keyof T];
-  return copy;
-};
-
-export type InvestmentKind = 'livret' | 'fonds_euros' | 'av_uc' | 'pea' | 'per' | 'scpi' | 'crypto' | 'autre';
-
-export type Investment = {
-  id: string;
-  name: string;
-  kind: InvestmentKind;
-  invested: number; // total des versements, retraits déduits
-  value: number; // valeur actuelle
-  fees: number; // frais annuels (0.008 = 0,8 %)
-  expected_rate: number; // rendement annuel espéré avant frais, une estimation
-  risk: number; // 1 (aucun risque de perte) à 7 (très risqué), comme l'indicateur SRI des documents d'information
-  opened_on: string | null; // AAAA-MM-JJ
-  updated_at: string;
-};
-
-// Types de placement, avec des valeurs de départ réalistes (à corriger d'après ton contrat)
-export const INVESTMENT_KINDS: {
-  id: InvestmentKind;
-  label: string;
-  fees: number;
-  rate: number;
-  risk: number;
-  section: 'liquidites' | 'placements';
-  help: string;
-}[] = [
-  { id: 'livret', label: 'Livret (A, LDDS, LEP…)', fees: 0, rate: 0.017, risk: 1, section: 'liquidites', help: 'Capital garanti, disponible à tout moment, sans frais ni impôt.' },
-  { id: 'fonds_euros', label: 'Assurance-vie – fonds euros', fees: 0.007, rate: 0.03, risk: 1, section: 'placements', help: 'Capital garanti par l’assureur ; frais de gestion souvent entre 0,5 et 1 % par an.' },
-  { id: 'av_uc', label: 'Assurance-vie – unités de compte', fees: 0.017, rate: 0.05, risk: 4, section: 'placements', help: 'Investi en fonds (actions, obligations) : peut baisser. Frais du contrat + frais des fonds, souvent 1,5 à 2,5 % par an au total.' },
-  { id: 'pea', label: 'PEA / compte-titres', fees: 0.003, rate: 0.06, risk: 5, section: 'placements', help: 'Actions ou ETF en direct. Avec des ETF « monde », les frais restent souvent sous 0,5 % par an.' },
-  { id: 'per', label: 'Épargne retraite (PER)', fees: 0.015, rate: 0.045, risk: 4, section: 'placements', help: 'Bloqué jusqu’à la retraite (sauf achat de la résidence principale) ; versements déductibles des impôts.' },
-  { id: 'scpi', label: 'Immobilier papier (SCPI)', fees: 0.012, rate: 0.045, risk: 3, section: 'placements', help: 'Revente parfois longue ; frais d’entrée élevés (souvent 8 à 12 %), déjà déduits de la valeur.' },
-  { id: 'crypto', label: 'Cryptomonnaies', fees: 0.01, rate: 0, risk: 7, section: 'placements', help: 'Très volatil : une baisse de plus de moitié en quelques mois est déjà arrivée plusieurs fois.' },
-  { id: 'autre', label: 'Autre placement', fees: 0, rate: 0.02, risk: 3, section: 'placements', help: '' }
-];
-
-export const investmentKind = (id: string) => INVESTMENT_KINDS.find((k) => k.id === id) ?? INVESTMENT_KINDS[INVESTMENT_KINDS.length - 1];
-
-const INVESTMENT_NUMBERS: (keyof Investment)[] = ['invested', 'value', 'fees', 'expected_rate', 'risk'];
-
-export async function fetchInvestments() {
-  const { data, error } = await supabase.from('investments').select('*').order('created_at');
-  return { investments: ((data as Investment[]) ?? []).map((i) => toNumbers(i, INVESTMENT_NUMBERS)), error };
-}
-
-export async function addInvestment(investment: Omit<Investment, 'id' | 'updated_at'>) {
-  const { data, error } = await supabase.from('investments').insert(investment).select().single();
-  return { investment: data ? toNumbers(data as Investment, INVESTMENT_NUMBERS) : null, error };
-}
-
-export async function updateInvestment(id: string, changes: Partial<Omit<Investment, 'id'>>) {
-  const { error } = await supabase.from('investments').update(changes).eq('id', id);
-  return error;
-}
-
-// Après l'import d'un relevé de livret : met à jour la valeur du livret dans les placements (même nom), ou l'ajoute.
-// À la création, les versements sont pris égaux au solde (le relevé ne dit pas ce qui a été versé depuis l'ouverture).
-export async function syncSavingsAccount(name: string, balance: number, asOf: string) {
-  const { investments, error } = await fetchInvestments();
-  if (error) return { created: false, error };
-  const updated_at = new Date(asOf).toISOString();
-  const existing = investments.find((i) => i.name.trim().toLowerCase() === name.trim().toLowerCase());
-  if (existing) {
-    // Un relevé plus ancien que la dernière mise à jour ne remplace pas une valeur plus récente
-    if (existing.updated_at > updated_at) return { created: false, error: null };
-    return { created: false, error: await updateInvestment(existing.id, { value: balance, updated_at }) };
-  }
-  const kind = investmentKind('livret');
-  const { error: err } = await addInvestment({
-    name,
-    kind: 'livret',
-    invested: balance,
-    value: balance,
-    fees: kind.fees,
-    expected_rate: kind.rate,
-    risk: kind.risk,
-    opened_on: null
-  });
-  if (!err) await supabase.from('investments').update({ updated_at }).eq('name', name);
-  return { created: !err, error: err };
-}
+// Tables créées par le script supabase/finances_coherence.sql (les autres le sont par supabase/finance_coach.sql)
+const COHERENCE_TABLES = ['statement_months', 'balance_links'];
 
 // Message lisible quand une table n'existe pas encore dans Supabase
 export function describeDbError(message: string) {
   if (/'auto' column|column .*auto/i.test(message)) {
-    return "Il manque la colonne « auto » dans la table finance_lines : exécute dans l'éditeur SQL de Supabase la ligne « alter table finance_lines add column if not exists auto boolean not null default false; » (fin du script supabase/finance_coach.sql).";
+    return "Il manque la colonne « auto » dans la table finance_lines : exécute le script supabase/finances_coherence.sql dans l'éditeur SQL de Supabase.";
   }
-  const table = message.match(/(bank_transactions|category_rules|budgets|planned_expenses|finance_goals|debts|finance_lines|investments|custom_categories|removed_categories|category_groups|category_settings)/)?.[1];
+  const table = message.match(
+    /(bank_transactions|category_rules|budgets|planned_expenses|finance_lines|custom_categories|removed_categories|category_groups|category_settings|statement_months|balance_links)/
+  )?.[1];
   if (table && /(does not exist|schema cache|not find)/i.test(message)) {
-    return `La table « ${table} » n'existe pas encore dans Supabase : exécute le script supabase/finance_coach.sql dans l'éditeur SQL.`;
+    const script = COHERENCE_TABLES.includes(table) ? 'supabase/finances_coherence.sql' : 'supabase/finance_coach.sql';
+    return `La table « ${table} » n'existe pas encore dans Supabase : exécute le script ${script} dans l'éditeur SQL.`;
   }
   // Sécurité au niveau des lignes activée sans règle d'accès : le bloc final du script ajoute ces règles
   const blocked = message.match(/row-level security policy for table "(\w+)"/)?.[1];
   if (blocked) {
-    return `Supabase refuse l'écriture dans « ${blocked} » (sécurité RLS sans règle d'accès) : exécute le bloc « Accès depuis l'appli » à la fin de supabase/finance_coach.sql dans l'éditeur SQL.`;
+    return `Supabase refuse l'écriture dans « ${blocked} » (sécurité RLS sans règle d'accès) : exécute le script supabase/finances_coherence.sql dans l'éditeur SQL.`;
   }
   return `Erreur : ${message}`;
 }

@@ -1,16 +1,12 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import Link from 'next/link';
 import { useConfirm } from '@/components/ConfirmDialog';
 import { DefiCoupons } from '@/components/gazette/DefiCoupons';
 import {
-  activeChallenge,
-  challengeEnd,
   claimReward,
   describeChallengeError,
   pointsSummary,
-  shortDate,
   useChallenges,
   useRewards,
   weekKey,
@@ -20,7 +16,7 @@ import {
 
 // Page 2 de l'accueil, sous la liste de courses : le stock de coupons à gagner cette semaine, en coupons détachables
 // (arracher un coupon, après confirmation, retire son coût des points et le range dans Profil > Mes coupons ;
-// son trou reste jusqu'au nouveau stock, le lundi), puis le défi de la semaine, lui aussi en coupon. Les rubriques sont titrées par la page (Ribbon) : "ribbon".
+// son trou reste jusqu'au nouveau stock, le lundi). Les défis en cours n'y figurent pas. La rubrique est titrée par la page (Ribbon) : "ribbon".
 
 export function RewardsCorner({ ribbon }: { ribbon: (title: string) => React.ReactNode }) {
   const challengesQuery = useChallenges();
@@ -87,43 +83,6 @@ export function RewardsCorner({ ribbon }: { ribbon: (title: string) => React.Rea
         }))}
       />
       <p className="mt-2 text-center text-[11px] italic">Nouveau stock chaque lundi</p>
-    </>
-  );
-}
-
-export function WeeklyChallenge({ ribbon }: { ribbon: (title: string) => React.ReactNode }) {
-  const challengesQuery = useChallenges();
-  const current = activeChallenge(challengesQuery.data);
-  return (
-    <>
-      {ribbon('Les brèves · défi de la semaine')}
-      {current ? (
-        <DefiCoupons
-          defis={[
-            {
-              id: current.id,
-              kicker: 'Défi de la semaine',
-              title: current.title,
-              stamp: ['Bon pour', String(current.points), 'points'],
-              footer: ['À relever', `*Valable jusqu'au ${shortDate(challengeEnd(current))}`]
-            }
-          ]}
-        />
-      ) : (
-        <p className="mt-3 text-center text-[13px] italic">
-          {challengesQuery.data ? (
-            <>
-              Aucun défi en cours.{' '}
-              <Link href="/profile" className="underline underline-offset-2">
-                Choisis-en un dans ton profil
-              </Link>
-              .
-            </>
-          ) : (
-            'Impression…'
-          )}
-        </p>
-      )}
     </>
   );
 }

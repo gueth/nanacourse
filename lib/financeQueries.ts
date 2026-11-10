@@ -2,19 +2,19 @@
 
 import { useMemo } from 'react';
 import { orThrow, useCached } from '@/lib/cache';
-import { fetchLines, fetchLinesRange, groceriesTotal, shiftMonth } from '@/lib/finance';
-import { countTransactions, fetchBudgets, fetchStatementCoverage, fetchTransactions, loadCategories } from '@/lib/transactions';
+import { fetchLines, fetchLinesRange, shiftMonth } from '@/lib/finance';
+import { countTransactions, fetchBudgets, fetchCoverage, fetchTransactions, loadCategories } from '@/lib/transactions';
 
 // Données des pages Finances gardées en mémoire (lib/cache) : partagées entre les pages Santé, Bilan,
 // Budget et l'accueil, elles ne sont chargées qu'une fois puis rafraîchies en arrière-plan.
 
 // Lignes du bilan et du compte de résultat des "back" derniers mois (et du mois en cours).
 // Une seule requête de 13 mois en arrière sert à toutes les pages ; chacune n'en garde que la période voulue.
-// Comptes suivis par relevés, et ceux qui ont des opérations dans le mois (alerte « relevé pas encore ajouté » du bilan)
-export function useStatementCoverage(period: string | null) {
-  return useCached(period && `finances:releves-du-mois:${period}`, async () => {
-    const { tracked, present, error } = await fetchStatementCoverage(period!);
-    return orThrow({ tracked, present }, error);
+// Relevés présents ou manquants, tous mois confondus (lib/coverage) : Bilan, accueil et état de santé
+export function useCoverage() {
+  return useCached('finances:releves', async () => {
+    const { coverage, error } = await fetchCoverage();
+    return orThrow(coverage, error);
   });
 }
 
@@ -45,11 +45,6 @@ export function useMonthLines(period: string | null) {
     const { lines, error } = await fetchLines(period!);
     return orThrow(lines, error);
   });
-}
-
-// Total des courses enregistrées dans l'appli pour un mois
-export function useGroceriesTotal(period: string | null) {
-  return useCached(period && `finances:courses:${period}`, () => groceriesTotal(period!));
 }
 
 // Limites mensuelles des grandes catégories (Finances > Budget) : même mémoire que la page Budget

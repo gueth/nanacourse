@@ -2,33 +2,16 @@
 
 import { useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
-import { AlertTriangle } from 'lucide-react';
-import { useConfirm } from '@/components/ConfirmDialog';
-import { useViewedMonth } from '@/lib/health';
-import { useGroceriesTotal, useMonthLines, useMonthOperations, useStatementCoverage } from '@/lib/financeQueries';
-import {
-  addLine,
-  deleteLine,
-  formatEuros,
-  GROCERIES,
-  monthEndLabel,
-  monthKey,
-  monthLabel,
-  SECTIONS,
-  shiftMonth,
-  totals,
-  updateLine,
-  type FinanceLine,
-  type Section,
-  type Side,
-  type Statement
-} from '@/lib/finance';
+import { AlertTriangle, PenLine } from 'lucide-react';
+import { rememberedFinanceMonth, useViewedMonth } from '@/lib/health';
+import { useCoverage, useMonthLines, useMonthOperations } from '@/lib/financeQueries';
+import { isMissingLine, manualNotes, monthStatus } from '@/lib/coverage';
+import { formatEuros, monthEndLabel, monthKey, monthLabel, SECTIONS, shiftMonth, totals, type FinanceLine, type Side, type Statement } from '@/lib/finance';
 import {
   useFinanceToneVars,
   FIN,
   FinanceHeader,
   NewMonthCard,
-  ofMonth,
   Ledger,
   LedgerComputed,
   SectionBlock,
@@ -70,138 +53,69 @@ function SwipeCaption({ page, labels, date }: { page: number; labels: string[]; 
 const noSubscribe = () => () => {};
 const readMonth = () => monthKey(new Date());
 
+// Le bilan et le compte de résultat ne se modifient pas ici : leurs montants viennent des relevés importés (Gestion)
+// et des budgets (Budget). Aucun montant n'est reporté d'un mois sur l'autre : quand le relevé d'un compte manque,
+// une barre remplace son solde et les totaux qui en dépendent.
 export default function FinancePage() {
-  const [confirm, confirmDialog] = useConfirm();
   // Teinte de la partie Finances selon l'état de santé
   const toneVars = useFinanceToneVars();
   const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
   const [offset, setOffset] = useState(0);
-  const period = currentMonth ? shiftMonth(currentMonth, offset) : null;
+  // Le Bilan s'ouvre sur le mois qu'on regardait sur le Budget, sinon sur le mois en cours
+  const [remembered] = useState(rememberedFinanceMonth);
+  const startMonth = remembered ?? currentMonth;
+  const period = startMonth ? shiftMonth(startMonth, offset) : null;
   // La teinte de la partie Finances suit l'état de santé du mois affiché
   useViewedMonth(period);
   const [tab, setTab] = useState<Statement>('bilan');
 
-  // Lignes du mois affiché, et du mois précédent (pour la variation du patrimoine),
-  // gardées en mémoire entre deux visites (lib/financeQueries) : affichées tout de suite, puis rafraîchies
+  // Lignes du mois affiché, gardées en mémoire entre deux visites (lib/financeQueries) : affichées tout de suite, puis rafraîchies
   const currentQuery = useMonthLines(period);
-  const previousQuery = useMonthLines(period && shiftMonth(period, -1));
-  const groceriesQuery = useGroceriesTotal(period);
   // Le mois en cours reste un « nouveau mois » tant que son relevé n'est pas importé
   const operations = useMonthOperations(period).data;
-  // Comptes suivis par relevés : leur solde n'est connu que pour les mois couverts par un relevé
-  const coverage = useStatementCoverage(period).data;
-  const lines = currentQuery.data ?? [];
-  // Relevés manquants pour faire correctement le bilan du mois : comptes suivis par relevés depuis ce mois ou avant,
-  // sans opération ce mois-ci ni solde inscrit par un relevé sur leur ligne du bilan
-  const balanceLine = (account: string) => lines.find((l) => l.section === 'liquidites' && l.label.toLowerCase() === account);
-  const missingAccounts =
-    period && coverage
-      ? coverage.tracked
-          .filter(({ account, first }) => {
-            const key = account.toLowerCase();
-            const line = balanceLine(key);
-            return first <= period && !coverage.present.includes(key) && !(line?.auto && line.amount !== 0);
-          })
-          .map((a) => a.account)
-      : [];
-  // La même alerte, sur la ligne du compte concerné
-  const missingStatement = (line: FinanceLine) =>
-    period && line.section === 'liquidites' && missingAccounts.some((a) => a.toLowerCase() === line.label.toLowerCase())
-      ? `Relevé ${ofMonth(period)} pas encore ajouté`
-      : null;
-  const setLines = currentQuery.setData;
-  const previous = previousQuery.data ?? [];
-  const groceries = groceriesQuery.data ?? 0;
-  const [actionError, setError] = useState<string | null>(null);
-  const error = actionError ?? (currentQuery.error && describeError(currentQuery.error));
+  // Relevés présents ou manquants (règles dans lib/coverage, les mêmes que pour l'accueil et l'état de santé)
+  const coverage = useCoverage().data;
+  const stored = currentQuery.data ?? [];
+  const balanceLine = (account: string) => stored.find((l) => l.section === 'liquidites' && l.label.toLowerCase() === account);
+  const missingAccounts = period && coverage ? monthStatus(coverage, period).missing : [];
+  // Opérations ajoutées à la main ce mois-ci : elles tiennent lieu de relevé pour leur compte, une note le signale
+  const manual = period && coverage ? manualNotes(coverage, period) : [];
+  const isMissing = (line: FinanceLine) => isMissingLine(line, missingAccounts);
+  // Un compte dont le relevé manque a sa ligne au bilan (avec une barre), même s'il n'en avait pas encore
+  const lines: FinanceLine[] = [
+    ...stored,
+    ...missingAccounts
+      .filter((a) => !balanceLine(a.toLowerCase()))
+      .map((a) => ({ id: `manquant-${a}`, period: period!, statement: 'bilan' as const, section: 'liquidites', label: a, amount: 0, position: 1000 }))
+  ];
+  const error = currentQuery.error && describeError(currentQuery.error);
 
   const loading = !period || (currentQuery.data === undefined && !currentQuery.error);
-  const isNew = !!period && (lines.length === 0 || (period === currentMonth && operations === 0));
-  const t = totals(lines);
-  const prev = totals(previous);
-  // Variation du patrimoine que le résultat du mois n'explique pas (réévaluations, oublis)
-  const otherChanges = t.patrimoine - prev.patrimoine - t.resultat;
-
-  function report(err: { message: string } | null) {
-    if (err) setError(describeError(err.message));
-  }
-
-  async function add(section: Section) {
-    if (!period) return;
-    const position = Math.max(-1, ...lines.filter((l) => l.section === section.id).map((l) => l.position)) + 1;
-    const { line, error: err } = await addLine(period, section, 'Nouvelle ligne', position);
-    report(err);
-    if (line) setLines((ls) => [...ls, line]);
-  }
-
-  async function change(line: FinanceLine, input: Partial<Pick<FinanceLine, 'label' | 'amount'>>) {
-    // Un montant corrigé à la main ne sera plus recalculé par les imports de relevés
-    const changes = input.amount !== undefined && line.auto ? { ...input, auto: false } : input;
-    setLines((ls) => ls.map((l) => (l.id === line.id ? { ...l, ...changes } : l)));
-    report(await updateLine(line.id, changes));
-  }
-
-  async function remove(line: FinanceLine) {
-    if (!(await confirm('Supprimer la ligne', `Supprimer la ligne « ${line.label} » ?`))) return;
-    setLines((ls) => ls.filter((l) => l.id !== line.id));
-    report(await deleteLine(line.id));
-  }
-
-  // Reporte les courses enregistrées dans l'appli sur la ligne "Courses" (créée si besoin)
-  async function useGroceries() {
-    const existing = lines.find((l) => l.section === GROCERIES.section && l.label === GROCERIES.label);
-    if (existing) return change(existing, { amount: groceries });
-    const section = SECTIONS.find((s) => s.id === GROCERIES.section)!;
-    const { line, error: err } = await addLine(period!, section, GROCERIES.label, -1);
-    report(err);
-    if (line) {
-      setLines((ls) => [...ls, { ...line, amount: groceries }]);
-      report(await updateLine(line.id, { amount: groceries }));
-    }
-  }
+  const isNew = !!period && (stored.length === 0 || (period === currentMonth && operations === 0));
+  const t = totals(lines.filter((l) => !isMissing(l)));
+  // Il manque un relevé : le patrimoine et les totaux du bilan ne sont pas connus (null : affichés avec une barre)
+  const incomplete = missingAccounts.length > 0;
+  const known = (n: number) => (incomplete ? null : n);
+  // Le compte de résultat (revenus, dépenses, épargne du mois) ne dépend que des comptes courants : un relevé de livret
+  // manquant ne le rend pas incomplet
+  const resultIncomplete = !!period && !!coverage && !monthStatus(coverage, period).resultKnown;
+  const knownResult = (n: number) => (resultIncomplete ? null : n);
 
   // Affiche toutes les rubriques d'un côté du document
   function renderSide(side: Side) {
-    return SECTIONS.filter((s) => s.side === side).map((section) => {
-      const sectionLines = lines.filter((l) => l.section === section.id);
-      const groceriesLine = sectionLines.find((l) => l.label === GROCERIES.label);
-      const showGroceries = section.id === GROCERIES.section && groceries > 0 && groceriesLine?.amount !== groceries;
-      return (
-        <SectionBlock
-          key={section.id}
-          section={section}
-          lines={sectionLines}
-          onAdd={() => add(section)}
-          onRename={(line, label) => change(line, { label })}
-          onAmount={(line, amount) => change(line, { amount })}
-          onDelete={remove}
-          warningFor={missingStatement}
-        >
-          {showGroceries && (
-            <div
-              className="my-1 flex items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-[10px]"
-              style={{ backgroundColor: FIN.mist, color: FIN.slate }}
-            >
-              <span>Courses enregistrées dans l&apos;appli : {formatEuros(groceries)}</span>
-              <button type="button" onClick={useGroceries} className="uppercase tracking-[0.15em]" style={{ color: FIN.gold }}>
-                Reporter
-              </button>
-            </div>
-          )}
-        </SectionBlock>
-      );
-    });
+    return SECTIONS.filter((s) => s.side === side).map((section) => (
+      <SectionBlock key={section.id} section={section} lines={lines.filter((l) => l.section === section.id)} missing={isMissing} />
+    ));
   }
 
   return (
     <div className="finance-screen min-h-dvh pb-16 transition-colors duration-700" style={{ ...toneVars, backgroundColor: FIN.mist, color: FIN.navy }}>
-      {confirmDialog}
       {/* Pas de mois futur : les Finances retranscrivent ce qui a déjà été fait */}
       <FinanceHeader
         month={period ? monthLabel(period) : ''}
         onPrev={() => setOffset((o) => o - 1)}
-        onNext={() => setOffset((o) => Math.min(0, o + 1))}
-        canNext={offset < 0}
+        onNext={() => period && currentMonth && period < currentMonth && setOffset((o) => o + 1)}
+        canNext={!!period && !!currentMonth && period < currentMonth}
       />
 
       <main className="mx-auto max-w-md px-4">
@@ -227,37 +141,45 @@ export default function FinancePage() {
           <NewMonthCard period={period} />
         ) : (
           <>
-            {/* Bilan incomplet : il manque le relevé d'un ou plusieurs comptes pour ce mois */}
-            {missingAccounts.length > 0 && (
-              <div className="mt-5 rounded-sm border px-3 py-3 text-[12px] leading-relaxed" style={{ borderColor: FIN.rose, backgroundColor: FIN.paper }}>
-                <p className="flex items-start gap-2 font-bold" style={{ color: FIN.rose }}>
-                  <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden />
-                  Bilan de {monthLabel(period)} incomplet
-                </p>
-                <p className="mt-1" style={{ color: FIN.navy }}>
-                  Il manque le relevé {ofMonth(period)} pour {missingAccounts.length > 1 ? 'les comptes' : 'le compte'}{' '}
-                  <b>{missingAccounts.join(', ')}</b> : {missingAccounts.length > 1 ? 'leurs soldes' : 'son solde'} ne {missingAccounts.length > 1 ? 'sont' : 'est'} pas
-                  connu{missingAccounts.length > 1 ? 's' : ''}, et le patrimoine net du mois n&apos;est pas juste. Importe {missingAccounts.length > 1 ? 'ces relevés' : 'ce relevé'}{' '}
-                  pour compléter le mois.
-                </p>
-                <Link
-                  href="/banque/releves"
-                  className="mt-2 inline-block rounded-full px-4 py-2 text-[10px] uppercase tracking-[0.2em]"
-                  style={{ backgroundColor: FIN.rose, color: FIN.paper }}
-                >
-                  Importer {missingAccounts.length > 1 ? 'les relevés' : 'le relevé'} {ofMonth(period)}
-                </Link>
+            {/* Relevés manquants du mois affiché : un court message par compte, qui mène à l'import */}
+            {incomplete && (
+              <Link
+                href="/banque/releves"
+                className="mt-5 block rounded-sm border px-3 py-2 text-[12px]"
+                style={{ borderColor: FIN.rose, backgroundColor: FIN.paper, color: FIN.rose }}
+              >
+                {missingAccounts.map((a) => (
+                  <span key={a} className="flex items-center gap-2 py-0.5">
+                    <AlertTriangle size={14} className="shrink-0" aria-hidden />
+                    Relevé {a} manquant
+                  </span>
+                ))}
+              </Link>
+            )}
+            {/* Opérations ajoutées à la main : elles comptent pour le mois, en attendant (ou en plus) du relevé */}
+            {manual.length > 0 && (
+              <div className="mt-3 rounded-sm border px-3 py-2 text-[12px]" style={{ borderColor: FIN.gold, backgroundColor: FIN.paper, color: FIN.navy }}>
+                {manual.map((m) => (
+                  <span key={m.account} className="flex items-center gap-2 py-0.5">
+                    <PenLine size={14} className="shrink-0" style={{ color: FIN.gold }} aria-hidden />
+                    {m.account} : {m.count} opération{m.count > 1 ? 's' : ''} ajoutée{m.count > 1 ? 's' : ''} à la main
+                  </span>
+                ))}
               </div>
             )}
 
             {/* Synthèse du mois */}
             <div className="mt-6 grid grid-cols-2 gap-2">
-              <SummaryTile label="Patrimoine net" value={formatEuros(t.patrimoine)} color={t.patrimoine >= 0 ? FIN.navy : FIN.rose} />
+              <SummaryTile
+                label="Patrimoine net"
+                value={incomplete ? '—' : formatEuros(t.patrimoine)}
+                color={incomplete || t.patrimoine >= 0 ? FIN.navy : FIN.rose}
+              />
               <SummaryTile
                 label="Épargne du mois"
-                value={formatEuros(t.resultat)}
-                color={t.resultat >= 0 ? FIN.sage : FIN.rose}
-                note={t.tauxEpargne !== null ? `${Math.round(t.tauxEpargne * 100)} % des revenus` : undefined}
+                value={resultIncomplete ? '—' : formatEuros(t.resultat)}
+                color={resultIncomplete || t.resultat >= 0 ? FIN.sage : FIN.rose}
+                note={!resultIncomplete && t.tauxEpargne !== null ? `${Math.round(t.tauxEpargne * 100)} % des revenus` : undefined}
               />
             </div>
 
@@ -274,60 +196,37 @@ export default function FinancePage() {
                 pages={[
                   <div key="actif">
                     <SwipeCaption page={0} labels={BILAN_PAGES} date={`Au ${monthEndLabel(period)}`} />
-                    <Ledger title="Actif" total={t.actif} color={ON_NAVY.sage} totalLabel="Total de l'actif">
+                    <Ledger title="Actif" total={known(t.actif)} color={ON_NAVY.sage} totalLabel="Total de l'actif">
                       {renderSide('actif')}
                     </Ledger>
                   </div>,
                   <div key="passif">
                     <SwipeCaption page={1} labels={BILAN_PAGES} date={`Au ${monthEndLabel(period)}`} />
-                    <Ledger title="Passif" total={t.patrimoine + t.dettes} color={ON_NAVY.rose} totalLabel="Total du passif">
-                      {/* Capitaux propres : ce qui t'appartient vraiment, et comment le résultat du mois l'a fait évoluer */}
+                    <Ledger title="Passif" total={known(t.patrimoine + t.dettes)} color={ON_NAVY.rose} totalLabel="Total du passif">
+                      {/* Capitaux propres : ce qui t'appartient vraiment, dont le résultat du mois */}
                       <LedgerComputed
                         title="Capitaux propres"
-                        rows={
-                          previous.length > 0
-                            ? [
-                                {
-                                  label: 'Patrimoine net au début du mois',
-                                  value: prev.patrimoine,
-                                  note: `Bilan de ${monthLabel(shiftMonth(period, -1))}`
-                                },
-                                {
-                                  label: 'Résultat du mois',
-                                  value: t.resultat,
-                                  note: 'Repris du compte de résultat',
-                                  color: t.resultat >= 0 ? FIN.sage : FIN.rose
-                                },
-                                ...(Math.abs(otherChanges) >= 0.01
-                                  ? [
-                                      {
-                                        label: 'Autres variations',
-                                        value: otherChanges,
-                                        note: 'Écart que le résultat n’explique pas : variation de valeur de tes biens ou placements, ou ligne oubliée'
-                                      }
-                                    ]
-                                  : [])
-                              ]
-                            : [
-                                {
-                                  label: 'Situation nette avant le résultat',
-                                  value: t.patrimoine - t.resultat,
-                                  note: 'Ce que tu possédais déjà, hors résultat du mois'
-                                },
-                                {
-                                  label: 'Résultat du mois',
-                                  value: t.resultat,
-                                  note: 'Repris du compte de résultat',
-                                  color: t.resultat >= 0 ? FIN.sage : FIN.rose
-                                }
-                              ]
-                        }
+                        rows={[
+                          {
+                            label: 'Situation nette avant le résultat',
+                            value: known(t.patrimoine - t.resultat),
+                            note: 'Ce que tu possédais déjà, hors résultat du mois'
+                          },
+                          {
+                            label: 'Résultat du mois',
+                            value: knownResult(t.resultat),
+                            note: 'Repris du compte de résultat',
+                            color: t.resultat >= 0 ? FIN.sage : FIN.rose
+                          }
+                        ]}
                       />
                       {renderSide('passif')}
                     </Ledger>
-                    <p className="mt-2 text-center text-[10px] uppercase tracking-[0.2em]" style={{ color: FIN.sage }}>
-                      ✓ Actif = Passif = {formatEuros(t.actif)}
-                    </p>
+                    {!incomplete && (
+                      <p className="mt-2 text-center text-[10px] uppercase tracking-[0.2em]" style={{ color: FIN.sage }}>
+                        ✓ Actif = Passif = {formatEuros(t.actif)}
+                      </p>
+                    )}
                     <p className="mt-1 text-center text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
                       Le passif dit d&apos;où vient ce que tu possèdes : de tes dettes, ou de toi (capitaux propres). Le résultat du mois s&apos;ajoute à tes
                       capitaux propres.
@@ -343,13 +242,13 @@ export default function FinancePage() {
                 pages={[
                   <div key="produits">
                     <SwipeCaption page={0} labels={RESULT_PAGES} date={`Du 1er au ${monthEndLabel(period)}`} />
-                    <Ledger title="Produits" total={t.produits} color={ON_NAVY.sage} totalLabel="Total des produits">
+                    <Ledger title="Produits" total={knownResult(t.produits)} color={ON_NAVY.sage} totalLabel="Total des produits">
                       {renderSide('produits')}
                     </Ledger>
                   </div>,
                   <div key="charges">
                     <SwipeCaption page={1} labels={RESULT_PAGES} date={`Du 1er au ${monthEndLabel(period)}`} />
-                    <Ledger title="Charges" total={t.charges} color={ON_NAVY.rose} totalLabel="Total des charges">
+                    <Ledger title="Charges" total={knownResult(t.charges)} color={ON_NAVY.rose} totalLabel="Total des charges">
                       {renderSide('charges')}
                     </Ledger>
                     <table className="mt-3 w-full table-fixed border-collapse text-[12px]">
@@ -361,10 +260,10 @@ export default function FinancePage() {
                           }}
                         >
                           <td className="px-2 py-2.5 text-[10px] uppercase tracking-[0.2em]">
-                            {t.resultat >= 0 ? 'Résultat : épargne du mois' : 'Résultat : déficit du mois'}
+                            {resultIncomplete ? 'Résultat du mois' : t.resultat >= 0 ? 'Résultat : épargne du mois' : 'Résultat : déficit du mois'}
                             <span className="block text-[9px] normal-case tracking-normal opacity-70">
                               Produits moins charges
-                              {t.tauxEpargne !== null ? `, soit ${Math.round(t.tauxEpargne * 100)} % des revenus` : ''} · reporté au passif du bilan
+                              {!resultIncomplete && t.tauxEpargne !== null ? `, soit ${Math.round(t.tauxEpargne * 100)} % des revenus` : ''} · reporté au passif du bilan
                             </span>
                           </td>
                           <td
@@ -373,7 +272,7 @@ export default function FinancePage() {
                               color: t.resultat >= 0 ? ON_NAVY.sage : ON_NAVY.rose
                             }}
                           >
-                            {formatEuros(t.resultat)}
+                            {resultIncomplete ? '—' : formatEuros(t.resultat)}
                           </td>
                         </tr>
                       </tbody>

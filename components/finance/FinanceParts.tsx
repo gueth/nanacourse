@@ -2,9 +2,10 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { AlertTriangle, ChevronLeft, ChevronRight, Plus, X } from 'lucide-react';
+import { useEffect } from 'react';
+import { ChevronDown, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { formatEuros, monthLabel, type FinanceLine, type Section } from '@/lib/finance';
-import { useFinanceTone } from '@/lib/health';
+import { forgetFinanceMonth, useFinanceTone } from '@/lib/health';
 
 // Palette de la page Finances : bleu dominant, rehaussé d'or, de vert sauge (ce qui entre / ce que l'on possède)
 // et de vieux rose (ce qui sort / ce que l'on doit)
@@ -30,11 +31,6 @@ export function parseAmount(text: string) {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
 }
 
-// Montant affiché dans le champ, sans le symbole € (ajouté à côté)
-function amountText(n: number) {
-  return n === 0 ? '' : n.toLocaleString('fr-FR', { maximumFractionDigits: 2 });
-}
-
 // Filet ornemental : trait fin, losange au centre
 export function Ornament({ color = FIN.gold, width = 120 }: { color?: string; width?: number }) {
   const half = width / 2;
@@ -50,7 +46,7 @@ export function Ornament({ color = FIN.gold, width = 120 }: { color?: string; wi
 const FINANCE_PAGES = [
   { href: '/banque/comptes', label: 'Bilan' },
   { href: '/banque/budget', label: 'Budget' },
-  { href: '/banque/releves', label: 'Relevés' }
+  { href: '/banque/releves', label: 'Gestion' }
 ];
 
 // Menu des pages Finances, en pastilles
@@ -97,7 +93,7 @@ export function FinanceHeader({
   return (
     <header className="relative px-4 pb-10 pt-4 text-center" style={{ backgroundColor: FIN.accent, color: FIN.paper }}>
       {/* z-10 : sinon le sous-titre (rendu au-dessus à cause de son opacité) recouvre le lien et bloque le toucher */}
-      <Link href="/accueil" className="absolute left-1 top-2 z-10 flex items-center gap-1 px-2 py-2 text-[11px] uppercase tracking-[0.25em] opacity-80">
+      <Link href="/accueil" onClick={forgetFinanceMonth} className="absolute left-1 top-2 z-10 flex items-center gap-1 px-2 py-2 text-[11px] uppercase tracking-[0.25em] opacity-80">
         <ChevronLeft size={16} /> Accueil
       </Link>
       <p className="pt-8 text-[10px] uppercase tracking-[0.35em] opacity-70">{subtitle}</p>
@@ -178,8 +174,22 @@ export function StatementTabs<T extends string>({
   );
 }
 
+// Montant d'un tableau, ou une barre quand il n'est pas connu (relevé manquant)
+function Amount({ value }: { value: number | null }) {
+  return value === null ? (
+    <span aria-label="Montant inconnu : relevé manquant" style={{ opacity: 0.6 }}>
+      —
+    </span>
+  ) : (
+    <>{formatEuros(value)}</>
+  );
+}
+
+// Somme de montants, inconnue si l'un d'eux l'est
+const sumKnown = (values: (number | null)[]) => (values.some((v) => v === null) ? null : values.reduce<number>((s, v) => s + v!, 0));
+
 // Tableau d'un côté du document (Actif, Passif, Produits, Charges) : colonnes Poste / Montant,
-// une rubrique par groupe de lignes, et le total en pied de tableau
+// une rubrique par groupe de lignes, et le total en pied de tableau (null : inconnu, il manque un relevé)
 export function Ledger({
   title,
   total,
@@ -188,7 +198,7 @@ export function Ledger({
   children
 }: {
   title: string;
-  total: number;
+  total: number | null;
   color: string;
   totalLabel: string;
   children: React.ReactNode;
@@ -216,7 +226,7 @@ export function Ledger({
           <tr style={{ backgroundColor: FIN.navy, color: FIN.paper }}>
             <td className="px-2 py-2 text-[10px] uppercase tracking-[0.2em]">{totalLabel}</td>
             <td className="px-2 py-2 text-right text-[14px] font-bold" style={{ color }}>
-              {formatEuros(total)}
+              <Amount value={total} />
             </td>
             <td />
           </tr>
@@ -227,31 +237,31 @@ export function Ledger({
 }
 
 // Ligne de titre d'une rubrique dans le tableau, avec son sous-total
-function LedgerGroupRow({ title, subtotal }: { title: string; subtotal: number }) {
+function LedgerGroupRow({ title, subtotal }: { title: string; subtotal: number | null }) {
   return (
     <tr style={{ backgroundColor: FIN.mist }}>
       <th className="border-b px-2 py-1.5 text-left text-[9px] font-bold uppercase tracking-[0.25em]" style={{ borderColor: FIN.line, color: FIN.slate }}>
         {title}
       </th>
       <td className="border-b px-2 py-1.5 text-right text-[11px] font-bold" style={{ borderColor: FIN.line, color: FIN.slate }}>
-        {formatEuros(subtotal)}
+        <Amount value={subtotal} />
       </td>
       <td className="border-b" style={{ borderColor: FIN.line }} />
     </tr>
   );
 }
 
-// Rubrique calculée (non modifiable) : ex. capitaux propres au passif, dont le résultat du mois
+// Rubrique calculée : ex. capitaux propres au passif, dont le résultat du mois
 export function LedgerComputed({
   title,
   rows
 }: {
   title: string;
-  rows: { label: string; value: number; note?: string; color?: string }[];
+  rows: { label: string; value: number | null; note?: string; color?: string }[];
 }) {
   return (
     <tbody>
-      <LedgerGroupRow title={title} subtotal={rows.reduce((s, r) => s + r.value, 0)} />
+      <LedgerGroupRow title={title} subtotal={sumKnown(rows.map((r) => r.value))} />
       {rows.map((r) => (
         <tr key={r.label} className="border-b" style={{ borderColor: FIN.line }}>
           <td className="border-r px-2 py-1.5" style={{ borderColor: FIN.line }}>
@@ -263,7 +273,7 @@ export function LedgerComputed({
             )}
           </td>
           <td className="px-2 py-1.5 text-right font-bold" style={{ color: r.color ?? FIN.navy }}>
-            {formatEuros(r.value)}
+            <Amount value={r.value} />
           </td>
           <td />
         </tr>
@@ -272,129 +282,75 @@ export function LedgerComputed({
   );
 }
 
-// Une ligne du tableau : intitulé modifiable, montant modifiable, suppression
-function LineRow({
-  line,
-  warning,
-  onRename,
-  onAmount,
-  onDelete
-}: {
-  line: FinanceLine;
-  warning?: string | null; // alerte sous l'intitulé (ex. relevé du mois pas encore ajouté)
-  onRename: (label: string) => void;
-  onAmount: (amount: number) => void;
-  onDelete: () => void;
-}) {
-  return (
-    <tr className="border-b" style={{ borderColor: FIN.line }}>
-      <td className="border-r px-1 py-0.5" style={{ borderColor: FIN.line }}>
-        <input
-          // Clé liée à l'intitulé : le champ se remet à jour si l'intitulé change ailleurs
-          key={line.label}
-          defaultValue={line.label}
-          aria-label="Intitulé"
-          onBlur={(e) => {
-            const label = e.target.value.trim();
-            if (label && label !== line.label) onRename(label);
-            else e.target.value = line.label;
-          }}
-          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-          className="w-full bg-transparent px-1 py-1 text-[12px] outline-none focus:bg-white"
-          style={{ color: FIN.navy }}
-        />
-        {warning && (
-          <p className="flex items-start gap-1 px-1 pb-1 text-[9px] leading-tight" style={{ color: FIN.rose }}>
-            <AlertTriangle size={11} className="mt-px shrink-0" aria-hidden />
-            {warning}
-          </p>
-        )}
-      </td>
-      <td className="px-1 py-0.5">
-        <div className="flex items-baseline gap-0.5">
-          <input
-            key={line.amount}
-            defaultValue={amountText(line.amount)}
-            placeholder="0"
-            inputMode="decimal"
-            aria-label={`Montant de ${line.label}`}
-            onFocus={(e) => e.target.select()}
-            onBlur={(e) => {
-              const amount = parseAmount(e.target.value || '0');
-              if (amount !== null && amount !== line.amount) onAmount(amount);
-              else e.target.value = amountText(line.amount);
-            }}
-            onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-            className="w-full min-w-0 bg-transparent px-1 py-1 text-right text-[12px] outline-none focus:bg-white"
-            style={{ color: FIN.navy }}
-          />
-          <span className="text-[11px]" style={{ color: FIN.slate }}>
-            €
-          </span>
-        </div>
-      </td>
-      <td className="text-center">
-        <button type="button" onClick={onDelete} aria-label={`Supprimer ${line.label}`} className="p-1 opacity-40 hover:opacity-100" style={{ color: FIN.rose }}>
-          <X size={13} />
-        </button>
-      </td>
-    </tr>
-  );
-}
+// Montant d'une ligne, sans le symbole € (affiché à côté) ; vide pour zéro
+const amountText = (n: number) => (n === 0 ? '' : n.toLocaleString('fr-FR', { maximumFractionDigits: 2 }));
 
-// Une rubrique (ex : Liquidités) dans le tableau : titre et sous-total, ses lignes, l'ajout d'une ligne
-export function SectionBlock({
-  section,
-  lines,
-  onAdd,
-  onRename,
-  onAmount,
-  onDelete,
-  warningFor,
-  children
-}: {
-  section: Section;
-  lines: FinanceLine[];
-  warningFor?: (line: FinanceLine) => string | null;
-  onAdd: () => void;
-  onRename: (line: FinanceLine, label: string) => void;
-  onAmount: (line: FinanceLine, amount: number) => void;
-  onDelete: (line: FinanceLine) => void;
-  children?: React.ReactNode;
-}) {
+// Une rubrique (ex : Liquidités) dans le tableau : titre et sous-total, puis ses lignes.
+// Rien n'y est modifiable : les montants viennent des relevés et des budgets. "missing" : ligne dont le relevé manque (barre à la place du montant).
+export function SectionBlock({ section, lines, missing }: { section: Section; lines: FinanceLine[]; missing?: (line: FinanceLine) => boolean }) {
+  const value = (line: FinanceLine) => (missing?.(line) ? null : line.amount);
   return (
     <tbody>
-      <LedgerGroupRow title={section.title} subtotal={lines.reduce((s, l) => s + l.amount, 0)} />
-      {lines.map((line) => (
-        <LineRow
-          key={line.id}
-          line={line}
-          warning={warningFor?.(line)}
-          onRename={(label) => onRename(line, label)}
-          onAmount={(amount) => onAmount(line, amount)}
-          onDelete={() => onDelete(line)}
-        />
-      ))}
-      {children && (
-        <tr>
-          <td colSpan={3} className="px-2">
-            {children}
-          </td>
-        </tr>
-      )}
-      <tr className="border-b" style={{ borderColor: FIN.line }}>
-        <td colSpan={3} className="px-2">
-          <button type="button" onClick={onAdd} className="flex items-center gap-1 py-1.5 text-[10px] uppercase tracking-[0.2em]" style={{ color: FIN.gold }}>
-            <Plus size={12} /> Ajouter une ligne
-          </button>
-        </td>
-      </tr>
+      <LedgerGroupRow title={section.title} subtotal={sumKnown(lines.map(value))} />
+      {lines.map((line) => {
+        const amount = value(line);
+        return (
+          <tr key={line.id} className="border-b" style={{ borderColor: FIN.line }}>
+            <td className="border-r px-1 py-0.5" style={{ borderColor: FIN.line }}>
+              <p className="px-1 py-1 text-[12px]" style={{ color: FIN.navy }}>
+                {line.label}
+              </p>
+            </td>
+            <td className="px-1 py-0.5">
+              <div className="flex items-baseline gap-0.5">
+                <span className="w-full min-w-0 px-1 py-1 text-right text-[12px]" style={{ color: FIN.navy }}>
+                  {amount === null ? <Amount value={null} /> : amountText(amount) || <span style={{ opacity: 0.4 }}>0</span>}
+                </span>
+                <span className="text-[11px]" style={{ color: FIN.slate }}>
+                  €
+                </span>
+              </div>
+            </td>
+            <td />
+          </tr>
+        );
+      })}
     </tbody>
   );
 }
 
 // Encadré de contenu : titre calligraphié, sous-titre facultatif
-export function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+export function Panel({
+  title,
+  subtitle,
+  collapsible = false,
+  children
+}: {
+  title: string;
+  subtitle?: string;
+  // true : le panneau s'ouvre et se referme en touchant son titre, et commence plié
+  collapsible?: boolean;
+  children: React.ReactNode;
+}) {
+  if (collapsible)
+    return (
+      <details className="group mt-5 rounded-sm border px-4 pb-3 pt-3" style={{ backgroundColor: FIN.paper, borderColor: FIN.line }}>
+        <summary className="flex cursor-pointer list-none items-start justify-between gap-2 [&::-webkit-details-marker]:hidden">
+          <span className="min-w-0">
+            <h2 className="text-[32px] leading-tight" style={{ ...script, color: FIN.navy }}>
+              {title}
+            </h2>
+            {subtitle && (
+              <p className="-mt-1 text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
+                {subtitle}
+              </p>
+            )}
+          </span>
+          <ChevronDown size={20} aria-hidden className="mt-3 shrink-0 transition-transform group-open:rotate-180" style={{ color: FIN.gold }} />
+        </summary>
+        <div className="mt-2 pb-1">{children}</div>
+      </details>
+    );
   return (
     <section className="mt-5 rounded-sm border px-4 pb-4 pt-3" style={{ backgroundColor: FIN.paper, borderColor: FIN.line }}>
       <h2 className="text-[32px] leading-tight" style={{ ...script, color: FIN.navy }}>
@@ -516,6 +472,39 @@ export function FinButton({
   );
 }
 
+// Popin des Finances : cadre papier au-dessus de la page, titre calligraphié.
+// Se ferme avec la croix, la touche Échap ou un toucher en dehors du cadre.
+export function FinModal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4" style={{ backgroundColor: 'rgba(43,58,85,0.55)' }} onClick={onClose}>
+      {/* stopPropagation : un toucher DANS le cadre ne doit pas le fermer */}
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="relative mt-16 w-full max-w-sm rounded-sm border px-5 pb-5 pt-3"
+        style={{ backgroundColor: FIN.paper, borderColor: FIN.line, color: FIN.navy }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <h2 className="text-[32px] leading-tight" style={{ ...script, color: FIN.navy }}>
+            {title}
+          </h2>
+          <button type="button" onClick={onClose} aria-label="Fermer" className="-mr-2 flex h-10 w-10 shrink-0 items-center justify-center" style={{ color: FIN.slate }}>
+            <X size={20} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 // Message d'erreur en haut de page
 export function ErrorNote({ message }: { message: string | null }) {
   if (!message) return null;
@@ -530,6 +519,14 @@ export function ErrorNote({ message }: { message: string | null }) {
 // lues par FIN.accent et FIN.mist, à poser sur le conteneur de chaque page Finances
 export function useFinanceToneVars() {
   const tone = useFinanceTone();
+  // Même fond pour la page entière (zones visibles quand on tire la page au-delà de ses bords, voir globals.css)
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty('--fin-page-bg', tone.pale);
+    return () => {
+      root.style.removeProperty('--fin-page-bg');
+    };
+  }, [tone.pale]);
   return { '--fin-accent': tone.dark, '--fin-bg': tone.pale } as React.CSSProperties;
 }
 

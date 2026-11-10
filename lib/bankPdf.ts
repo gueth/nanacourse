@@ -97,7 +97,7 @@ function finalize(raws: Raw[], holder: string | null): Omit<ParsedTransaction, '
         if (currency[1] !== 'EUR') foreign = `${currency[2]} ${currency[1]}`;
       } else if (!NOISE.test(line)) details.push(line.replace(/^LIBELLE\s*:\s*/i, ''));
     }
-    const label = [raw.first, ...details].join(' · ').slice(0, 160) + (foreign ? ` (${foreign})` : '');
+    const label = [raw.first, ...details].join(' · ') + (foreign ? ` (${foreign})` : '');
     if (fee > 0 && raw.amount < 0 && fee < -raw.amount) {
       // Paiement en devise : la banque ajoute sa commission au montant, on la sépare pour la voir dans les frais
       result.push({ date: raw.date, amount: Math.round((raw.amount + fee) * 100) / 100, label });
