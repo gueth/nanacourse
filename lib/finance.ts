@@ -43,7 +43,7 @@ export const SECTIONS: Section[] = [
   { id: 'liquidites', statement: 'bilan', side: 'actif', title: 'Liquidités', template: ['Compte courant', 'Livret A', 'LDDS', 'Espèces'] },
   { id: 'placements', statement: 'bilan', side: 'actif', title: 'Placements', template: ['Assurance-vie', 'PEA', 'Épargne retraite (PER)', 'Compte-titres'] },
   { id: 'biens', statement: 'bilan', side: 'actif', title: 'Biens', template: ['Résidence principale', 'Véhicule', 'Autres biens de valeur'] },
-  { id: 'creances', statement: 'bilan', side: 'actif', title: 'Sommes à recevoir', template: ['Prêts accordés à des proches', 'Remboursements attendus'] },
+  { id: 'creances', statement: 'bilan', side: 'actif', title: 'Sommes à recevoir', template: ['Créances envers des proches', 'Remboursements attendus'] },
   // Bilan — passif (dettes ; le patrimoine net est calculé)
   { id: 'emprunts', statement: 'bilan', side: 'passif', title: 'Emprunts', template: ['Crédit immobilier', 'Crédit auto', 'Crédit à la consommation'] },
   { id: 'dettes', statement: 'bilan', side: 'passif', title: 'Autres dettes', template: ['Découvert', 'Impôts à payer', 'Dettes envers des proches'] },

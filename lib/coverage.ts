@@ -18,15 +18,55 @@ export type ManualNote = { account: string; month: string; count: number };
 // Solde estimé d'un livret à la fin d'un mois sans relevé ; balance null : des virements sont à préciser (questions)
 export type SavingsEstimate = { account: string; month: string; base: string; balance: number | null };
 // Virement entre mes comptes dont on ne sait pas vers quel compte (ou de quel compte) va l'argent : à préciser.
-// choices : mes autres comptes ; '' = un compte qui n'est pas suivi ici
+// choices : mes autres comptes, et les comptes courants ; '' = un compte qui n'est pas suivi ici
 export type TransferQuestion = { id: string; date: string; label: string; amount: number; account: string; choices: string[] };
+// Virement entre mes comptes dont une seule moitié est enregistrée, avec l'autre compte retenu
+// (précisé à la main ou lu dans le libellé ; '' : un compte non suivi ; null : pas encore connu)
+export type TransferCheck = TransferQuestion & { target: string | null };
+// Mois sans relevé d'un livret dont les opérations estimées, modifiées à la main, ne correspondent plus aux virements
+// vus sur les autres comptes
+// (reasons : la raison de chaque écart, opération par opération, et ce qu'il faut faire)
+export type TransferMismatch = { account: string; month: string; estimated: number; seen: number; reasons: string[] };
 export type Coverage = {
   tracked: TrackedAccount[];
   covered: string[]; // "compte en minuscules|AAAA-MM"
   manual: ManualNote[]; // opérations ajoutées à la main, par compte et par mois
   estimates: SavingsEstimate[];
   questions: TransferQuestion[];
+  transfers: TransferCheck[];
+  mismatches: TransferMismatch[];
 };
+
+// Mois dont les virements entre mes comptes sont à revérifier sur le Bilan, après un changement dans la liste des
+// opérations (gardés dans ce navigateur ; la demande s'efface quand on confirme sur le Bilan)
+const VERIFY_KEY = 'finances:virements-a-verifier';
+const verifyListeners = new Set<() => void>();
+export function readTransfersToVerify() {
+  try {
+    return localStorage.getItem(VERIFY_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+export const monthsToVerify = (snapshot: string) => snapshot.split(',').filter(Boolean);
+function writeTransfersToVerify(months: string[]) {
+  try {
+    localStorage.setItem(VERIFY_KEY, [...new Set(months)].sort().join(','));
+  } catch {
+    // stockage indisponible : la demande ne sera simplement pas gardée
+  }
+  verifyListeners.forEach((l) => l());
+}
+export function subscribeTransfersToVerify(onChange: () => void) {
+  verifyListeners.add(onChange);
+  window.addEventListener('storage', onChange);
+  return () => {
+    verifyListeners.delete(onChange);
+    window.removeEventListener('storage', onChange);
+  };
+}
+export const flagTransfersToVerify = (months: string[]) => writeTransfersToVerify([...monthsToVerify(readTransfersToVerify()), ...months]);
+export const clearTransfersToVerify = (month: string) => writeTransfersToVerify(monthsToVerify(readTransfersToVerify()).filter((m) => m !== month));
 
 const keyOf = (account: string, month: string) => `${account.toLowerCase()}|${month}`;
 

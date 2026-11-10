@@ -1,7 +1,7 @@
 import { supabase } from '@/lib/supabase';
-import { addLine, fetchOrSeedLines, importMayWrite, monthKey, SECTIONS, setLineAmount, shiftMonth, updateLine } from '@/lib/finance';
+import { addLine, fetchOrSeedLines, formatEuros, importMayWrite, monthKey, SECTIONS, setLineAmount, shiftMonth, updateLine } from '@/lib/finance';
 import type { ParsedTransaction, StatementSummary } from '@/lib/bankImport';
-import type { Coverage, ManualNote, SavingsEstimate, TrackedAccount, TransferQuestion } from '@/lib/coverage';
+import type { Coverage, ManualNote, SavingsEstimate, TrackedAccount, TransferCheck, TransferMismatch, TransferQuestion } from '@/lib/coverage';
 
 // Opérations bancaires importées depuis les relevés, classées par catégorie, et budget par catégorie.
 // Tables : voir supabase/finance_coach.sql
@@ -982,7 +982,7 @@ export async function fetchCoverage(): Promise<{ coverage: Coverage; error: { me
   };
   for (let from = 0; ; from += 1000) {
     const { data, error } = await supabase.from('bank_transactions').select('account, date, import_key').order('date').range(from, from + 999);
-    if (error) return { coverage: { tracked: [], covered: [], manual: [], estimates: [], questions: [] }, error };
+    if (error) return { coverage: { tracked: [], covered: [], manual: [], estimates: [], questions: [], transfers: [], mismatches: [] }, error };
     for (const r of (data as { account: string; date: string; import_key: string }[]) ?? []) {
       const month = monthOf(r.date);
       if (!isManual(r)) {
@@ -1002,8 +1002,8 @@ export async function fetchCoverage(): Promise<{ coverage: Coverage; error: { me
   const months = await supabase.from('statement_months').select('account, month');
   for (const r of (months.data as { account: string; month: string }[]) ?? []) track(r.account, r.month);
   const tracked = [...firsts.values()];
-  const { estimates, questions, error } = await estimateSavings(tracked, covered);
-  return { coverage: { tracked, covered: [...covered], manual: [...manual.values()], estimates, questions }, error };
+  const { estimates, questions, transfers, mismatches, error } = await estimateSavings(tracked, covered);
+  return { coverage: { tracked, covered: [...covered], manual: [...manual.values()], estimates, questions, transfers, mismatches }, error };
 }
 
 // --- Soldes estimés des livrets ---
@@ -1047,7 +1047,9 @@ function transferTarget(t: Transaction, accounts: string[]) {
 async function estimateSavings(tracked: TrackedAccount[], covered: Set<string>) {
   const estimates: SavingsEstimate[] = [];
   const questions = new Map<string, TransferQuestion>();
-  const done = (error: { message: string } | null = null) => ({ estimates, questions: [...questions.values()], error });
+  const transfers: TransferCheck[] = [];
+  const mismatches: TransferMismatch[] = [];
+  const done = (error: { message: string } | null = null) => ({ estimates, questions: [...questions.values()], transfers, mismatches, error });
   const savings = tracked.filter((a) => isSavingsAccount(a.account));
   if (savings.length === 0) return done();
   const isCovered = (account: string, month: string) => covered.has(`${account.toLowerCase()}|${month}`);
@@ -1061,18 +1063,84 @@ async function estimateSavings(tracked: TrackedAccount[], covered: Set<string>) 
     const row = balances.find((r) => r.period === month && r.label.toLowerCase() === account.toLowerCase());
     return row ? Number(row.amount) : null;
   };
-  const transfers: Transaction[] = [];
-  for (let start = 0; ; start += 1000) {
-    const { data, error } = await supabase.from('bank_transactions').select('*').eq('category', 'virement_interne').order('date').range(start, start + 999);
-    if (error) return done(error);
-    transfers.push(...((data as Transaction[]) ?? []).map(toTransaction));
-    if (!data || data.length < 1000) break;
-  }
-  // Les virements dont les deux moitiés sont enregistrées sont déjà comptés dans les relevés des deux comptes
-  const pairs = pairTransfers(transfers);
-  const loose = transfers.filter((t) => !pairs.has(t));
+  const { loose, error: looseError } = await fetchLooseTransfers();
+  if (looseError) return done(looseError);
+  // Opérations estimées modifiées à la main : elles remplacent les virements vus ailleurs pour leur compte et leur mois
+  const edited = await fetchEditedEstimates();
+  const editedOf = (account: string, month: string) => edited.filter((o) => o.account.toLowerCase() === account.toLowerCase() && o.month === month);
   const accounts = tracked.map((a) => a.account);
   const currents = tracked.filter((a) => !isSavingsAccount(a.account));
+  // Mes autres comptes, et toujours les comptes courants (même celui du virement)
+  const choicesFor = (t: Transaction) => accounts.filter((a) => a.toLowerCase() !== t.account.toLowerCase() || !isSavingsAccount(a));
+
+  // Tous les virements dont une seule moitié est enregistrée, avec l'autre compte retenu : à revérifier sur le Bilan
+  for (const t of loose)
+    transfers.push({ id: t.id, date: t.date, label: t.label, amount: t.amount, account: t.account, choices: choicesFor(t), target: transferTarget(t, accounts) ?? null });
+  // Opérations estimées modifiées à la main qui ne collent plus aux virements vus sur les autres comptes,
+  // avec la raison de chaque écart (opération par opération)
+  for (const key of new Set(edited.map((o) => `${o.account.toLowerCase()}|${o.month}`))) {
+    const all = edited.filter((o) => `${o.account.toLowerCase()}|${o.month}` === key);
+    const { account, month } = all[0];
+    if (isCovered(account, month)) continue;
+    const ops = all.filter((o) => o.amount !== 0);
+    const isThis = (a: string | null) => a?.toLowerCase() === account.toLowerCase();
+    // Virements vus sur les autres comptes ce mois-ci, dont l'autre compte est ce livret
+    const seenTransfers = transfers.filter((t) => monthOf(t.date) === month && !isThis(t.account) && isThis(t.target));
+    const estimated = round(ops.reduce((s, o) => s + o.amount, 0));
+    const seen = round(-seenTransfers.reduce((s, t) => s + t.amount, 0));
+    if (cents(estimated) === cents(seen)) continue;
+
+    // Chaque opération estimée cherche son double (montant inverse, à quelques jours près) parmi ces virements
+    const unmatched = [...seenTransfers];
+    const missing: EstimatedOperation[] = [];
+    for (const o of ops) {
+      const i = unmatched.findIndex((t) => cents(t.amount) === -cents(o.amount) && dayGap(t.date, o.date) <= TRANSFER_DAYS);
+      if (i >= 0) unmatched.splice(i, 1);
+      else missing.push(o);
+    }
+    const reasons: string[] = [];
+    if (missing.length) {
+      // Opérations des autres comptes autour du mois : le double peut être là, mais pas classé en virement
+      const { data } = await supabase
+        .from('bank_transactions')
+        .select('*')
+        .gte('date', shiftDay(`${month}-01`, -TRANSFER_DAYS))
+        .lte('date', shiftDay(lastDayOf(month), TRANSFER_DAYS));
+      const nearby = ((data as Transaction[]) ?? []).map(toTransaction);
+      for (const o of missing) {
+        const what = `« ${o.label} » (${signedEuros(o.amount)} sur ${account} le ${dayLabel(o.date)})`;
+        const twin = (x: { account: string; amount: number; date: string }) =>
+          !isThis(x.account) && cents(x.amount) === -cents(o.amount) && dayGap(x.date, o.date) <= TRANSFER_DAYS;
+        const transfer = transfers.find((t) => twin(t) && !seenTransfers.includes(t));
+        const other = !transfer && nearby.find((x) => twin(x) && x.category !== 'virement_interne');
+        if (transfer)
+          reasons.push(
+            `${what} correspond au virement « ${transfer.label} » sur ${transfer.account}, mais ce virement est indiqué ${
+              transfer.target === null
+                ? 'sans autre compte'
+                : transfer.target === ''
+                  ? 'avec un compte non suivi'
+                  : `${transfer.amount < 0 ? 'vers' : 'depuis'} ${transfer.target}`
+            } : choisis ${account} ci-dessous.`
+          );
+        else if (other)
+          reasons.push(
+            `${what} correspond sans doute à « ${other.label} » (${signedEuros(other.amount)} sur ${other.account}), classée en ${categoryById(other.category).label} : classe-la en Virements entre mes comptes dans la liste des opérations.`
+          );
+        else
+          reasons.push(
+            `${what} : aucune opération de ${signedEuros(-o.amount)} n'apparaît sur tes autres comptes autour de cette date. Si l'argent ${
+              o.amount < 0 ? 'est simplement allé sur' : 'vient simplement de'
+            } ton compte courant, son relevé doit la montrer : vérifie le montant et la date, ou importe ce relevé.`
+          );
+      }
+    }
+    for (const t of unmatched)
+      reasons.push(
+        `Le virement « ${t.label} » (${signedEuros(t.amount)} sur ${t.account} le ${dayLabel(t.date)}, ${t.amount < 0 ? 'vers' : 'depuis'} ${account}) n'a pas d'opération estimée de ${signedEuros(-t.amount)} sur ${account} : ajoute-la dans la liste des opérations, ou choisis un autre compte ci-dessous.`
+      );
+    mismatches.push({ account, month, estimated, seen, reasons });
+  }
 
   for (const s of savings) {
     // Mois terminés seulement : le mois en cours n'a encore de relevé sur aucun compte
@@ -1090,8 +1158,10 @@ async function estimateSavings(tracked: TrackedAccount[], covered: Set<string>) 
       if (!complete) continue;
       let balance = start;
       let unclear = false;
+      for (let m = shiftMonth(base, 1); m <= month; m = shiftMonth(m, 1)) for (const o of editedOf(s.account, m)) balance += o.amount;
       for (const t of loose) {
         if (t.date <= lastDayOf(base) || t.date > lastDayOf(month) || t.account.toLowerCase() === s.account.toLowerCase()) continue;
+        if (editedOf(s.account, monthOf(t.date)).length > 0) continue;
         const target = transferTarget(t, accounts);
         if (target === undefined) {
           // Ce virement pourrait concerner le livret : on le fait préciser, et le solde attend la réponse
@@ -1102,7 +1172,7 @@ async function estimateSavings(tracked: TrackedAccount[], covered: Set<string>) 
             label: t.label,
             amount: t.amount,
             account: t.account,
-            choices: accounts.filter((a) => a.toLowerCase() !== t.account.toLowerCase())
+            choices: choicesFor(t)
           });
         } else if (target.toLowerCase() === s.account.toLowerCase()) balance -= t.amount; // sortie du compte courant = entrée sur le livret
       }
@@ -1110,6 +1180,82 @@ async function estimateSavings(tracked: TrackedAccount[], covered: Set<string>) 
     }
   }
   return done();
+}
+
+const signedEuros = (n: number) => `${n > 0 ? '+' : ''}${formatEuros(n)}`;
+const dayLabel = (date: string) => new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+
+// Virements entre mes comptes dont une seule moitié est enregistrée (celles dont les deux moitiés le sont
+// sont déjà comptées dans les relevés des deux comptes)
+async function fetchLooseTransfers() {
+  const transfers: Transaction[] = [];
+  for (let start = 0; ; start += 1000) {
+    const { data, error } = await supabase.from('bank_transactions').select('*').eq('category', 'virement_interne').order('date').range(start, start + 999);
+    if (error) return { loose: [] as Transaction[], error };
+    transfers.push(...((data as Transaction[]) ?? []).map(toTransaction));
+    if (!data || data.length < 1000) break;
+  }
+  const pairs = pairTransfers(transfers);
+  return { loose: transfers.filter((t) => !pairs.has(t)), error: null };
+}
+
+// --- Opérations estimées d'un livret sans relevé ---
+// Pour un mois sans relevé du livret, ses opérations sont estimées d'après les virements vus sur les autres comptes
+// (une sortie du compte courant vers le livret est une entrée sur le livret). L'utilisateur peut les modifier :
+// la version modifiée est alors gardée (table estimated_operations, supabase/estimated_operations.sql) et remplace
+// l'estimation automatique, pour la liste comme pour le solde estimé du Bilan.
+
+export type EstimatedOperation = { id?: string; account: string; month: string; date: string; label: string; amount: number };
+
+// Opérations estimées modifiées à la main (table absente : aucune)
+async function fetchEditedEstimates(account?: string, month?: string) {
+  let query = supabase.from('estimated_operations').select('id, account, month, date, label, amount').order('date');
+  if (account) query = query.ilike('account', account);
+  if (month) query = query.eq('month', month);
+  const { data, error } = await query;
+  if (error) return [];
+  return ((data as EstimatedOperation[]) ?? []).map((o) => ({ ...o, amount: Number(o.amount) }));
+}
+
+// Opérations du livret pour le mois : celles modifiées à la main s'il y en a, sinon l'estimation automatique.
+// unclear : virements de ce mois dont l'autre compte reste à préciser (sur le Bilan), qui pourraient le concerner
+export async function fetchEstimatedOperations(account: string, month: string, accounts: string[]) {
+  const edited = await fetchEditedEstimates(account, month);
+  if (edited.length > 0) return { operations: edited, edited: true, unclear: 0, error: null };
+  const { loose, error } = await fetchLooseTransfers();
+  if (error) return { operations: [] as EstimatedOperation[], edited: false, unclear: 0, error };
+  const operations: EstimatedOperation[] = [];
+  let unclear = 0;
+  for (const t of loose) {
+    if (monthOf(t.date) !== month || t.account.toLowerCase() === account.toLowerCase()) continue;
+    const target = transferTarget(t, accounts);
+    if (target === undefined) unclear++;
+    else if (target.toLowerCase() === account.toLowerCase())
+      operations.push({ account, month, date: t.date, label: `Virement ${t.amount < 0 ? 'depuis' : 'vers'} ${t.account}`, amount: -t.amount });
+  }
+  return { operations, edited: false, unclear, error: null };
+}
+
+// Garde la version modifiée des opérations estimées du livret pour ce mois (remplace la précédente)
+export async function saveEstimatedOperations(account: string, month: string, operations: Omit<EstimatedOperation, 'id'>[]) {
+  const err = await resetEstimatedOperations(account, month);
+  if (err) return err;
+  // Liste vidée à la main : une opération à 0 € la garde « modifiée » (sinon l'estimation automatique reviendrait)
+  const rows = (operations.length ? operations : [{ account, month, date: `${month}-01`, label: 'Aucune opération', amount: 0 }]).map((o) => ({
+    account,
+    month,
+    date: o.date,
+    label: o.label,
+    amount: o.amount
+  }));
+  const { error } = await supabase.from('estimated_operations').insert(rows);
+  return error;
+}
+
+// Revient à l'estimation automatique
+export async function resetEstimatedOperations(account: string, month: string) {
+  const { error } = await supabase.from('estimated_operations').delete().ilike('account', account).eq('month', month);
+  return error;
 }
 
 // Précise l'autre compte d'un virement entre mes comptes ('' : un compte qui n'est pas suivi ici)

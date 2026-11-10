@@ -16,6 +16,7 @@ import {
   detectUnusual,
   fetchTransactions,
   isManual,
+  isSavingsAccount,
   loadCategories,
   merchantKey,
   monthOf,
@@ -34,6 +35,9 @@ import { rememberedFinanceMonth, useViewedMonth } from '@/lib/health';
 import { NewCategoryForm } from '@/components/finance/CategoryManager';
 import { BudgetLimits } from '@/components/finance/BudgetLimits';
 import { KeyFigures } from '@/components/finance/KeyFigures';
+import { useCoverage } from '@/lib/financeQueries';
+import { flagTransfersToVerify } from '@/lib/coverage';
+import { EstimatedOperations } from '@/components/finance/EstimatedOperations';
 import {
   ErrorNote,
   FIN,
@@ -183,11 +187,13 @@ type ManualFields = { date: string; label: string; amount: number; account: stri
 function AddOperationForm({
   period,
   accounts,
+  defaultAccount,
   onAdd,
   onCancel
 }: {
   period: string;
   accounts: string[];
+  defaultAccount?: string;
   onAdd: (fields: ManualFields) => Promise<boolean>;
   onCancel: () => void;
 }) {
@@ -196,7 +202,7 @@ function AddOperationForm({
   const [label, setLabel] = useState('');
   const [sign, setSign] = useState<1 | -1>(-1);
   const [amount, setAmount] = useState<number | null>(null);
-  const [account, setAccount] = useState(accounts[0] ?? 'Compte courant');
+  const [account, setAccount] = useState(defaultAccount ?? accounts[0] ?? 'Compte courant');
   const [category, setCategory] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const ready = !!label.trim() && !!amount && amount > 0 && date.startsWith(period);
@@ -222,7 +228,7 @@ function AddOperationForm({
   }
 
   return (
-    <div className="mt-3 rounded-sm border p-3" style={{ borderColor: FIN.line, backgroundColor: FIN.paper }}>
+    <div className="mb-3 rounded-sm border p-3" style={{ borderColor: FIN.line, backgroundColor: FIN.paper }}>
       <div className="flex gap-1.5">
         {(
           [
@@ -265,12 +271,13 @@ function AddOperationForm({
       </div>
       <label className="mt-2 flex flex-col gap-0.5">
         {caption('Compte')}
-        <input value={account} onChange={(e) => setAccount(e.target.value)} list="comptes-operation" className={inputClass} style={{ borderColor: FIN.line }} />
-        <datalist id="comptes-operation">
-          {[...new Set([...accounts, 'Espèces'])].map((a) => (
-            <option key={a} value={a} />
+        <select value={account} onChange={(e) => setAccount(e.target.value)} className="fin-select w-full py-1.5 pl-2 text-[13px]">
+          {[...new Set([...(accounts.length > 0 ? accounts : ['Compte courant']), 'Espèces'])].map((a) => (
+            <option key={a} value={a}>
+              {a}
+            </option>
           ))}
-        </datalist>
+        </select>
       </label>
       <div className="mt-2 flex flex-col gap-0.5">
         {caption('Catégorie')}
@@ -306,6 +313,7 @@ export default function BudgetPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [accountFilter, setAccountFilter] = useState(''); // '' : tous les comptes
 
   // Données gardées en mémoire entre deux visites (lib/cache) : affichées tout de suite, puis rechargées en arrière-plan.
   // Opérations : une fenêtre de 13 mois (le mois affiché et les 12 d'avant) par mois affiché.
@@ -335,7 +343,16 @@ export default function BudgetPage() {
   const unusual = useMemo(() => detectUnusual(monthTx, history), [monthTx, history]);
   const unusualIds = new Set(unusual.map((t) => t.id));
   const split = splitByKind(monthTx, unusualIds);
-  const accounts = [...new Set(transactions.map((t) => t.account))];
+  // Mes comptes : ceux des opérations chargées, ceux des relevés importés, et toujours compte courant, Livret A et LEP
+  const coverageQuery = useCoverage();
+  const accounts = useMemo(() => {
+    const list: string[] = [];
+    const known = (name: string) => list.some((a) => a.toLowerCase().includes(name.toLowerCase()));
+    for (const a of [...transactions.map((t) => t.account), ...(coverageQuery.data?.tracked.map((t) => t.account) ?? [])])
+      if (!list.some((x) => x.toLowerCase() === a.toLowerCase())) list.push(a);
+    for (const a of ['Compte courant', 'Livret A', 'LEP']) if (!known(a)) list.push(a);
+    return list;
+  }, [transactions, coverageQuery.data]);
 
   function report(err: { message: string } | null) {
     if (err) setError(describeDbError(err.message));
@@ -347,7 +364,14 @@ export default function BudgetPage() {
     report(await syncFinances([...new Set(touched.map((t) => monthOf(t.date)))]));
   }
 
+  // Un changement qui touche aux virements entre mes comptes (ou à un livret) : le Bilan redemande de les vérifier
+  function flagTransfers(touched: Pick<Transaction, 'date' | 'account' | 'category'>[], category?: string) {
+    const months = touched.filter((t) => category === 'virement_interne' || t.category === 'virement_interne' || isSavingsAccount(t.account)).map((t) => monthOf(t.date));
+    if (months.length) flagTransfersToVerify(months);
+  }
+
   async function recategorize(t: Transaction, category: string) {
+    flagTransfers([t], category);
     setTransactions((ts) => ts.map((x) => (x.id === t.id ? { ...x, category } : x)));
     const err = await updateCategory([t.id], category);
     if (err) return report(err);
@@ -361,6 +385,7 @@ export default function BudgetPage() {
     const key = merchantKey(t.label);
     const isSame = (x: Transaction) => OTHER_IDS.includes(x.category) && merchantKey(x.label) === key && x.amount > 0 === t.amount > 0;
     const touched = transactions.filter(isSame);
+    flagTransfers(touched, category);
     const ids = touched.map((x) => x.id);
     setTransactions((ts) => ts.map((x) => (isSame(x) ? { ...x, category } : x)));
     const err = (await updateCategory(ids, category)) ?? (await saveRule(key, category));
@@ -376,6 +401,7 @@ export default function BudgetPage() {
   async function alwaysLikeThis(t: Transaction) {
     const key = merchantKey(t.label);
     const same = transactions.filter((x) => merchantKey(x.label) === key && x.category !== t.category);
+    flagTransfers(same, t.category);
     setTransactions((ts) => ts.map((x) => (merchantKey(x.label) === key ? { ...x, category: t.category } : x)));
     report(await saveRule(key, t.category));
     if (same.length) report(await updateCategory(same.map((x) => x.id), t.category));
@@ -391,6 +417,7 @@ export default function BudgetPage() {
       return false;
     }
     const month = monthOf(transaction.date);
+    flagTransfers([transaction]);
     setCachedAll<TxWindow>(TX_PREFIX, (w) =>
       w.from <= month && month <= w.to ? { ...w, list: [transaction, ...w.list].sort((a, b) => b.date.localeCompare(a.date)) } : w
     );
@@ -403,13 +430,23 @@ export default function BudgetPage() {
   async function removeOperation(t: Transaction) {
     if (!isManual(t)) return;
     if (!(await confirm("Supprimer l'opération", `Supprimer « ${t.label} » (${formatEuros(t.amount)}), ajoutée à la main ?`))) return;
+    flagTransfers([t]);
     setTransactions((ts) => ts.filter((x) => x.id !== t.id));
     const err = await deleteManualTransaction(t.id);
     if (err) return report(err);
     await sync([t]);
   }
 
-  const shownTx = showAll ? monthTx : monthTx.slice(0, 15);
+  // Liste des opérations : filtrable par compte
+  const shownAccount = accounts.includes(accountFilter) ? accountFilter : '';
+  const listTx = shownAccount ? monthTx.filter((t) => t.account === shownAccount) : monthTx;
+  // Livret sans relevé ce mois-ci : ses opérations sont estimées (et modifiables)
+  const estimated =
+    !!shownAccount &&
+    isSavingsAccount(shownAccount) &&
+    !!coverageQuery.data &&
+    !coverageQuery.data.covered.includes(`${shownAccount.toLowerCase()}|${period}`);
+  const shownTx = showAll ? listTx : listTx.slice(0, 15);
 
   return (
     <FinancePage
@@ -480,6 +517,40 @@ export default function BudgetPage() {
           <BudgetLimits period={period!} currentMonth={currentMonth} monthTx={monthTx} onError={setError} onCategoriesChanged={() => categoriesQuery.reload()} />
 
           <Panel collapsible title="Liste des opérations" subtitle="Corrige une catégorie si besoin : l'appli peut retenir ta correction pour les fois suivantes.">
+            {adding ? (
+              <AddOperationForm
+                period={period!}
+                accounts={accounts}
+                defaultAccount={shownAccount || undefined}
+                onAdd={addOperation}
+                onCancel={() => setAdding(false)}
+              />
+            ) : (
+              <button type="button" onClick={() => setAdding(true)} className="mb-3 flex items-center gap-1 text-[10px] uppercase tracking-[0.2em]" style={{ color: FIN.accent }}>
+                <Plus size={13} /> Ajouter une opération
+              </button>
+            )}
+            <label className="mb-2 flex items-center gap-2 text-[10px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+              Compte
+              <select
+                value={shownAccount}
+                onChange={(e) => setAccountFilter(e.target.value)}
+                className="fin-select min-w-0 flex-1 py-1 pl-2 text-[12px] normal-case tracking-normal"
+              >
+                <option value="">Tous les comptes</option>
+                {accounts.map((a) => (
+                  <option key={a} value={a}>
+                    {a}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {estimated && <EstimatedOperations account={shownAccount} period={period!} accounts={accounts} onSaved={coverageQuery.reload} />}
+            {listTx.length === 0 && !estimated && (
+              <p className="py-2 text-[11px]" style={{ color: FIN.slate }}>
+                Aucune opération sur ce compte ce mois-ci.
+              </p>
+            )}
             <ul className="divide-y" style={{ borderColor: FIN.line }}>
               {shownTx.map((t) => {
                 const cat = categoryById(t.category);
@@ -490,7 +561,7 @@ export default function BudgetPage() {
                         <span className="block break-words">{t.label}</span>
                         <span className="text-[10px]" style={{ color: FIN.slate }}>
                           {shortDate(t.date)}
-                          {accounts.length > 1 && ` · ${t.account}`}
+                          {!shownAccount && ` · ${t.account}`}
                           {isManual(t) && ' · ajoutée à la main'}
                         </span>
                       </span>
@@ -521,16 +592,9 @@ export default function BudgetPage() {
                 );
               })}
             </ul>
-            {monthTx.length > 15 && (
+            {listTx.length > 15 && (
               <button type="button" onClick={() => setShowAll(!showAll)} className="mt-2 text-[10px] uppercase tracking-[0.2em]" style={{ color: FIN.gold }}>
-                {showAll ? 'Voir moins' : `Voir les ${monthTx.length} opérations`}
-              </button>
-            )}
-            {adding ? (
-              <AddOperationForm period={period!} accounts={accounts} onAdd={addOperation} onCancel={() => setAdding(false)} />
-            ) : (
-              <button type="button" onClick={() => setAdding(true)} className="mt-3 flex items-center gap-1 text-[10px] uppercase tracking-[0.2em]" style={{ color: FIN.accent }}>
-                <Plus size={13} /> Ajouter une opération
+                {showAll ? 'Voir moins' : `Voir les ${listTx.length} opérations`}
               </button>
             )}
           </Panel>

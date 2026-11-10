@@ -1,12 +1,24 @@
 'use client';
 
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { AlertTriangle, PenLine } from 'lucide-react';
 import { rememberedFinanceMonth, useViewedMonth } from '@/lib/health';
 import { useCoverage, useMonthLines, useMonthOperations } from '@/lib/financeQueries';
-import { estimateOf, isMissingLine, manualNotes, monthStatus, withEstimates, type TransferQuestion } from '@/lib/coverage';
-import { lastDayOf, setTransferAccount } from '@/lib/transactions';
+import {
+  clearTransfersToVerify,
+  isMissingLine,
+  manualNotes,
+  monthStatus,
+  monthsToVerify,
+  readTransfersToVerify,
+  subscribeTransfersToVerify,
+  withEstimates,
+  type TransferCheck,
+  type TransferMismatch
+} from '@/lib/coverage';
+import { setTransferAccount } from '@/lib/transactions';
+import { refreshBalanceLinksOnce } from '@/lib/balanceLinks';
 import { formatEuros, monthEndLabel, monthKey, monthLabel, SECTIONS, shiftMonth, totals, type FinanceLine, type Side, type Statement } from '@/lib/finance';
 import {
   useFinanceToneVars,
@@ -73,6 +85,13 @@ export default function FinancePage() {
 
   // Lignes du mois affiché, gardées en mémoire entre deux visites (lib/financeQueries) : affichées tout de suite, puis rafraîchies
   const currentQuery = useMonthLines(period);
+  // Les lignes reliées (créances, emprunts, dettes) sont recalculées une fois à l'ouverture, puis le mois est rechargé
+  const reloadLines = currentQuery.reload;
+  useEffect(() => {
+    refreshBalanceLinksOnce().then((done) => {
+      if (done) reloadLines();
+    });
+  }, [reloadLines]);
   // Le mois en cours reste un « nouveau mois » tant que son relevé n'est pas importé
   const operations = useMonthOperations(period).data;
   // Relevés présents ou manquants (règles dans lib/coverage, les mêmes que pour l'accueil et l'état de santé)
@@ -99,13 +118,11 @@ export default function FinancePage() {
   const lines = period && coverage ? withEstimates(withMissing, coverage, period) : withMissing;
   // Virements entre mes comptes dont l'autre compte est à préciser : chacun se précise dans le mois où il a eu lieu
   const questions = (coverage?.questions ?? []).filter((q) => !!period && q.date.startsWith(period));
-  // Mois (autres que celui affiché) dont des virements restent à préciser pour estimer le solde d'un livret ce mois-ci
-  const pendingMonths = (account: string) => {
-    const e = period && coverage?.estimates.find((x) => x.month === period && x.account === account && x.balance === null);
-    if (!e) return [];
-    const months = (coverage?.questions ?? []).filter((q) => q.date > lastDayOf(e.base) && q.date <= lastDayOf(e.month)).map((q) => q.date.slice(0, 7));
-    return [...new Set(months)].filter((m) => m !== period).sort();
-  };
+  // Tous les virements du mois, à revérifier après un changement dans la liste des opérations (ou sur demande)
+  const monthTransfers = (coverage?.transfers ?? []).filter((q) => !!period && q.date.startsWith(period));
+  const mismatches = (coverage?.mismatches ?? []).filter((m) => m.month === period);
+  const verifySnapshot = useSyncExternalStore(subscribeTransfersToVerify, readTransfersToVerify, () => '');
+  const flagged = !!period && monthsToVerify(verifySnapshot).includes(period);
   const error = currentQuery.error && describeError(currentQuery.error);
 
   const loading = !period || (currentQuery.data === undefined && !currentQuery.error);
@@ -169,30 +186,25 @@ export default function FinancePage() {
                 className="mt-5 block rounded-sm border px-3 py-2 text-[12px]"
                 style={{ borderColor: FIN.rose, backgroundColor: FIN.paper, color: FIN.rose }}
               >
-                {missingAccounts.map((a) => {
-                  const estimate = estimateOf(coverage!, a, period!);
-                  return (
-                    <span key={a} className="flex items-start gap-2 py-0.5">
-                      <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden />
-                      <span>
-                        Relevé {a} manquant
-                        {estimate && (
-                          <span className="block text-[10px]" style={{ color: FIN.slate }}>
-                            {estimate.balance !== null
-                              ? `Solde estimé : relevé de ${monthLabel(estimate.base)} et virements entre tes comptes depuis (hors intérêts)`
-                              : pendingMonths(a).length
-                                ? `Solde estimé dès que les virements de ${pendingMonths(a).map(monthLabel).join(', ')} seront précisés (sur ${pendingMonths(a).length > 1 ? 'ces mois' : 'ce mois'})`
-                                : 'Solde estimé dès que les virements ci-dessous seront précisés'}
-                          </span>
-                        )}
-                      </span>
-                    </span>
-                  );
-                })}
+                {missingAccounts.map((a) => (
+                  <span key={a} className="flex items-start gap-2 py-0.5">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden />
+                    <span>Relevé {a} manquant</span>
+                  </span>
+                ))}
               </Link>
             )}
             {/* Virements dont on ne sait pas vers quel compte va l'argent : la réponse permet d'estimer le solde du livret */}
-            {questions.length > 0 && <TransferQuestions questions={questions} onAnswered={coverageQuery.reload} />}
+            {/* Rien à vérifier quand tout concorde : la vérification n'apparaît qu'en cas d'incohérence ou de question */}
+            {(questions.length > 0 || flagged || mismatches.length > 0) && (
+              <TransferReview
+                transfers={monthTransfers}
+                mismatches={mismatches}
+                flagged={flagged}
+                onAnswered={coverageQuery.reload}
+                onDone={() => clearTransfersToVerify(period!)}
+              />
+            )}
             {/* Opérations ajoutées à la main : elles comptent pour le mois, en attendant (ou en plus) du relevé */}
             {manual.length > 0 && (
               <div className="mt-3 rounded-sm border px-3 py-2 text-[12px]" style={{ borderColor: FIN.gold, backgroundColor: FIN.paper, color: FIN.navy }}>
@@ -328,8 +340,22 @@ export default function FinancePage() {
   );
 }
 
-// Virements entre mes comptes à préciser : pour chacun, l'autre compte (celui qui reçoit l'argent, ou qui l'envoie)
-function TransferQuestions({ questions, onAnswered }: { questions: TransferQuestion[]; onAnswered: () => Promise<unknown> }) {
+// Virements entre mes comptes du mois : pour chacun, l'autre compte (celui qui reçoit l'argent, ou qui l'envoie).
+// Ceux dont l'autre compte n'est pas connu sont à préciser ; après un changement dans la liste des opérations, ou quand
+// les opérations estimées d'un livret ne collent plus aux virements vus, tous sont à revérifier.
+function TransferReview({
+  transfers,
+  mismatches,
+  flagged,
+  onAnswered,
+  onDone
+}: {
+  transfers: TransferCheck[];
+  mismatches: TransferMismatch[];
+  flagged: boolean;
+  onAnswered: () => Promise<unknown>;
+  onDone: () => void;
+}) {
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   async function answer(id: string, account: string) {
@@ -348,26 +374,47 @@ function TransferQuestions({ questions, onAnswered }: { questions: TransferQuest
   return (
     <div className="mt-3 rounded-sm border px-3 py-2 text-[12px]" style={{ borderColor: FIN.gold, backgroundColor: FIN.paper, color: FIN.navy }}>
       <p className="text-[11px]" style={{ color: FIN.slate }}>
-        Virements entre tes comptes : précise l&apos;autre compte pour estimer le solde de ton livret.
+        {mismatches.length > 0
+          ? 'Les opérations estimées d’un livret ne correspondent pas aux virements vus sur tes autres comptes :'
+          : flagged
+            ? 'La liste des opérations a changé ce mois-ci, et tout concorde avec les opérations estimées de tes livrets. Vérifie seulement que chaque virement ci-dessous va vers le bon compte (un virement peut très bien aller simplement du livret vers ton compte courant).'
+            : 'Virements entre tes comptes : précise l’autre compte pour estimer le solde de ton livret.'}
       </p>
-      {questions.map((q) => (
-        <label key={q.id} className="mt-2 block">
+      {mismatches.map((m) => (
+        <div key={m.account} className="mt-2 text-[11px]" style={{ color: FIN.rose }}>
+          <p className="flex items-start gap-2">
+            <AlertTriangle size={13} className="mt-0.5 shrink-0" aria-hidden />
+            <span>
+              {m.account} : {formatEuros(m.estimated)} d&apos;opérations estimées, contre {formatEuros(m.seen)} de virements vus vers ou depuis ce
+              livret sur tes autres comptes.
+            </span>
+          </p>
+          <ul className="mt-1 list-disc pl-8" style={{ color: FIN.navy }}>
+            {m.reasons.map((r) => (
+              <li key={r} className="mt-0.5">
+                {r}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      {transfers.map((q) => (
+        <label key={`${q.id}|${q.target}`} className="mt-2 block">
           <span className="block">
             {new Date(q.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} · {q.label}
           </span>
-          <span className="flex items-center gap-2 text-[11px]" style={{ color: FIN.slate }}>
+          <span className="flex items-center gap-2 text-[11px]" style={{ color: q.target === null ? FIN.gold : FIN.slate }}>
             {formatEuros(q.amount)} sur {q.account}, {q.amount < 0 ? 'vers' : 'depuis'}
             <select
-              className="min-w-0 flex-1 rounded-sm border bg-transparent px-1 py-0.5 text-[12px]"
-              style={{ borderColor: FIN.line, color: FIN.navy }}
-              defaultValue=""
+              className="fin-select min-w-0 flex-1 py-0.5 pl-1.5 text-[12px]"
+              defaultValue={q.target === null ? '' : q.target === '' ? '-' : (q.choices.find((c) => c.toLowerCase() === q.target!.toLowerCase()) ?? q.target)}
               disabled={saving === q.id}
               onChange={(e) => e.target.value !== '' && answer(q.id, e.target.value === '-' ? '' : e.target.value)}
             >
               <option value="" disabled>
                 Choisir…
               </option>
-              {q.choices.map((c) => (
+              {[...q.choices, ...(q.target && !q.choices.some((c) => c.toLowerCase() === q.target!.toLowerCase()) ? [q.target] : [])].map((c) => (
                 <option key={c} value={c}>
                   {c}
                 </option>
@@ -377,6 +424,16 @@ function TransferQuestions({ questions, onAnswered }: { questions: TransferQuest
           </span>
         </label>
       ))}
+      {transfers.length === 0 && (
+        <p className="mt-2 text-[11px]" style={{ color: FIN.slate }}>
+          Aucun virement entre tes comptes à vérifier ce mois-ci.
+        </p>
+      )}
+      {transfers.every((q) => q.target !== null) && (
+        <button type="button" onClick={onDone} className="mt-3 text-[10px] uppercase tracking-[0.2em]" style={{ color: FIN.accent }}>
+          {flagged ? 'C’est vérifié' : 'Fermer'}
+        </button>
+      )}
       {error && (
         <p className="mt-2 text-[11px]" style={{ color: FIN.rose }}>
           {error}

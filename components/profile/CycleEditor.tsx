@@ -5,6 +5,17 @@ import { Trash2 } from 'lucide-react';
 import { PaperModal, PF, serif } from '@/components/profile/ProfileParts';
 import { addPeriod, buildCycle, CYCLE_LIMITS, cyclePhase, daysBetween, deletePeriod, PHASES, saveCycle, type CycleSettings } from '@/lib/cycle';
 
+// Choix d'une durée en jours entre deux bornes ; une ancienne valeur hors bornes reste affichée (signalée invalide)
+function dayOptions([min, max]: readonly [number, number], current: string) {
+  const days = Array.from({ length: max - min + 1 }, (_, i) => String(min + i));
+  if (!days.includes(current)) days.unshift(current);
+  return days.map((d) => (
+    <option key={d} value={d}>
+      {d}
+    </option>
+  ));
+}
+
 // Fenêtre « Mon cycle » du Profil :
 //  - noter le premier jour de chaque règles (enregistré tout de suite) ; la durée moyenne du cycle se calcule
 //    à partir des écarts entre ces dates ;
@@ -132,31 +143,17 @@ export default function CycleEditor({
           ) : (
             <label className="block text-xs">
               Durée du cycle (jours)
-              <input
-                value={baseLength}
-                onChange={(e) => setBaseLength(e.target.value)}
-                type="number"
-                inputMode="numeric"
-                min={CYCLE_LIMITS.cycle[0]}
-                max={CYCLE_LIMITS.cycle[1]}
-                className={`${inputClass} mt-0.5 w-full`}
-                style={{ borderColor: PF.pale }}
-              />
+              <select value={baseLength} onChange={(e) => setBaseLength(e.target.value)} className={`${inputClass} pf-select mt-0.5 w-full`} style={{ borderColor: PF.pale }}>
+                {dayOptions(CYCLE_LIMITS.cycle, baseLength)}
+              </select>
               <span className="mt-0.5 block opacity-70">en attendant deux dates notées</span>
             </label>
           )}
           <label className="block text-xs">
             Durée des règles (jours)
-            <input
-              value={period}
-              onChange={(e) => setPeriod(e.target.value)}
-              type="number"
-              inputMode="numeric"
-              min={CYCLE_LIMITS.period[0]}
-              max={CYCLE_LIMITS.period[1]}
-              className={`${inputClass} mt-0.5 w-full`}
-              style={{ borderColor: PF.pale }}
-            />
+            <select value={period} onChange={(e) => setPeriod(e.target.value)} className={`${inputClass} pf-select mt-0.5 w-full`} style={{ borderColor: PF.pale }}>
+              {dayOptions(CYCLE_LIMITS.period, period)}
+            </select>
           </label>
         </div>
         {invalid && (

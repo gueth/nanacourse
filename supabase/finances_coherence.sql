@@ -36,9 +36,10 @@ create table if not exists balance_links (
   id uuid primary key default gen_random_uuid(),
   section text not null,          -- creances, emprunts ou dettes
   label text not null,            -- ligne de la rubrique
-  targets text[] not null default '{}', -- catégories, ou grandes catégories ("groupe:<id>")
+  targets text[] not null default '{}', -- catégories qui augmentent la ligne, ou grandes catégories ("groupe:<id>")
+  decreases text[] not null default '{}', -- catégories qui la diminuent (remboursements)
   opening numeric not null default 0,   -- solde de départ
-  opening_month text not null,    -- AAAA-MM : solde au dernier jour de ce mois
+  opening_month text,             -- AAAA-MM, facultatif : solde au dernier jour de ce mois
   created_at timestamptz not null default now()
 );
 

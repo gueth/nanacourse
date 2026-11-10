@@ -8,6 +8,13 @@ export function describeDbError(message: string) {
   if (/'auto' column|column .*auto/i.test(message)) {
     return "Il manque la colonne « auto » dans la table finance_lines : exécute le script supabase/finances_coherence.sql dans l'éditeur SQL de Supabase.";
   }
+  // Mois de départ d'une ligne reliée devenu facultatif : la contrainte « not null » de la première version reste à retirer
+  if (/opening_month/.test(message) && /not-null/i.test(message)) {
+    return "Le mois de départ est encore obligatoire dans Supabase : exécute le script supabase/balance_links_optional_month.sql dans l'éditeur SQL.";
+  }
+  if (/decreases/.test(message) && /(column|schema cache)/i.test(message)) {
+    return "Les catégories qui diminuent une ligne ne sont pas encore prévues dans Supabase : exécute le script supabase/balance_links_decreases.sql dans l'éditeur SQL.";
+  }
   const table = message.match(
     /(bank_transactions|category_rules|budgets|planned_expenses|finance_lines|custom_categories|removed_categories|category_groups|category_settings|statement_months|balance_links|month_budgets)/
   )?.[1];
