@@ -2,14 +2,13 @@
 
 // Liste de courses active, présentée comme un ticket de caisse, avec toutes ses fonctionnalités
 // (cocher, modifier quantités et prix, optimiser, choisir le magasin, valider, ajouter, supprimer...).
-// Imprimée depuis l'accueil (ReceiptPrinter) ; "blue" teinte son encre en bleu (le ticket reste blanc)
-// et donne aux cadres (popins) le style de la gazette.
+// "theme" : "blue" teinte son encre en bleu (le ticket reste blanc) et donne aux cadres (popins) le style de la gazette ;
+// "cuisine" (page des courses de l'accueil) en fait une grande carte arrondie avec les photos des articles,
+// et donne aux popins le style « application de cuisine » (les couleurs viennent de la classe .cuisine de la page).
 
 // useState : stocker des valeurs qui, quand elles changent, redessinent la page.
 // useEffect : lancer du code après l'affichage du composant (ici : charger les données).
 import { useEffect, useRef, useState } from 'react';
-// Link : le composant de Next.js pour naviguer entre les pages sans recharger tout le site.
-import Link from 'next/link';
 // Le client Supabase configuré dans lib/supabase.ts, qui permet de lire/écrire dans la base de données.
 import { supabase } from '@/lib/supabase';
 // Budget de la période : ce qui reste à dépenser, dépassement, enregistrement des courses validées
@@ -19,6 +18,8 @@ import { storeLabel, STORE_SELECT } from '@/lib/stores';
 import { useActiveLists, type SavedItem, type SavedList } from '@/lib/activeLists';
 import { useIngredients, useShoppingBudgets, useStores } from '@/lib/coursesQueries';
 import ReceiptScan from '@/components/ReceiptScan';
+// Panier vide (aucune liste active) avec ses boutons scanner / créer / activer
+import EmptyBasket from '@/components/EmptyBasket';
 // Famille d'un ingrédient (ex : toutes les sortes d'œufs), pour les regrouper sous une bannière
 import { familyKey } from '@/lib/ingredients';
 import FamilyList from '@/components/FamilyList';
@@ -29,7 +30,7 @@ import EditListItemForm from '@/components/EditListItemForm';
 // Cadre de confirmation avant suppression
 import { useConfirm } from '@/components/ConfirmDialog';
 // Total d'une liste et suppression d'une liste avec ses articles (partagés avec les paramètres)
-import { applyStoreToList, saveListTotal } from '@/lib/lists';
+import { applyStoreToList, dateListName, hasDefaultName, saveListTotal } from '@/lib/lists';
 // Modifications faites depuis la liste, appliquées aux ingrédients à la validation
 import { applyPendingChanges } from '@/lib/pending';
 import { deleteList as deleteListCascade } from '@/lib/deletions';
@@ -72,7 +73,9 @@ function barcodeNumber(iso: string) {
   return `${two(d.getDate())}${two(d.getMonth() + 1)}${d.getFullYear()}${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`;
 }
 
-export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
+export default function ShoppingReceipts({ theme }: { theme?: 'blue' | 'cuisine' }) {
+  const blue = theme === 'blue';
+  const cuisine = theme === 'cuisine';
   // ----- ÉTATS (STATE) -----
   // Chaque useState renvoie [valeurActuelle, fonctionPourLaModifier].
 
@@ -128,9 +131,9 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
   // (il se réactive dès qu'on change un article de la liste).
   const [optimized, setOptimized] = useState<Record<string, boolean>>({});
   // Cadre de confirmation avant suppression
-  const [confirm, confirmDialog] = useConfirm(blue ? 'gazette' : 'default');
-  // Style des cadres (popins) : celui de la gazette de l'accueil quand le ticket est bleu
-  const modalVariant = blue ? 'gazette' : 'default';
+  // Style des cadres (popins) : celui de la gazette quand le ticket est bleu, celui de la cuisine sur la page des courses
+  const modalVariant = blue ? 'gazette' : cuisine ? 'cuisine' : 'default';
+  const [confirm, confirmDialog] = useConfirm(modalVariant);
   // Supermarchés, pour afficher le magasin choisi sur chaque liste
   const stores: Store[] = useStores().data ?? [];
   // Liste dont le cadre de choix du magasin est ouvert (clic sur la ligne "Magasin") ; null = fermé
@@ -431,9 +434,20 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
   //  6. on recharge l'affichage et le budget restant
   // "restart" : budget de la liste à recommencer d'abord (liste plus chère que le reste, en fin de période, et
   // l'utilisateur a accepté d'abandonner le reste de l'ancienne période)
-  async function validateList(list: SavedList, createRest = false, restart: BudgetState | null = null, boughtDay: string | null = null) {
+  async function validateList(original: SavedList, createRest = false, restart: BudgetState | null = null, boughtDay: string | null = null) {
     // On mémorise quelle liste est en cours de validation (désactive son bouton).
-    setValidating(list.id);
+    setValidating(original.id);
+
+    // 0. Nom jamais changé (la date de création, donné par défaut) : il devient la date de réalisation des courses
+    let list = original;
+    if (hasDefaultName(original)) {
+      const name = dateListName(boughtDay ?? today());
+      if (name !== original.name) {
+        const { error: renameError } = await supabase.from('shopping_lists').update({ name }).eq('id', original.id);
+        if (renameError) console.error(renameError);
+        else list = { ...original, name };
+      }
+    }
 
     // 1. Seuls les articles cochés sont considérés comme achetés.
     const boughtItems = list.items.filter((item) => checkedItems[item.id]);
@@ -537,7 +551,18 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
           title="Acheté"
         />
         {/* Colonne 2 — article : nom */}
-        <span className="min-w-0 flex flex-wrap items-center gap-x-2">
+        <span className="min-w-0 flex items-center gap-x-2">
+          {/* Style cuisine : petite photo ronde de l'ingrédient (ou son initiale) devant son nom */}
+          {cuisine && (
+            <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#ebe3d5] text-[11px] font-bold" aria-hidden>
+              {item.ingredient?.photo_url ? (
+                // eslint-disable-next-line @next/next/no-img-element -- photos venant de Supabase Storage
+                <img src={item.ingredient.photo_url} alt="" className="h-full w-full object-cover" />
+              ) : (
+                (item.ingredient?.name ?? '?').charAt(0).toUpperCase()
+              )}
+            </span>
+          )}
           {/* Clic sur le nom : ouvre le cadre de modification de l'article.
               Appui long : marque / démarque l'article comme "prix incertain" (le clic qui suit est ignoré).
               select-none + pas de menu contextuel : l'appui long ne sélectionne pas le texte sur téléphone. */}
@@ -631,7 +656,7 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
           {/* Pendant le chargement de la liste active : « Impression » et trois points qui font la vague */}
           {loading && (
             <div className="flex items-end justify-center gap-1.5 py-10" role="status" aria-label="Impression de ta liste">
-              <span className="title-hand text-2xl leading-none">Impression</span>
+              <span className="title-hand text-2xl leading-none">{cuisine ? "Préparation" : "Impression"}</span>
               <span className="flex gap-1 pb-1" aria-hidden>
                 {[0, 1, 2].map((i) => (
                   <span key={i} className="typing-dot block h-1.5 w-1.5 rounded-full bg-current" style={{ animationDelay: `${i * 0.15}s` }} />
@@ -642,7 +667,7 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
 
           {/* Avant le ticket, même sans liste active : scan d'un reçu, qui met à jour les ingrédients (informations et prix)
               et devient la nouvelle liste de courses active */}
-          {!loading && (
+          {!loading && lists.length > 0 && (
             <div className="mb-4 flex justify-center">
               <button onClick={() => setScanOpen(true)} className="btn-hand inline-flex items-center gap-1.5">
                 <ReceiptText size={16} /> Scanner un reçu
@@ -650,16 +675,8 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
             </div>
           )}
 
-          {/* Aucune liste active : un ticket vide avec le message */}
-          {!loading && lists.length === 0 && (
-            <div className="receipt text-center">
-              <p className="title-hand text-3xl mb-1">Aucune liste active</p>
-              <p className="mb-4 opacity-70 text-sm">Active une de tes listes, ou crées-en une, dans les paramètres.</p>
-              <Link href="/settings?tab=lists" className="btn-hand inline-block">
-                Gérer mes listes
-              </Link>
-            </div>
-          )}
+          {/* Aucune liste active : un panier vide, et à sa droite scanner un reçu, créer une liste ou en activer une */}
+          {!loading && lists.length === 0 && <EmptyBasket onScan={() => setScanOpen(true)} onChanged={loadLists} variant={modalVariant} />}
 
           {/* Un ticket par liste de courses. "key" aide React à identifier chaque élément. */}
           {lists.map((list) => {
@@ -705,7 +722,11 @@ export default function ShoppingReceipts({ blue = false }: { blue?: boolean }) {
                 {/* EN-TÊTE : nom de la liste, comme le nom du magasin sur un ticket */}
                 <div className="text-center px-8">
                   <p className="title-hand text-3xl sm:text-4xl text-ink">{list.name}</p>
-                  <p className="text-xs tracking-[0.3em] opacity-60 mt-1">✦ LISTE DE COURSES ✦</p>
+                  {cuisine ? (
+                    <p className="mt-2 inline-block rounded-full bg-[#dfe6cf] px-3 py-0.5 text-[11px] font-medium text-[#3a4a2b]">Liste de courses</p>
+                  ) : (
+                    <p className="text-xs tracking-[0.3em] opacity-60 mt-1">✦ LISTE DE COURSES ✦</p>
+                  )}
                 </div>
 
                 <div className="receipt-rule" />

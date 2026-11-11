@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useRef, useState } from 'react';
-import Modal from '@/components/Modal';
+import Modal, { type ModalVariant } from '@/components/Modal';
 
 // Libellés des deux boutons (par défaut : "Supprimer" / "annuler")
 type Labels = { confirm?: string; cancel?: string };
@@ -14,7 +14,7 @@ type Request = { title: string; message: string; labels?: Labels };
 //   ... puis afficher {confirmDialog} dans le JSX du composant.
 // Avec des libellés personnalisés, c'est le bouton de refus (le choix prudent) qui a le focus.
 // variant "gazette" : cadre au style de l'accueil
-export function useConfirm(variant: 'default' | 'gazette' = 'default') {
+export function useConfirm(variant?: ModalVariant) {
   const [request, setRequest] = useState<Request | null>(null);
   // Fonction qui débloque la promesse renvoyée par confirm() avec la réponse
   const resolveRef = useRef<(ok: boolean) => void>(() => {});

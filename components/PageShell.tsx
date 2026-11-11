@@ -8,9 +8,9 @@ import { useShakeBell } from "@/lib/shakeBell";
 export function PageShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  // Pages plein écran (sans le lien "← Retour") : page de titre et accueil
-  const isHome = pathname === "/" || pathname === "/accueil";
-  // Pages plein écran qui ont leur propre en-tête et leur propre fond : finances, messagerie, profil, crédits, paramètres (classeur)
+  // Pages plein écran (sans le lien "← Retour") : connexion, cartes du jour, accueil (journal) et courses
+  const isHome = pathname === "/" || pathname === "/cartes" || pathname === "/accueil" || pathname === "/course";
+  // Pages plein écran qui ont leur propre en-tête et leur propre fond : finances, messagerie, profil, crédits, paramètres
   const isFullScreen =
     pathname.startsWith("/banque") || pathname === "/messages" || pathname === "/profile" || pathname === "/credits" || pathname === "/settings";
 

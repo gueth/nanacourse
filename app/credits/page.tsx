@@ -86,10 +86,9 @@ const gothic = { fontFamily: 'var(--font-gothic), serif' };
 const blackletter = { fontFamily: 'var(--font-blackletter), serif' };
 // Léger halo clair autour des lettres bleu nuit : lisibles sur le mur clair comme sur la danseuse
 const glow = { textShadow: '0 0 2px rgba(247,244,239,0.9), 0 0 10px rgba(247,244,239,0.75), 0 1px 1px rgba(255,255,255,0.6)' };
-// Halo plus marqué pour les crédits qui défilent, et cartouche de papier translucide derrière chaque bloc
+// Halo plus marqué pour les crédits qui défilent (aucun cadre derrière : seul le halo les détache du fond)
 const strongGlow = { textShadow: '0 0 2px rgba(247,244,239,1), 0 0 6px rgba(247,244,239,0.95), 0 0 14px rgba(247,244,239,0.8)' };
-const cartouche = 'rounded-sm px-3 py-2 shadow-[0_2px_10px_rgba(29,43,74,0.12)] backdrop-blur-[3px]';
-const cartoucheBg = { backgroundColor: 'rgba(247,244,239,0.72)' };
+const cartouche = 'px-3 py-2';
 const button = 'border px-5 py-2 text-[12px] uppercase tracking-[0.18em] shadow-[0_2px_8px_rgba(29,43,74,0.18)]';
 
 export default function CreditsPage() {
@@ -196,7 +195,7 @@ export default function CreditsPage() {
             className="credits-roll absolute inset-x-0 top-0 mx-auto max-w-[760px] px-3 pb-8"
             style={{ animationDuration: `${CREDITS_SECONDS}s`, ...strongGlow }}
           >
-            <div className={`inline-block ${cartouche}`} style={cartoucheBg}>
+            <div className={`inline-block ${cartouche}`}>
               <h1 className="text-[38px] leading-none" style={blackletter}>
                 Crédits
               </h1>
@@ -208,7 +207,7 @@ export default function CreditsPage() {
               {CREDITS.map((section, i) => {
                 const right = i % 2 === 0;
                 return (
-                  <div key={section.role} className={`w-[36%] ${cartouche} ${right ? 'ml-auto text-right' : 'text-left'}`} style={cartoucheBg}>
+                  <div key={section.role} className={`w-[36%] ${cartouche} ${right ? 'ml-auto text-right' : 'text-left'}`}>
                     <dt className="text-[11px] font-semibold uppercase leading-snug tracking-[0.14em]">{section.role}</dt>
                     {section.names.map((name) => (
                       <dd key={name} className="mt-1 text-[19px] font-semibold italic leading-tight">
@@ -226,7 +225,7 @@ export default function CreditsPage() {
       {/* Lien de retour, toujours accessible */}
       <button
         type="button"
-        onClick={() => startTransition('/accueil', 'fade')}
+        onClick={() => startTransition('/cartes', 'fade')}
         className="absolute left-3 top-3 z-10 inline-flex items-center gap-1.5 px-2 py-2 text-[12px] uppercase tracking-[0.18em]"
         style={glow}
       >
@@ -283,7 +282,7 @@ export default function CreditsPage() {
           </button>
           <button
             type="button"
-            onClick={() => startTransition('/accueil', 'fade')}
+            onClick={() => startTransition('/cartes', 'fade')}
             className={button}
             style={{ borderColor: NAVY, backgroundColor: PAPER }}
           >

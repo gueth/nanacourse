@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect } from 'react';
+import Portal from '@/components/Portal';
 import { ChevronDown, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { formatEuros, monthLabel, type FinanceLine, type Section } from '@/lib/finance';
 import { forgetFinanceMonth, useFinanceTone } from '@/lib/health';
@@ -72,7 +73,7 @@ function FinanceNav() {
   );
 }
 
-// En-tête bleu : retour à l'accueil, titre, menu des pages et, si fourni, choix du mois
+// En-tête bleu : retour à l'écran titre (cartes du jour, d'où s'ouvre le menu), titre, menu des pages et, si fourni, choix du mois
 // (avec, à sa droite, un bouton d'action facultatif)
 export function FinanceHeader({
   subtitle = 'bilan · compte de résultat',
@@ -93,8 +94,8 @@ export function FinanceHeader({
   return (
     <header className="relative px-4 pb-10 pt-4 text-center" style={{ backgroundColor: FIN.accent, color: FIN.paper }}>
       {/* z-10 : sinon le sous-titre (rendu au-dessus à cause de son opacité) recouvre le lien et bloque le toucher */}
-      <Link href="/accueil" onClick={forgetFinanceMonth} className="absolute left-1 top-2 z-10 flex items-center gap-1 px-2 py-2 text-[11px] uppercase tracking-[0.25em] opacity-80">
-        <ChevronLeft size={16} /> Accueil
+      <Link href="/cartes" onClick={forgetFinanceMonth} className="absolute left-1 top-2 z-10 flex items-center gap-1 px-2 py-2 text-[11px] uppercase tracking-[0.25em] opacity-80">
+        <ChevronLeft size={16} /> Retour
       </Link>
       <p className="pt-8 text-[10px] uppercase tracking-[0.35em] opacity-70">{subtitle}</p>
       <h1 className="mt-1 text-[56px] leading-none" style={script}>
@@ -498,6 +499,7 @@ export function FinModal({ title, onClose, children }: { title: string; onClose:
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
   return (
+    <Portal>
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4" style={{ backgroundColor: 'rgba(43,58,85,0.55)' }} onClick={onClose}>
       {/* stopPropagation : un toucher DANS le cadre ne doit pas le fermer */}
       <div
@@ -519,6 +521,7 @@ export function FinModal({ title, onClose, children }: { title: string; onClose:
         {children}
       </div>
     </div>
+    </Portal>
   );
 }
 

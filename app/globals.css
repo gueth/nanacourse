@@ -10,15 +10,15 @@
   --color-line: #c8b89a;
   --color-sky: #bad6fd;
   --color-navy: #1b2a4a;
+  /* Fond d'écran de l'application (bleu du profil) : visible pendant les changements de page et derrière les pages sans fond propre */
+  --color-backdrop: #8494c6;
 
   --font-hand: var(--font-caveat), cursive;
   --font-type: var(--font-courier), monospace;
 }
 
 body {
-  background-color: var(--color-paper);
-  background-image: radial-gradient(circle at 15% 10%, rgba(43, 33, 24, 0.04) 0, transparent 35%),
-    radial-gradient(circle at 85% 70%, rgba(43, 33, 24, 0.04) 0, transparent 40%);
+  background-color: var(--color-backdrop);
   color: var(--color-ink);
   font-family: var(--font-type);
 }
@@ -278,7 +278,11 @@ body {
      et on garde le soulignement pointillé, avec une petite flèche à la couleur de l'encre du thème
      (deux demi-carrés en dégradé : ils suivent --color-ink, contrairement à une image) */
   select.input-hand {
+    -webkit-appearance: none;
     appearance: none;
+    /* iOS arrondit et ombre les listes, même sans leur style natif */
+    border-radius: 0;
+    box-shadow: none;
     cursor: pointer;
     color: var(--color-ink);
     padding-right: 1.75rem;
@@ -428,10 +432,10 @@ body {
   grid-column: 1 / -1;
 }
 
-/* Page de titre : fond uni sous la carte-contrat, de la même couleur que le bas de l'écran des cartes du jour
-   (variable --m-bg3 de la phase du cycle, posée sur la page par app/page.tsx) */
+/* Page de titre : fond uni sous la carte-contrat (1er écran), de la même couleur que le haut de l'écran des cartes du jour
+   juste dessous (variable --title-bg de la phase du cycle, posée sur la page par app/page.tsx) */
 .title-page {
-  background-color: var(--m-bg3, #ecdde8);
+  background-color: var(--title-bg, #ece4ee);
 }
 /* Carte-contrat : carte plastifiée posée à plat, avec une ombre douce */
 .contract-card {
@@ -716,232 +720,164 @@ body:has(.gazette) {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(4px); }
 }
+/* Icônes du menu en trèfle : elles apparaissent l'une après l'autre quand il s'ouvre */
+.quatrefoil-entry {
+  animation: quatrefoilEntry 0.32s cubic-bezier(0.2, 0.9, 0.3, 1.3) both;
+}
+.quatrefoil-entry:active {
+  background-color: color-mix(in srgb, var(--m-accent, #9b6a92) 15%, transparent);
+}
+@keyframes quatrefoilEntry {
+  from { opacity: 0; transform: scale(0.4); }
+  to { opacity: 1; transform: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   .morning-card-in,
   .morning-card-float,
-  .morning-hint {
+  .morning-hint,
+  .quatrefoil-entry {
     animation: none;
   }
 }
 
-/* Paramètres : un classeur de dossiers roses empilés les uns sous les autres. D'un dossier fermé on ne voit que
-   le bord du haut, avec un onglet qui dépasse (décalé de gauche à droite d'un dossier à l'autre) et son nom écrit à la main.
-   Le dossier ouvert s'agrandit et pousse les autres en haut et en bas. */
-html:has(.classeur),
-body:has(.classeur) {
-  background-color: #c89ba5;
+/* PARAMÈTRES, FAÇON « MATERIAL EXPRESSIF » : fond lavande, surfaces très arrondies presque blanches,
+   pilules violettes, boutons segmentés, menu flottant (FAB) et, sur grand écran, panneau de navigation.
+   Les couleurs du thème (--color-*) sont redéfinies : les utilitaires (bg-ink, text-brick...) suivent.
+   .m3 sert aussi aux popins ouvertes depuis les Paramètres (variante « m3 » de Modal). */
+html:has(.m3-page),
+body:has(.m3-page) {
+  background-color: #e6e1f9;
 }
-.classeur {
-  --spine: 40px; /* hauteur du bord visible d'un dossier fermé (plus que l'onglet du dossier suivant, posé dessus) */
-  --tab-h: 34px; /* hauteur de l'onglet qui dépasse */
-  --tab-w: 40%; /* assez large pour « Supermarchés » en entier */
-  --folder: #efcbd2;
-  --folder-ink: #3b2226;
-  /* Couleurs de l'application, accordées au carton rose pour tout ce qui est dans les dossiers */
-  --color-ink: #3b2226;
-  --color-card: #fffaf9;
-  --color-paper: #f6dde2;
-  --color-line: #ddb0ba;
-  --color-brick: #b03f5a;
-  --color-mustard: #9c4a66;
-  padding-top: max(env(safe-area-inset-top), 6px);
-  background-color: #c89ba5;
-  color: var(--folder-ink);
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+.m3 {
+  --m3-bg: #e6e1f9;
+  --m3-surface: #f8f3fb;
+  --m3-field: #ece6f3;
+  --m3-primary: #65558f;
+  --m3-primary-container: #cbbdfc;
+  --m3-on-container: #2b1f4f;
+  --m3-secondary-container: #e0dcf5;
+  --m3-tertiary: #7b3f86;
+  --m3-pink: #f8b4f8;
+  --m3-outline: #cac4d0;
+  --color-ink: #1d1b20;
+  --color-brick: #b3261e;
+  --color-line: #cac4d0;
+  --color-card: #f8f3fb;
+  --color-paper: #e8def8;
+  color: var(--color-ink);
+  font-family: var(--font-cuisine), system-ui, sans-serif;
 }
-@media (min-width: 640px) {
-  .classeur {
-    --spine: 48px;
-    --tab-h: 40px;
-    --tab-w: 220px;
-  }
+/* Ondulation du chargement (indicateur de progression ondulé) */
+@keyframes m3Wave {
+  to { transform: translateX(-24px); }
 }
-/* Barre du haut (retour, scan d'un reçu), posée sur le fond au-dessus des dossiers ;
-   l'onglet du premier dossier dépasse dans l'espace laissé sous elle */
-.classeur-bar {
-  margin-bottom: var(--tab-h);
-  color: var(--folder-ink);
+.m3-wave {
+  animation: m3Wave 0.9s linear infinite;
 }
-.folder {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  width: 100%;
-  flex: 0 0 var(--spine);
-  transition: flex-grow 0.55s cubic-bezier(0.3, 0.75, 0.2, 1);
-  /* carton rose finement côtelé */
-  background-color: var(--folder);
-  background-image: repeating-linear-gradient(to right, rgba(120, 55, 70, 0.07) 0 1px, transparent 1px 4px);
-  border-top-right-radius: 14px;
-  box-shadow: 0 -5px 12px rgba(90, 35, 50, 0.22);
-}
-.folder-open {
-  flex-grow: 1;
-}
-.folder-spine {
-  position: relative;
-  flex: 0 0 var(--spine);
-  width: 100%;
-  cursor: pointer;
-}
-.folder-open .folder-spine {
-  cursor: default;
-}
-/* L'onglet qui dépasse au-dessus du dossier, sur le précédent */
-.folder-bump {
-  position: absolute;
-  bottom: calc(100% - 1px);
-  width: var(--tab-w);
-  height: var(--tab-h);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 12px 12px 0 0;
-  background-color: var(--folder);
-  background-image: repeating-linear-gradient(to right, rgba(120, 55, 70, 0.07) 0 1px, transparent 1px 4px);
-  box-shadow: 0 -4px 8px rgba(90, 35, 50, 0.16);
-}
-/* Nom écrit directement sur l'onglet, à la main comme les titres des dossiers */
-.folder-label {
-  /* hauteur de ligne généreuse : les boucles de la calligraphie dépassent haut et bas */
-  padding: 2px 6px 0;
-  white-space: nowrap;
-  font-family: var(--font-script), cursive;
-  font-size: 20px;
-  line-height: 1.35;
-  color: var(--folder-ink);
-  opacity: 0.75;
-}
-@media (min-width: 640px) {
-  .folder-label {
-    font-size: 24px;
-  }
-}
-/* Dossier ouvert : son nom plus foncé, souligné d'un trait */
-.folder-open .folder-label {
-  opacity: 1;
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 3px;
-}
-.folder-body {
-  position: relative;
-  min-height: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-}
-/* Le contenu du dossier apparaît une fois le dossier presque ouvert */
-.folder-content {
-  animation: folderContent 0.4s ease-out 0.25s both;
-}
-@keyframes folderContent {
-  from { opacity: 0; transform: translateY(10px); }
+/* Menu flottant : les pilules apparaissent l'une après l'autre, de bas en haut */
+@keyframes m3Pop {
+  from { opacity: 0; transform: translateY(8px) scale(0.92); }
   to { opacity: 1; transform: none; }
 }
-.folder-serif {
-  font-family: var(--font-serif), Georgia, serif;
-}
-.folder-script {
-  font-family: var(--font-script), cursive;
-}
-.folder-small {
-  padding: 8px 2px;
-  font-family: var(--font-serif), Georgia, serif;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
+.m3-pop {
+  animation: m3Pop 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
 }
 @media (prefers-reduced-motion: reduce) {
-  .folder {
-    transition: none;
-  }
-  .folder-content {
+  .m3-wave,
+  .m3-pop {
     animation: none;
   }
 }
 
-/* Contenu des dossiers : fiches blanches posées dans le carton, champs encadrés, boutons arrondis,
-   à la place des fiches de recette et des écritures à la main du reste de l'application.
+/* Contenu des Paramètres : fiches presque blanches, champs remplis, boutons en pilule.
    (Dans la couche « components » pour que les classes utilitaires d'un élément gardent le dernier mot.) */
 @layer components {
-  .classeur .card {
+  .m3 .card {
     border: none;
-    border-radius: 14px;
-    background-color: var(--color-card);
-    box-shadow: 0 8px 22px -12px rgba(90, 35, 50, 0.45);
+    border-radius: 24px;
+    background-color: #fff;
+    box-shadow: none;
     margin-bottom: 1.25rem;
   }
-  .classeur .card::after,
-  .classeur .tape {
+  .m3 .card::after,
+  .m3 .tape {
     display: none;
   }
-  .classeur .title-hand {
-    font-family: var(--font-serif), Georgia, serif;
-    font-weight: 600;
-    color: var(--folder-ink);
-    font-size: 1.25rem;
-  }
-  .classeur .field-label {
+  .m3 .title-hand {
     font-family: inherit;
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    opacity: 0.65;
+    font-weight: 600;
+    color: var(--color-ink);
+    font-size: 1.25rem;
+    letter-spacing: -0.01em;
+  }
+  .m3 .field-label {
+    font-family: inherit;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--m3-primary);
     margin-bottom: 4px;
   }
-  .classeur .input-hand:not(.receipt *) {
-    background-color: #fff;
-    border: 1px solid var(--color-line);
-    border-radius: 10px;
-    padding: 0.45rem 0.7rem;
+  .m3 .input-hand {
     font-family: inherit;
-    color: var(--folder-ink);
+    background-color: var(--m3-field);
+    border: none;
+    border-bottom: 1.5px solid #79747e;
+    border-radius: 10px 10px 0 0;
+    padding: 0.55rem 0.75rem;
+    color: var(--color-ink);
   }
-  .classeur select.input-hand:not(.receipt *) {
-    padding-right: 1.9rem;
-    background-image:
-      linear-gradient(45deg, transparent 50%, var(--folder-ink) 50%),
-      linear-gradient(135deg, var(--folder-ink) 50%, transparent 50%);
+  .m3 select.input-hand {
+    border-radius: 10px 10px 0 0;
+    padding-right: 2rem;
     background-position:
       calc(100% - 1.05rem) 55%,
       calc(100% - 0.75rem) 55%;
   }
-  .classeur .input-hand:not(.receipt *):focus {
-    border-color: var(--folder-ink);
-    border-style: solid;
-    box-shadow: 0 0 0 3px rgba(176, 63, 90, 0.15);
+  .m3 .input-hand:focus {
+    border-bottom: 2px solid var(--m3-primary);
   }
-  .classeur .btn-hand {
+  .m3 .btn-hand {
     font-family: inherit;
-    font-weight: 600;
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.16em;
+    font-weight: 500;
+    font-size: 0.9rem;
     border-radius: 9999px;
-    padding: 0.6rem 1.3rem;
-    background-color: var(--folder-ink);
-    color: #fbe9ec;
+    padding: 0.65rem 1.4rem;
+    background-color: var(--m3-primary);
+    color: #fff;
     box-shadow: none;
   }
-  .classeur .btn-hand:hover {
+  .m3 .btn-hand:hover {
     transform: none;
-    box-shadow: 0 3px 8px rgba(90, 35, 50, 0.3);
+    box-shadow: 0 2px 6px rgba(43, 31, 79, 0.25);
   }
-  .classeur .btn-ghost {
+  /* Bouton secondaire (« Annuler »...) : pilule tonale */
+  .m3 .btn-hand.bg-line {
+    background-color: var(--m3-secondary-container);
+    color: var(--m3-on-container);
+  }
+  .m3 .btn-hand.bg-brick {
+    background-color: var(--color-brick);
+  }
+  .m3 .btn-ghost {
     font-family: inherit;
-    font-weight: 600;
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--folder-ink);
-    text-decoration-style: dotted;
+    font-weight: 500;
+    font-size: 0.9rem;
+    color: var(--m3-primary);
+    text-decoration: none;
+  }
+  /* Popin au style des Paramètres */
+  .modal-m3 {
+    background-color: var(--m3-surface);
+    border-radius: 28px;
+    padding: 1.4rem 1.25rem;
+    box-shadow: 0 24px 60px -20px rgba(43, 31, 79, 0.45);
   }
 }
 
 /* Listes déroulantes des Finances : papier clair, filet bleu-gris, flèche à la couleur du thème de santé
    (--fin-accent, posé par chaque page Finances). Hors des couches Tailwind pour passer devant ses utilitaires. */
 select.fin-select {
+  -webkit-appearance: none;
   appearance: none;
   cursor: pointer;
   background-color: #f8f7f4;
@@ -975,6 +911,7 @@ select.fin-select optgroup {
 
 /* Listes déroulantes du Profil : même cadre que ses champs (fond blanc voilé, filet bleu pâle), flèche bleue */
 select.pf-select {
+  -webkit-appearance: none;
   appearance: none;
   cursor: pointer;
   color: #2c3442;
@@ -996,4 +933,133 @@ select.pf-select:focus {
 select.pf-select option {
   background-color: #f6f5f1;
   color: #2c3442;
+}
+
+/* PAGE DES COURSES DE L'ACCUEIL (page 2), FAÇON APPLICATION DE CUISINE :
+   fond crème, encre vert olive, cartes très arrondies aux couleurs des fruits, boutons en pilule,
+   caractères sans empattements (DM Sans). Loin du journal de la page 1.
+   Les couleurs du thème (--color-*) sont redéfinies : les utilitaires (bg-ink, text-brick...) suivent.
+   (Dans la couche « components » pour que les classes utilitaires d'un élément gardent le dernier mot.) */
+html:has(.cuisine-page),
+body:has(.cuisine-page) {
+  background-color: #fbf7ef;
+}
+@layer components {
+  .cuisine {
+    --color-ink: #2e3a24;
+    --color-brick: #d0533f;
+    --color-line: #e4dccb;
+    --color-card: #fffdf8;
+    --color-paper: #f5f0e6;
+    --cu-bg: #fbf7ef;
+    --cu-olive: #3a4a2b;
+    --cu-matcha: #8fa868;
+    --cu-sage: #dfe6cf;
+    --cu-beige: #ebe3d5;
+    color: var(--color-ink);
+    font-family: var(--font-cuisine), system-ui, sans-serif;
+    font-variant-numeric: lining-nums tabular-nums;
+  }
+  /* La liste active : une grande carte blanche aux coins très arrondis, sans dents de ticket */
+  .cuisine .receipt {
+    font-family: inherit;
+    background: #fff;
+    border-radius: 28px;
+    padding: 1.5rem 1rem 1.25rem;
+    box-shadow: 0 18px 40px -24px rgba(46, 58, 36, 0.45);
+  }
+  .cuisine .receipt::after,
+  .cuisine .receipt-barcode,
+  .cuisine .receipt-barcode + p {
+    display: none;
+  }
+  .cuisine .receipt-rule,
+  .cuisine .receipt-rule-double {
+    border-top: 1px solid var(--color-line);
+    margin: 1rem 0;
+  }
+  .cuisine .receipt-row {
+    text-transform: none;
+  }
+  .cuisine .receipt .input-hand,
+  .cuisine .input-hand {
+    font-family: inherit;
+    border-bottom: 1px solid var(--color-line);
+  }
+  .cuisine .input-hand:focus {
+    border-bottom-color: var(--cu-olive);
+  }
+  .cuisine .item-struck::after {
+    border-top-width: 1.5px;
+  }
+  .cuisine .title-hand {
+    font-family: inherit;
+    color: var(--color-ink);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .cuisine .btn-hand {
+    font-family: inherit;
+    font-weight: 600;
+    font-size: 0.9rem;
+    border-radius: 9999px;
+    padding: 0.65rem 1.3rem;
+    background-color: var(--cu-olive);
+    color: #f6f3e8;
+    box-shadow: none;
+  }
+  .cuisine .btn-hand:hover {
+    transform: none;
+    box-shadow: 0 6px 14px -6px rgba(46, 58, 36, 0.5);
+  }
+  /* Bouton secondaire (« Annuler »...) : pilule beige */
+  .cuisine .btn-hand.bg-line {
+    background-color: var(--cu-beige);
+    color: var(--color-ink);
+  }
+  .cuisine .btn-ghost {
+    font-family: inherit;
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--cu-olive);
+    text-decoration-style: solid;
+  }
+  .cuisine .field-label {
+    font-family: inherit;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    opacity: 0.6;
+  }
+  .cuisine .modal-solid .input-hand {
+    font-family: inherit;
+  }
+  /* Popin au style cuisine : feuille crème aux grands arrondis */
+  .modal-cuisine {
+    background-color: var(--cu-bg);
+    border-radius: 28px;
+    padding: 1.25rem 1.1rem 1.4rem;
+    box-shadow: 0 24px 60px -20px rgba(46, 58, 36, 0.55);
+  }
+  /* Carte d'ingrédient de la nouvelle liste : coin bas-droit creusé en rond, pour la pastille numérotée */
+  .cu-notch {
+    -webkit-mask-image: radial-gradient(circle at calc(100% - 22px) calc(100% - 22px), transparent 27px, #000 28px);
+    mask-image: radial-gradient(circle at calc(100% - 22px) calc(100% - 22px), transparent 27px, #000 28px);
+  }
+}
+
+/* Gestions (ingrédients, catégories, supermarchés) ouvertes depuis la page des courses :
+   fiches blanches très arrondies, sans ruban adhésif ni bord déchiré */
+@layer components {
+  .cuisine .card {
+    border: none;
+    border-radius: 20px;
+    background-color: #fff;
+    box-shadow: 0 12px 28px -20px rgba(46, 58, 36, 0.55);
+    margin-bottom: 1.25rem;
+  }
+  .cuisine .card::after,
+  .cuisine .tape {
+    display: none;
+  }
 }

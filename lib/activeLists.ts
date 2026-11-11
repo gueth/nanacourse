@@ -17,6 +17,7 @@ export type SavedItem = {
   ingredient: {
     name: string;
     type: string | null; // kg, pièce, paquet... : fixe les quantités possibles
+    photo_url?: string | null; // photo de l'ingrédient (vignette de la liste sur l'accueil)
     category: { id: string; name: string; budget_limit: number | null } | null; // budget max de la catégorie
   } | null;
   // Modifications en attente (nom, catégorie, prix modifié...) : appliquées à l'ingrédient à la validation de la liste.
@@ -47,7 +48,7 @@ export async function fetchActiveLists() {
   const [lists, { data: categories }] = await Promise.all([
     supabase
       .from('shopping_lists')
-      .select('*, items:shopping_list_items(*, ingredient:ingredients(name, type, category:categories(id, name, budget_limit)))')
+      .select('*, items:shopping_list_items(*, ingredient:ingredients(name, type, photo_url, category:categories(id, name, budget_limit)))')
       .eq('is_active', true)
       .order('id', { ascending: false }),
     supabase.from('categories').select('id, name, budget_limit')

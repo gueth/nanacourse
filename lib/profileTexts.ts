@@ -14,6 +14,7 @@ export type ProfileTexts = {
   birth: string;
   phone: string;
   email: string;
+  website: string; // site web, sur la carte de visite
   handle: string;
   quote: string;
   photoStanding: string; // photo en pied de la carte « À propos » ('' : dessin par défaut)
@@ -36,6 +37,7 @@ export const DEFAULT_PROFILE_TEXTS: ProfileTexts = {
   birth: '12.03.1999',
   phone: '06 12 34 56 78',
   email: 'nana.courses@exemple.fr',
+  website: 'www.nana-courses.fr',
   handle: '@nana.courses',
   quote: "Une bonne liste, c'est déjà la moitié des courses",
   photoStanding: '',

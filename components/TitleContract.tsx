@@ -1,16 +1,14 @@
 'use client';
 
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useState, useSyncExternalStore } from 'react';
 import { BluePhoto } from '@/components/profile/ProfileParts';
 import { formatIssue, gazetteIssue } from '@/lib/gazette';
 import { getDefaultProfileTexts, getProfileTexts, subscribeProfileTexts, syncProfileTexts } from '@/lib/profileTexts';
-import { contractDay, readSignature, saveSignature, subscribeSignature } from '@/lib/signature';
+import { contractDay } from '@/lib/signature';
 
-// Page de titre (2ᵉ écran) : une carte-contrat « Nana & Co » sur fond bleu uni, façon carte de membre.
-// La personne (prénom et photo d'identité de la page Profil) s'engage à faire de son mieux pour la journée,
-// puis signe avec le doigt ou la souris sur la ligne prévue : une fois signé, le tampon tombe et l'accueil s'ouvre.
-// On ne signe qu'à la première visite de la journée : ensuite la signature et le tampon restent affichés
-// et il suffit de faire défiler pour entrer, jusqu'à 4 h du matin où ils s'effacent (lib/signature).
+// Page de connexion (page de titre) : une carte « Nana & Co » sur fond bleu uni, façon carte de membre,
+// avec l'allure d'une connexion : identifiant (le prénom de la page Profil, modifiable), mot de passe et photo
+// d'identité. Rien n'est vérifié : « Se connecter » fait tomber le tampon, puis ouvre la page des cartes du jour.
 
 const INK = '#1d2b4a';
 // Tailles proportionnelles à la largeur de la carte (1 unité = 1 % de la carte)
@@ -21,20 +19,17 @@ const pen = { fontFamily: 'var(--font-pen), cursive' };
 const serif = { fontFamily: 'var(--font-serif), Georgia, serif' };
 
 const noSubscribe = () => () => {};
-// Journée du contrat : elle change à 4 h du matin, comme la signature
+// Journée affichée sur la carte : elle change à 4 h du matin
 const readToday = () => contractDay();
 
-// Longueur minimale du trait (en pixels) pour compter comme une signature
-const MIN_SIGNATURE = 120;
-
-export function TitleContract({ onSigned, onContinue }: { onSigned: () => void; onContinue: () => void }) {
+export function TitleContract({ onEnter }: { onEnter: () => void }) {
   const txt = useSyncExternalStore(subscribeProfileTexts, getProfileTexts, getDefaultProfileTexts);
   const todayKey = useSyncExternalStore(noSubscribe, readToday, () => null);
   const today = todayKey ? new Date(todayKey) : null;
-  // Signature déjà faite aujourd'hui (image), ou signature qui vient d'être faite
-  const savedSignature = useSyncExternalStore(subscribeSignature, readSignature, () => null);
-  const [justSigned, setJustSigned] = useState(false);
-  const signed = justSigned || !!savedSignature;
+  // Identifiant : le prénom du profil tant qu'on ne l'a pas modifié ; mot de passe : jamais vérifié
+  const [login, setLogin] = useState<string | null>(null);
+  const [password, setPassword] = useState('');
+  const [connected, setConnected] = useState(false);
 
   // Prénom et photo à jour depuis Supabase (la copie du navigateur s'affiche en attendant)
   useEffect(() => {
@@ -45,30 +40,52 @@ export function TitleContract({ onSigned, onContinue }: { onSigned: () => void; 
   const year = today?.getFullYear() ?? '';
   const issue = today ? formatIssue(gazetteIssue(today)) : '—';
 
+  // Connexion : le tampon tombe sur la carte, puis la page des cartes du jour s'ouvre
+  function connect(e: React.FormEvent) {
+    e.preventDefault();
+    if (connected) return;
+    setConnected(true);
+    window.setTimeout(onEnter, 1100);
+  }
+
   return (
     <div className="flex h-full w-full flex-col items-center justify-center px-4">
-      <div
+      <form
+        onSubmit={connect}
         className="contract-card relative w-[min(92vw,560px)] rounded-[calc(var(--u)*2.2)] text-left"
         style={{ ['--u' as string]: 'min(0.92vw, 5.6px)', backgroundColor: '#f7f9fc', color: INK, padding: `${u(5)} ${u(5)} ${u(4)}` }}
       >
         <div className="flex gap-[calc(var(--u)*4)]">
-          {/* COLONNE DE GAUCHE : la maison, la déclaration et les champs remplis au stylo */}
+          {/* COLONNE DE GAUCHE : la maison, l'intitulé et les champs de connexion, remplis au stylo */}
           <div className="min-w-0 flex-1">
             <p className="uppercase leading-none tracking-[0.01em]" style={{ ...narrow, fontSize: u(6.4) }}>
               Nana &amp; Co
             </p>
             <p className="mt-[calc(var(--u)*2.4)] uppercase leading-[1.35]" style={{ ...type, fontSize: u(2.7) }}>
-              La personne qui tient
-              <br />
-              cette carte est une
-              <br />
-              faiseuse de mieux certifiée
+              connexion à l&apos;application
             </p>
 
-            <div className="mt-[calc(var(--u)*5)] space-y-[calc(var(--u)*2.6)]">
-              <Field label="Je soussigné(e)">{txt.name}</Field>
-              <Field label="M'engage à">faire de mon mieux</Field>
-              <Field label="Pour la journée du">{day}</Field>
+            <div className="mt-[calc(var(--u)*4.4)] space-y-[calc(var(--u)*2.6)]">
+              <Field label="Identifiant">
+                <input
+                  value={login ?? txt.name}
+                  onChange={(e) => setLogin(e.target.value)}
+                  autoComplete="username"
+                  aria-label="Identifiant"
+                  className="w-full bg-transparent outline-none"
+                />
+              </Field>
+              <Field label="Mot de passe">
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                  aria-label="Mot de passe"
+                  className="w-full bg-transparent outline-none"
+                />
+              </Field>
+              <Field label="Le">{day}</Field>
             </div>
           </div>
 
@@ -102,146 +119,49 @@ export function TitleContract({ onSigned, onContinue }: { onSigned: () => void; 
           </div>
         </div>
 
-        {/* SIGNATURE : au doigt ou à la souris, sur toute la largeur de la carte */}
-        <div className="mt-[calc(var(--u)*3.4)] flex items-end gap-[calc(var(--u)*1.5)]">
-          <span className="shrink-0 uppercase leading-none" style={{ ...type, fontSize: u(2.7), paddingBottom: u(1.2) }}>
-            Signature :
-          </span>
-          {savedSignature && !justSigned ? (
-            // eslint-disable-next-line @next/next/no-img-element -- image du trait enregistrée dans le navigateur
-            <img src={savedSignature} alt={`Signature de ${txt.name}`} className="block min-w-0 flex-1 border-b object-fill" style={{ height: u(13), borderColor: INK }} />
-          ) : (
-            <SignaturePad
-              disabled={signed}
-              onSigned={(image) => {
-                setJustSigned(true);
-                saveSignature(image);
-                setTimeout(onSigned, 1300);
-              }}
-            />
-          )}
-        </div>
+        {/* BOUTON DE CONNEXION, sur toute la largeur de la carte */}
+        <button
+          type="submit"
+          disabled={connected}
+          className="mt-[calc(var(--u)*4)] block w-full rounded-full uppercase tracking-[0.2em] transition-transform active:scale-[0.98] disabled:opacity-70"
+          style={{ ...type, fontSize: u(2.9), padding: `${u(2.4)} 0`, backgroundColor: INK, color: '#f7f9fc' }}
+        >
+          {connected ? 'Connexion…' : 'Se connecter'}
+        </button>
 
         <div className="mt-[calc(var(--u)*2.6)] flex items-end justify-between">
           <p className="font-bold leading-none" style={{ ...narrow, fontSize: u(2.9) }}>
             ID No. {issue}
           </p>
-          <p className={`leading-none transition-opacity ${signed ? 'opacity-0' : 'opacity-60'}`} style={{ ...type, fontSize: u(2.4) }}>
-            signe sur la ligne pour entrer
+          <p className="leading-none opacity-60" style={{ ...type, fontSize: u(2.4) }}>
+            espace membre
           </p>
         </div>
 
-        {/* Tampon de la maison, qui tombe sur la carte une fois signée */}
+        {/* Tampon de la maison, qui tombe sur la carte à la connexion */}
         <div
-          className={`pointer-events-none absolute ${signed ? 'contract-stamp' : 'opacity-0'}`}
+          className={`pointer-events-none absolute ${connected ? 'contract-stamp' : 'opacity-0'}`}
           style={{ width: u(32), right: u(-6), top: u(44) }}
           aria-hidden
         >
           <Stamp />
         </div>
-      </div>
-
-      {/* Déjà signé aujourd'hui : il suffit de faire défiler (ou de toucher ce texte) pour entrer, sans resigner */}
-      {savedSignature && !justSigned && (
-        <button type="button" onClick={onContinue} className="morning-hint mt-6 px-4 py-2 text-[13px] text-neutral-600" style={type}>
-          Fais défiler pour entrer
-        </button>
-      )}
-
-      {/* Pour le clavier : entrer sans signer (visible seulement quand il a le focus) */}
-      <button type="button" onClick={onSigned} className="sr-only focus:not-sr-only focus:mt-4 focus:text-sm focus:text-neutral-700">
-        Entrer sans signer
-      </button>
+      </form>
     </div>
   );
 }
 
-// Champ du contrat : intitulé en machine à écrire, valeur écrite au stylo sur une ligne
+// Champ de la carte : intitulé en machine à écrire, valeur écrite au stylo sur une ligne
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <p className="flex items-end gap-[calc(var(--u)*0.8)]">
+    <div className="flex items-end gap-[calc(var(--u)*0.8)]">
       <span className="shrink-0 uppercase leading-none" style={{ ...type, fontSize: u(2.45), paddingBottom: u(0.8) }}>
         {label} :
       </span>
       <span className="min-w-0 flex-1 truncate border-b leading-[0.9]" style={{ ...pen, fontSize: u(5.2), borderColor: INK }}>
         {children}
       </span>
-    </p>
-  );
-}
-
-// Ligne de signature : on trace avec le doigt ou la souris ; au-delà d'une certaine longueur de trait,
-// la signature est validée quand on lève le doigt
-function SignaturePad({ disabled, onSigned }: { disabled: boolean; onSigned: (image: string) => void }) {
-  const canvas = useRef<HTMLCanvasElement>(null);
-  const drawing = useRef(false);
-  const last = useRef<{ x: number; y: number } | null>(null);
-  const length = useRef(0);
-
-  // Toile à la résolution de l'écran
-  useEffect(() => {
-    const c = canvas.current;
-    if (!c) return;
-    const resize = () => {
-      const r = c.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      c.width = Math.round(r.width * dpr);
-      c.height = Math.round(r.height * dpr);
-      const g = c.getContext('2d');
-      if (!g) return;
-      g.scale(dpr, dpr);
-      g.lineCap = 'round';
-      g.lineJoin = 'round';
-      g.strokeStyle = INK;
-      length.current = 0;
-    };
-    resize();
-    window.addEventListener('resize', resize);
-    return () => window.removeEventListener('resize', resize);
-  }, []);
-
-  const point = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
-  };
-
-  return (
-    <canvas
-      ref={canvas}
-      aria-label="Zone de signature : trace ta signature avec le doigt ou la souris"
-      className="block min-w-0 flex-1 cursor-crosshair touch-none border-b"
-      style={{ height: u(13), borderColor: INK }}
-      onPointerDown={(e) => {
-        if (disabled) return;
-        e.currentTarget.setPointerCapture(e.pointerId);
-        drawing.current = true;
-        last.current = point(e);
-      }}
-      onPointerMove={(e) => {
-        if (!drawing.current || !last.current) return;
-        const g = e.currentTarget.getContext('2d');
-        const p = point(e);
-        const d = Math.hypot(p.x - last.current.x, p.y - last.current.y);
-        if (!g || d < 0.5) return;
-        // trait un peu plus fin quand on va vite, comme un stylo
-        g.lineWidth = Math.max(1.2, 2.6 - d / 12);
-        g.beginPath();
-        g.moveTo(last.current.x, last.current.y);
-        g.lineTo(p.x, p.y);
-        g.stroke();
-        length.current += d;
-        last.current = p;
-      }}
-      onPointerUp={() => {
-        drawing.current = false;
-        last.current = null;
-        if (!disabled && length.current >= MIN_SIGNATURE && canvas.current) onSigned(canvas.current.toDataURL('image/png'));
-      }}
-      onPointerCancel={() => {
-        drawing.current = false;
-        last.current = null;
-      }}
-    />
+    </div>
   );
 }
 

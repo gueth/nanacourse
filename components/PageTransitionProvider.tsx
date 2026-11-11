@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { PageWipeTransition } from '@/components/PageWipeTransition';
 import { PageFadeTransition } from '@/components/PageFadeTransition';
 
-// "wipe" : barres beige en diagonale ; "fade" : fondu
+// "wipe" : barres bleues en diagonale ; "fade" : fondu (tous deux du bleu de fond, --color-backdrop)
 type TransitionKind = 'wipe' | 'fade';
 
 type PageTransitionContextValue = {

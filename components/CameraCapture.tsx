@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
+import Portal from '@/components/Portal';
 
 type Props = {
   // Photos prises (au moins une), transmises à la fermeture
@@ -102,6 +103,7 @@ export default function CameraCapture({ onCapture, onClose, onFallback, multiple
   const full = shots.length >= remaining;
 
   return (
+    <Portal>
     <div className="fixed inset-0 z-[60] bg-black flex flex-col" role="dialog" aria-modal="true" aria-label="Appareil photo">
       <video ref={videoRef} playsInline muted className="flex-1 min-h-0 w-full object-cover" />
       {flash && <div className="absolute inset-0 bg-white/70 pointer-events-none" />}
@@ -142,5 +144,6 @@ export default function CameraCapture({ onCapture, onClose, onFallback, multiple
         )}
       </div>
     </div>
+    </Portal>
   );
 }

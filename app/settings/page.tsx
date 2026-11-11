@@ -1,167 +1,276 @@
 'use client';
 
-import { Suspense, useState } from 'react';
-import { ArrowLeft, ReceiptText } from 'lucide-react';
-import Modal from '@/components/Modal';
+import { Suspense, useEffect, useState } from 'react';
+import Link from 'next/link';
+import { ArrowLeft, CircleCheck, House, ListChecks, Plus, ReceiptText, ShoppingBasket, Trophy, X, type LucideIcon } from 'lucide-react';
+import Modal, { ModalVariantContext } from '@/components/Modal';
 import ReceiptScan from '@/components/ReceiptScan';
-import { STORE_SELECT } from '@/lib/stores';
-import { useCached } from '@/lib/cache';
+import { useCatalog } from '@/lib/coursesQueries';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { supabase } from '@/lib/supabase';
-import type { Category, Chain, IngredientWithRelations, Store } from '@/lib/types';
-import CategoriesSettings from '@/components/settings/CategoriesSettings';
-import IngredientsSettings from '@/components/settings/IngredientsSettings';
-import StoresSettings from '@/components/settings/StoresSettings';
 import ListsSettings from '@/components/settings/ListsSettings';
 import ChallengesSettings from '@/components/settings/ChallengesSettings';
+import HomeSettings from '@/components/settings/HomeSettings';
 
-// Les onglets de la page Paramètres
-const TABS = [
-  { id: 'categories', label: 'Catégories' },
-  { id: 'stores', label: 'Supermarchés' },
-  { id: 'ingredients', label: 'Ingrédients' },
-  { id: 'lists', label: 'Listes' },
-  { id: 'defis', label: 'Défis' }
-] as const;
+// Les onglets de la page Paramètres.
+// Les ingrédients, catégories et supermarchés se gèrent depuis le menu de la page des courses (components/KitchenManager).
+const TABS: readonly { id: 'lists' | 'defis' | 'accueil'; label: string; title: string; icon: LucideIcon }[] = [
+  { id: 'lists', label: 'Listes', title: 'Mes listes de courses', icon: ListChecks },
+  { id: 'defis', label: 'Défis', title: 'Mes défis et mes points', icon: Trophy },
+  { id: 'accueil', label: 'Accueil', title: 'La page de titre', icon: House }
+];
 
 type TabId = (typeof TABS)[number]['id'];
 
-// Charge en une fois tout ce dont les onglets Catégories, Supermarchés et Ingrédients ont besoin
-function fetchAll() {
-  return Promise.all([
-    supabase.from('categories').select('*').order('name'),
-    supabase.from('stores').select(STORE_SELECT).order('name'),
-    supabase
-      .from('ingredients')
-      .select(`*, category:categories(*), prices:ingredient_prices(*, store:stores(${STORE_SELECT}))`)
-      .order('name'),
-    // Enseignes (libellé + couleur), gérées dans l'onglet Supermarchés
-    supabase.from('chains').select('*').order('name')
-  ]);
+// Anciens onglets des Paramètres -> gestion correspondante sur la page des courses
+const MOVED: Record<string, string> = { ingredients: 'ingredients', categories: 'categories', stores: 'supermarches' };
+
+// Couleurs « Material expressif » de la page (voir aussi la classe .m3 de globals.css)
+const BG = '#e6e1f9';
+const SURFACE = '#f8f3fb';
+
+// Indicateur de chargement ondulé (vague violette qui avance, puis la piste grise)
+function WavyLoader() {
+  return (
+    <div className="m3 flex min-h-dvh items-center justify-center" style={{ backgroundColor: BG }} role="status" aria-label="Chargement">
+      <svg width="180" height="16" viewBox="0 0 180 16" aria-hidden>
+        <defs>
+          <clipPath id="wave-clip">
+            <rect width="96" height="16" />
+          </clipPath>
+        </defs>
+        <g clipPath="url(#wave-clip)">
+          <path
+            className="m3-wave"
+            d={`M0 8 ${'q 6 -7 12 0 t 12 0 '.repeat(6)}`}
+            fill="none"
+            stroke="#65558f"
+            strokeWidth="4"
+            strokeLinecap="round"
+          />
+        </g>
+        <path d="M106 8 H172" stroke="#cac4d0" strokeWidth="4" strokeLinecap="round" />
+        <circle cx="177" cy="8" r="2" fill="#65558f" />
+      </svg>
+    </div>
+  );
+}
+
+// Pastille festonnée (forme ondulée façon Material expressif) avec l'icône de l'onglet ouvert
+function ScallopBadge({ icon: Icon }: { icon: LucideIcon }) {
+  const points = Array.from({ length: 96 }, (_, i) => {
+    const a = (i / 96) * Math.PI * 2;
+    const r = 26 + 2.4 * Math.cos(a * 12);
+    return `${(32 + r * Math.cos(a)).toFixed(2)},${(32 + r * Math.sin(a)).toFixed(2)}`;
+  });
+  return (
+    <span className="relative flex size-16 shrink-0 items-center justify-center rounded-full bg-[#cbbdfc]" aria-hidden>
+      <svg viewBox="0 0 64 64" className="absolute inset-1.5">
+        <polygon points={points.join(' ')} fill="#4f3f7f" />
+      </svg>
+      <Icon size={22} className="relative text-[#f3edff]" />
+    </span>
+  );
 }
 
 // useSearchParams doit être entouré d'un <Suspense> (sinon la compilation de production échoue)
 export default function SettingsPage() {
   return (
-    <Suspense fallback={<p>Chargement...</p>}>
+    <Suspense fallback={<WavyLoader />}>
       <SettingsContent />
     </Suspense>
   );
 }
 
 function SettingsContent() {
-  // Onglet affiché : celui indiqué dans l'adresse (ex : /settings?tab=lists), sinon Catégories.
+  // Onglet affiché : celui indiqué dans l'adresse (ex : /settings?tab=defis), sinon Listes.
   // Changer d'onglet met à jour l'adresse : un lien comme "Gérer mes listes" ouvre donc directement le bon onglet.
   const searchParams = useSearchParams();
   const router = useRouter();
   const asked = searchParams.get('tab');
-  const tab: TabId = TABS.some((t) => t.id === asked) ? (asked as TabId) : 'categories';
+  const tab: TabId = TABS.some((t) => t.id === asked) ? (asked as TabId) : 'lists';
+  // Anciens onglets, déplacés dans le menu de la page des courses : on y renvoie
+  const moved = asked ? MOVED[asked] : undefined;
+  useEffect(() => {
+    if (moved) router.replace(`/course?gerer=${moved}`);
+  }, [moved, router]);
   function setTab(id: TabId) {
+    setFabOpen(false);
     router.replace(`/settings?tab=${id}`, { scroll: false });
   }
-  // CHARGEMENT (ET RECHARGEMENT APRÈS CHAQUE MODIFICATION) DES DONNÉES
-  // Gardées en mémoire entre deux visites (lib/cache) : affichées tout de suite, puis rechargées en arrière-plan
-  const query = useCached('courses:parametres', async () => {
-    const [{ data: cats }, { data: sts }, { data: ings, error }, { data: chs }] = await fetchAll();
-    if (error) console.error(error);
-    return {
-      categories: (cats as Category[]) ?? [],
-      stores: (sts as Store[]) ?? [],
-      chains: (chs as Chain[]) ?? [],
-      ingredients: (ings as unknown as IngredientWithRelations[]) ?? []
-    };
-  });
-  const loadAll = query.reload;
-  // Cadre du scan de reçu ouvert ou non
+  // Ingrédients connus, pour le scan d'un reçu (mis à jour après le scan)
+  const query = useCatalog();
+  // Cadre du scan de reçu ouvert ou non, et menu flottant déplié ou non (téléphone)
   const [receiptOpen, setReceiptOpen] = useState(false);
+  const [fabOpen, setFabOpen] = useState(false);
+  const current = TABS.find((t) => t.id === tab)!;
 
-  const data = query.data;
+  function openScan() {
+    setFabOpen(false);
+    setReceiptOpen(true);
+  }
 
-  // Contenu du dossier ouvert
+  // Contenu de l'onglet ouvert
   function content(id: TabId) {
-    if (!data) return <p>Chargement...</p>;
-    const { categories, stores, chains, ingredients } = data;
     switch (id) {
-      case 'categories':
-        return <CategoriesSettings categories={categories} onChange={loadAll} />;
-      case 'stores':
-        return <StoresSettings stores={stores} chains={chains} onChange={loadAll} />;
-      case 'ingredients':
-        return <IngredientsSettings ingredients={ingredients} categories={categories} stores={stores} onChange={loadAll} />;
       // Les listes chargent elles-mêmes leurs données (avec leurs articles)
       case 'lists':
         return <ListsSettings />;
       // Les défis chargent eux-mêmes leurs données (défis, points, bons récupérés)
       case 'defis':
         return <ChallengesSettings />;
+      // Réglages de la page de titre (gardés dans le navigateur)
+      case 'accueil':
+        return <HomeSettings />;
     }
   }
 
-  // UN CLASSEUR : les dossiers roses sont empilés les uns sous les autres. D'un dossier fermé on ne voit que le bord
-  // du haut et son onglet, décalé d'un dossier à l'autre comme des intercalaires. Toucher un dossier l'ouvre :
-  // il s'agrandit et pousse les autres en haut et en bas, où il ne reste que leur bord.
+  // MISE EN PAGE FAÇON « MATERIAL EXPRESSIF » :
+  //  - sur grand écran, un panneau de navigation à gauche (scan d'un reçu en pilule rose, puis les onglets) ;
+  //  - sur téléphone, les onglets en boutons segmentés sous le titre, et un menu flottant en bas à droite
+  //    (scanner un reçu, page des courses, accueil) qui se déplie en pilules ;
+  //  - le contenu de l'onglet sur une grande surface presque blanche aux coins très arrondis.
+  // Les popins ouvertes depuis la page prennent le même style (ModalVariantContext « m3 »).
   return (
-    <div className="classeur fixed inset-0 flex flex-col">
-      {/* En haut de la page, au-dessus des dossiers : retour, et scan d'un reçu
-          (il met à jour les ingrédients, leurs prix et les magasins) */}
-      <div className="classeur-bar flex shrink-0 items-center justify-between gap-2 whitespace-nowrap px-4 sm:px-6">
-        <button type="button" onClick={() => router.back()} className="folder-small inline-flex items-center gap-1">
-          <ArrowLeft size={14} /> Retour
-        </button>
-        <button type="button" onClick={() => setReceiptOpen(true)} className="folder-small inline-flex items-center gap-1">
-          <ReceiptText size={14} /> Scanner un reçu
-        </button>
-      </div>
-      {TABS.map((t, i) => {
-        const open = tab === t.id;
-        // Onglets en escalier, de gauche à droite
-        const tabLeft = `calc(10px + ${i} * (100% - 20px - var(--tab-w)) / ${TABS.length - 1})`;
-        return (
-          <section key={t.id} className={`folder ${open ? 'folder-open' : ''}`} style={{ zIndex: i + 1 }} aria-label={t.label}>
-            {/* Bord du dossier, avec l'onglet qui dépasse en haut et son étiquette */}
+    <ModalVariantContext.Provider value="m3">
+      <div className="m3 m3-page min-h-dvh" style={{ backgroundColor: BG }}>
+        <div className="mx-auto flex max-w-5xl gap-5 px-4 pb-36 pt-4 lg:px-6 lg:pb-12 lg:pt-6">
+          {/* PANNEAU DE NAVIGATION (grand écran) */}
+          <aside className="sticky top-6 hidden w-64 shrink-0 flex-col gap-1 self-start rounded-[28px] p-3 lg:flex" style={{ backgroundColor: SURFACE }}>
+            <Link href="/cartes" aria-label="Retour" className="mb-3 flex size-11 items-center justify-center rounded-full hover:bg-black/5">
+              <ArrowLeft size={20} />
+            </Link>
             <button
               type="button"
-              onClick={() => setTab(t.id)}
-              aria-current={open ? 'page' : undefined}
-              aria-label={open ? `${t.label} (ouvert)` : `Ouvrir ${t.label}`}
-              className="folder-spine"
+              onClick={openScan}
+              className="mb-6 inline-flex items-center gap-3 self-start rounded-[16px] bg-[#f8b4f8] px-4 py-3.5 text-[14px] font-medium text-[#3a0f3d] transition-shadow hover:shadow-md"
             >
-              <span className="folder-bump" style={{ left: tabLeft }}>
-                <span className="folder-label">{t.label}</span>
-              </span>
+              <ReceiptText size={18} /> Scanner un reçu
             </button>
+            {TABS.map(({ id, label, icon: Icon }) => {
+              const active = id === tab;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setTab(id)}
+                  aria-current={active ? 'page' : undefined}
+                  className={`flex items-center gap-3 rounded-full px-4 py-3.5 text-left text-[14px] font-medium transition-colors ${
+                    active ? 'bg-[#e0dcf5] text-[#2b1f4f]' : 'hover:bg-black/5'
+                  }`}
+                >
+                  <Icon size={19} strokeWidth={active ? 2.5 : 2} /> {label}
+                </button>
+              );
+            })}
+            <div className="my-3 border-t border-[#cac4d0]" />
+            <Link href="/course" className="flex items-center gap-3 rounded-full px-4 py-3.5 text-[14px] font-medium hover:bg-black/5">
+              <ShoppingBasket size={19} /> Page des courses
+            </Link>
+          </aside>
 
-            {/* Intérieur du dossier : seulement celui qui est ouvert */}
-            <div className="folder-body">
-              {open && (
-                <div className="folder-content h-full overflow-y-auto overscroll-contain px-4 pb-10 pt-5 sm:px-6">
-                  {/* En-tête : nom de l'application et titre du dossier */}
-                  <div className="mx-auto max-w-3xl">
-                  <p className="folder-script text-[26px] leading-none">nana</p>
-                  <h1 className="mb-5 mt-1 leading-none">
-                    <span className="folder-serif text-[34px] sm:text-[44px]">mes </span>
-                    <span className="folder-script text-[42px] sm:text-[54px]">{t.label.toLowerCase()}</span>
-                  </h1>
-                  {content(t.id)}
-                  </div>
-                </div>
-              )}
+          <main className="min-w-0 flex-1">
+            {/* EN-TÊTE : retour (téléphone), pastille festonnée et titre */}
+            <Link
+              href="/cartes"
+              aria-label="Retour"
+              className="mb-4 flex size-11 items-center justify-center rounded-full bg-[#cbbdfc] text-[#2b1f4f] lg:hidden"
+            >
+              <ArrowLeft size={20} />
+            </Link>
+            <div className="flex items-center gap-4">
+              <ScallopBadge icon={current.icon} />
+              <div className="min-w-0">
+                <p className="text-[13px] font-medium text-[#65558f]">Paramètres</p>
+                <h1 className="text-[28px] font-medium leading-tight tracking-tight sm:text-[32px]">{current.title}</h1>
+              </div>
             </div>
-          </section>
-        );
-      })}
 
-      {receiptOpen && data && (
-        <Modal title="Scanner un reçu" onClose={() => setReceiptOpen(false)} wide>
-          <ReceiptScan
-            ingredients={data.ingredients}
-            onDone={() => {
-              setReceiptOpen(false);
-              loadAll();
-            }}
-          />
-        </Modal>
-      )}
-    </div>
+            {/* ONGLETS EN BOUTONS SEGMENTÉS (téléphone) : celui ouvert en pilule prune avec une coche */}
+            <nav aria-label="Onglets" className="no-scrollbar -mx-4 mt-5 flex gap-1.5 overflow-x-auto px-4 lg:hidden">
+              {TABS.map(({ id, label, icon: Icon }) => {
+                const active = id === tab;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setTab(id)}
+                    aria-current={active ? 'page' : undefined}
+                    className={`inline-flex shrink-0 items-center gap-2 px-4 py-2.5 text-[14px] font-medium transition-all ${
+                      active ? 'rounded-full bg-[#7b3f86] text-white' : 'rounded-[12px] text-[#1d1b20]'
+                    }`}
+                    style={active ? undefined : { backgroundColor: SURFACE }}
+                  >
+                    {active ? <CircleCheck size={17} /> : <Icon size={17} />} {label}
+                  </button>
+                );
+              })}
+            </nav>
+
+            {/* CONTENU DE L'ONGLET, sur une grande surface arrondie */}
+            <section aria-label={current.label} className="mt-5 rounded-[28px] p-4 sm:p-6" style={{ backgroundColor: SURFACE }}>
+              {content(tab)}
+            </section>
+          </main>
+        </div>
+
+        {/* MENU FLOTTANT (téléphone) : bouton carré « + », qui se déplie en pilules au-dessus d'un bouton rond « × » */}
+        <div className="fixed bottom-6 right-4 z-30 flex flex-col items-end gap-2 lg:hidden">
+          {fabOpen && (
+            <>
+              {/* Toucher ailleurs replie le menu */}
+              <div className="fixed inset-0 -z-10" onClick={() => setFabOpen(false)} aria-hidden />
+              {(
+                [
+                  { label: 'Accueil', icon: House, href: '/cartes' },
+                  { label: 'Page des courses', icon: ShoppingBasket, href: '/course' },
+                  { label: 'Scanner un reçu', icon: ReceiptText, onClick: openScan }
+                ] as const
+              ).map((item, i, all) => {
+                const inner = (
+                  <>
+                    <item.icon size={22} /> {item.label}
+                  </>
+                );
+                const cls =
+                  'm3-pop inline-flex items-center gap-3 rounded-full bg-[#cbbdfc] px-6 py-4 text-[17px] font-medium text-[#2b1f4f] shadow-[0_6px_16px_-8px_rgba(43,31,79,0.6)]';
+                const style = { animationDelay: `${(all.length - 1 - i) * 40}ms` };
+                return 'href' in item ? (
+                  <Link key={item.label} href={item.href} className={cls} style={style}>
+                    {inner}
+                  </Link>
+                ) : (
+                  <button key={item.label} type="button" onClick={item.onClick} className={cls} style={style}>
+                    {inner}
+                  </button>
+                );
+              })}
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => setFabOpen((o) => !o)}
+            aria-expanded={fabOpen}
+            aria-label={fabOpen ? 'Fermer le menu' : 'Ouvrir le menu'}
+            className={`flex size-16 items-center justify-center text-white shadow-[0_8px_20px_-8px_rgba(43,31,79,0.7)] transition-all ${
+              fabOpen ? 'rounded-full bg-[#65558f]' : 'rounded-[18px] bg-[#5a5870]'
+            }`}
+          >
+            {fabOpen ? <X size={26} /> : <Plus size={28} />}
+          </button>
+        </div>
+
+        {receiptOpen && query.data && (
+          <Modal title="Scanner un reçu" onClose={() => setReceiptOpen(false)} wide>
+            <ReceiptScan
+              ingredients={query.data.ingredients}
+              onDone={() => {
+                setReceiptOpen(false);
+                query.reload();
+              }}
+            />
+          </Modal>
+        )}
+      </div>
+    </ModalVariantContext.Provider>
   );
 }

@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 
-// Les supermarchés se gèrent dans Paramètres (onglet Supermarchés) : les anciens liens y mènent
+// Les supermarchés se gèrent depuis le menu de la page des courses : les anciens liens y mènent
 export default function StoresPage() {
-  redirect('/settings?tab=stores');
+  redirect('/course?gerer=supermarches');
 }

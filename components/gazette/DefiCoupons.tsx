@@ -19,6 +19,10 @@ const script = { fontFamily: 'var(--font-script), cursive' };
 const TONES = ['#eceef1', MIST, '#b9c5d6'];
 // Gris du trou laissé par un coupon arraché, plus sombre que le papier
 const HOLE = '#a9adb3';
+
+// Palette des coupons : celle de la gazette par défaut ; la page des courses (style cuisine) passe la sienne
+export type CouponPalette = { ink: string; tones: string[]; hole: string; font: React.CSSProperties; kicker: React.CSSProperties };
+const GAZETTE: CouponPalette = { ink: NAVY, tones: TONES, hole: HOLE, font: serif, kicker: script };
 // Hauteur d'un coupon, et mesures de sa forme (les mêmes que la classe .ticket de globals.css)
 const HEIGHT = 108;
 const RADIUS = 14; // coins arrondis
@@ -84,30 +88,31 @@ export type CouponItem = {
 };
 
 // Code-barres décoratif du talon : traits horizontaux d'épaisseurs variées, tirés du texte du défi
-function Barcode({ seed }: { seed: string }) {
+function Barcode({ seed, ink }: { seed: string; ink: string }) {
   const bars = [...seed.padEnd(22, '·')].slice(0, 22).map((c) => 1 + (c.charCodeAt(0) % 3));
   return (
     <span className="flex w-9 flex-col gap-[2px]" aria-hidden>
       {bars.map((h, i) => (
-        <span key={i} style={{ height: h, backgroundColor: NAVY }} />
+        <span key={i} style={{ height: h, backgroundColor: ink }} />
       ))}
     </span>
   );
 }
 
-function Coupon({ defi, tone }: { defi: CouponItem; tone: string }) {
+function Coupon({ defi, tone, palette }: { defi: CouponItem; tone: string; palette: CouponPalette }) {
+  const NAVY = palette.ink;
   return (
     <span className="ticket flex h-full" style={{ backgroundColor: tone, color: NAVY }}>
       {/* Talon : code-barres */}
       <span className="flex w-[var(--stub)] shrink-0 items-center justify-center">
-        <Barcode seed={defi.title} />
+        <Barcode seed={defi.title} ink={NAVY} />
       </span>
       {/* Perforation */}
       <span className="my-3 border-l-[1.5px] border-dashed" style={{ borderColor: NAVY }} />
       <span className="flex min-w-0 flex-1 flex-col px-3 pb-2 pt-2.5">
         <span className="flex flex-1 items-center gap-2">
           <span className="min-w-0 flex-1 text-left">
-            <span className="block text-[22px] leading-none" style={script}>
+            <span className="block text-[22px] leading-none" style={palette.kicker}>
               {defi.kicker}
             </span>
             <span className="mt-1 block text-[19px] font-black uppercase leading-[1.05] tracking-tight">{defi.title}</span>
@@ -131,11 +136,13 @@ function Coupon({ defi, tone }: { defi: CouponItem; tone: string }) {
 export function DefiCoupons({
   defis,
   onTear,
-  torn: tornFromPage
+  torn: tornFromPage,
+  palette = GAZETTE
 }: {
   defis: CouponItem[];
   onTear?: (item: CouponItem) => Promise<boolean> | boolean;
   torn?: Set<string>;
+  palette?: CouponPalette;
 }) {
   const tornRaw = useSyncExternalStore(subscribe, readTorn, () => '[]');
   // Coupons arrachés à l'instant, en attendant que la page les fournisse dans "torn"
@@ -173,7 +180,7 @@ export function DefiCoupons({
   }
 
   return (
-    <ul ref={listRef} className="mt-3 flex flex-col gap-3" style={serif}>
+    <ul ref={listRef} className="mt-3 flex flex-col gap-3" style={palette.font}>
       {defis.map((defi, i) => {
         const done = torn.has(defi.id);
         const going = tearing.has(defi.id);
@@ -181,10 +188,10 @@ export function DefiCoupons({
           <li key={defi.id} className="relative" style={{ height: HEIGHT }}>
             {/* Trou laissé par le coupon : même forme de ticket, gris, vide, bordé de tirets qui suivent son contour
                 (coins arrondis et encoches). Toujours présent sous le coupon, il se découvre pendant l'arrachage. */}
-            <span className="ticket absolute inset-0 shadow-[inset_0_2px_6px_rgba(0,0,0,0.25)]" style={{ backgroundColor: HOLE }} aria-hidden />
+            <span className="ticket absolute inset-0 shadow-[inset_0_2px_6px_rgba(0,0,0,0.25)]" style={{ backgroundColor: palette.hole }} aria-hidden />
             {width > 0 && (
               <svg className="pointer-events-none absolute inset-0" width={width} height={HEIGHT} aria-hidden>
-                <path d={ticketPath(width, HEIGHT, 1)} fill="none" stroke={NAVY} strokeWidth={1.5} strokeDasharray="6 4" strokeLinecap="round" />
+                <path d={ticketPath(width, HEIGHT, 1)} fill="none" stroke={palette.ink} strokeWidth={1.5} strokeDasharray="6 4" strokeLinecap="round" />
               </svg>
             )}
             {!done && (
@@ -195,7 +202,7 @@ export function DefiCoupons({
                 aria-label={`Arracher le coupon « ${defi.title} »`}
                 className={`relative block h-full w-full drop-shadow-[0_2px_2px_rgba(29,43,74,0.25)] ${going ? 'tear-off-animate' : ''} ${defi.muted ? 'opacity-55' : ''}`}
               >
-                <Coupon defi={defi} tone={TONES[i % TONES.length]} />
+                <Coupon defi={defi} tone={palette.tones[i % palette.tones.length]} palette={palette} />
               </button>
             )}
           </li>

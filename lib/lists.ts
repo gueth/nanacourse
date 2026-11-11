@@ -61,3 +61,16 @@ export async function refreshListTotal(listId: string) {
   if (error) return console.error(error);
   await saveListTotal(listId, data ?? []);
 }
+
+// NOM PAR DÉFAUT D'UNE LISTE : la date, à la française (ex : « 11 novembre 2026 »).
+// Une date sans heure (« 2026-11-11 ») est lue en heure locale, pour ne pas glisser à la veille.
+export function dateListName(value: Date | string = new Date()) {
+  const d = typeof value === 'string' ? new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00` : value) : value;
+  return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+// Le nom de la liste est-il resté celui donné par défaut (la date de sa création) ?
+// Si oui, il prend la date de réalisation des courses quand la liste est validée.
+export function hasDefaultName(list: { name: string; created_at?: string | null }) {
+  return !!list.created_at && list.name === dateListName(list.created_at);
+}

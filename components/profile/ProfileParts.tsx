@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
+import Portal from '@/components/Portal';
 import { Camera, Pencil, Plus, X } from 'lucide-react';
 import { resetProfilePhoto, uploadProfilePhoto, type ProfilePhoto } from '@/lib/profileTexts';
 
@@ -28,40 +29,35 @@ export const paperGrain = {
 
 const round = (n: number) => Math.round(n * 100) / 100;
 
-// Enveloppe grise : rabats en diagonale, grand « Profil » calligraphié
-export function Envelope({ name, year, handle, email }: { name: string; year: string; handle: string; email: string }) {
+// Enveloppe grise en longue barre horizontale, posée en haut de la page : rabat en pointe très plate, « Profil » calligraphié au milieu.
+// Les textes sont dimensionnés selon la largeur de la barre (unités cqw) : rien ne déborde, quelle que soit la largeur de l'écran.
+export function Envelope({ year, handle, email }: { year: string; handle: string; email: string }) {
   return (
     <div
-      className="relative overflow-hidden rounded-[3px] text-white shadow-[0_10px_24px_rgba(20,30,60,0.35)]"
-      style={{ aspectRatio: '1.75', background: `radial-gradient(ellipse at 50% 40%, #6c6e72 0%, ${PF.envelope} 55%, #464749 100%)` }}
+      className="relative overflow-hidden rounded-[3px] text-white shadow-[0_6px_14px_rgba(20,30,60,0.35)] [container-type:inline-size]"
+      style={{ aspectRatio: '4.6', background: `radial-gradient(ellipse at 50% 40%, #6c6e72 0%, ${PF.envelope} 60%, #464749 100%)` }}
     >
-      {/* Rabats : deux diagonales qui se rejoignent au centre, et le rabat du haut */}
-      <svg className="absolute inset-0 h-full w-full" viewBox="0 0 350 200" preserveAspectRatio="none" aria-hidden>
-        <path d="M0 0 L175 118 L350 0" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.12)" strokeWidth={0.8} />
-        <path d="M0 200 L150 100 M350 200 L200 100" stroke="rgba(0,0,0,0.18)" strokeWidth={1.2} />
+      {/* Rabats : le rabat du haut en pointe jusqu'au milieu, et deux diagonales qui partent des coins du bas */}
+      <svg className="absolute inset-0 h-full w-full" viewBox="0 0 460 100" preserveAspectRatio="none" aria-hidden>
+        <path d="M0 0 L230 62 L460 0" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.12)" strokeWidth={0.8} />
+        <path d="M0 100 L170 50 M460 100 L290 50" stroke="rgba(0,0,0,0.18)" strokeWidth={1.2} />
       </svg>
       {/* Poussière de papier */}
       <div className="absolute inset-0 opacity-40" style={{ backgroundImage: 'radial-gradient(rgba(255,255,255,0.25) 0.6px, transparent 0.8px)', backgroundSize: '23px 19px' }} />
 
-      <p className="absolute left-1/2 top-[22%] text-[8px] uppercase tracking-[0.25em] opacity-90" style={serif}>
-        ( mon — profil )
-      </p>
       <h1
-        className="absolute inset-x-0 top-[24%] text-center text-[96px] leading-none"
+        className="absolute inset-x-0 top-1/2 -translate-y-[58%] text-center text-[13cqw] leading-none"
         style={{ ...script, color: 'rgba(255,255,255,0.88)', textShadow: '0 2px 6px rgba(0,0,0,0.35)' }}
       >
         Profil
       </h1>
-      <p className="absolute left-[7%] top-[62%] text-[8px] uppercase tracking-[0.2em] opacity-90" style={serif}>
-        ({name})
-      </p>
-      <p className="absolute right-[6%] top-[48%] text-[8px] tracking-[0.15em] opacity-90" style={serif}>
+      <p className="absolute right-[4%] top-[42%] text-[2.4cqw] tracking-[0.15em] opacity-90" style={serif}>
         ({year})
       </p>
-      <p className="absolute bottom-2 left-3 text-[7px] opacity-70" style={serif}>
+      <p className="absolute bottom-[8%] left-[3%] text-[2.2cqw] opacity-70" style={serif}>
         {handle}
       </p>
-      <p className="absolute bottom-2 right-3 text-[7px] opacity-70" style={serif}>
+      <p className="absolute bottom-[8%] right-[3%] text-[2.2cqw] opacity-70" style={serif}>
         {email}
       </p>
     </div>
@@ -308,10 +304,12 @@ export function EditButton({ label, onClick, add = false, className = '' }: { la
   );
 }
 
-// Fenêtre sur papier de la page Profil : titre calligraphié, contenu qui défile, pied facultatif (boutons)
+// Fenêtre sur papier de la page Profil : titre calligraphié, contenu qui défile, pied facultatif (boutons).
+// Toujours au centre de l'écran, téléphone compris.
 export function PaperModal({ title, onClose, footer, children }: { title: string; onClose: () => void; footer?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center" onClick={onClose}>
+    <Portal>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div
         role="dialog"
         aria-modal="true"
@@ -336,6 +334,7 @@ export function PaperModal({ title, onClose, footer, children }: { title: string
         )}
       </div>
     </div>
+    </Portal>
   );
 }
 

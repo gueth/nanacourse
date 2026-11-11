@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from 'react';
 import { useConfirm } from '@/components/ConfirmDialog';
-import { DefiCoupons } from '@/components/gazette/DefiCoupons';
+import { DefiCoupons, type CouponPalette } from '@/components/gazette/DefiCoupons';
+import type { ModalVariant } from '@/components/Modal';
 import {
   claimReward,
   describeChallengeError,
@@ -18,11 +19,20 @@ import {
 // (arracher un coupon, après confirmation, retire son coût des points et le range dans Profil > Mes coupons ;
 // son trou reste jusqu'au nouveau stock, le lundi). Les défis en cours n'y figurent pas. La rubrique est titrée par la page (Ribbon) : "ribbon".
 
-export function RewardsCorner({ ribbon }: { ribbon: (title: string) => React.ReactNode }) {
+// variant / palette : style des popins et couleurs des coupons (gazette par défaut)
+export function RewardsCorner({
+  ribbon,
+  variant = 'gazette',
+  palette
+}: {
+  ribbon: (title: string) => React.ReactNode;
+  variant?: ModalVariant;
+  palette?: CouponPalette;
+}) {
   const challengesQuery = useChallenges();
   const rewardsQuery = useRewards();
   const { available } = pointsSummary(challengesQuery.data, rewardsQuery.data?.claims);
-  const [confirm, confirmDialog] = useConfirm('gazette');
+  const [confirm, confirmDialog] = useConfirm(variant);
   const [message, setMessage] = useState('');
 
   // Arrachage d'un coupon : refusé s'il manque des points, sinon confirmation puis gain (son coût est retiré)
@@ -69,6 +79,7 @@ export function RewardsCorner({ ribbon }: { ribbon: (title: string) => React.Rea
       {!rewardsQuery.data && !error && <p className="mt-2 text-center text-[12px] italic">Impression…</p>}
       <DefiCoupons
         torn={won}
+        palette={palette}
         onTear={(item) => {
           const pick = stock.find((s) => s.slot === item.id);
           return pick ? claim(pick.reward, pick.slot) : false;

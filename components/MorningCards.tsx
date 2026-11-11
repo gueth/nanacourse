@@ -1,15 +1,33 @@
 'use client';
 
-import { useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
 import { useActiveLists } from '@/lib/activeLists';
 import { listTotal } from '@/lib/lists';
-import { formatEuros } from '@/lib/finance';
+import { formatEuros, monthKey, monthLabel, shiftMonth } from '@/lib/finance';
+import { useShoppingBudgets, useStores, useUncategorizedCount } from '@/lib/coursesQueries';
+import { useCoverage } from '@/lib/financeQueries';
+import { missingAccounts, monthsToVerify, readTransfersToVerify, subscribeTransfersToVerify } from '@/lib/coverage';
 import { useShake } from '@/lib/shake';
 import { cyclePhase, PHASES, useCycle } from '@/lib/cycle';
+import { noticeIndex, useNoticeHours } from '@/lib/noticeRotation';
+import { LogOut, Settings, ShoppingBasket, UserRound, Wallet } from 'lucide-react';
+import { useHorizontalSwipe } from '@/lib/swipe';
+import { QuatrefoilMenu } from '@/components/QuatrefoilMenu';
+import { HomeDots } from '@/components/HomeDots';
+import { MessagesButton } from '@/components/MessagesButton';
+import { usePageTransition } from '@/components/PageTransitionProvider';
+import Portal from '@/components/Portal';
+import { NAVY, PAPER } from '@/components/gazette/Lace';
 
-// Première partie de la page de titre : l'heure, une grande salutation, et des cartes posées en vrac
-// (phrase du jour, liste de courses active, date, défis). Toucher une carte la fait rebondir,
-// secouer le téléphone les fait toutes valser. En faisant défiler vers le bas, on arrive au napperon.
+// Écran « La Gazette de nana » affiché avant d'ouvrir le journal
+const GAZETTE_SPLASH_MS = 900;
+
+// Page des cartes du jour (/cartes), ouverte après la connexion : l'heure, une grande salutation, et des cartes posées en vrac
+// (phrase du jour, liste de courses active, date, notifications). Toucher une carte la fait rebondir,
+// secouer le téléphone les fait toutes valser.
+// Le menu en trèfle, au centre en bas de l'écran, mène au profil, aux finances, aux courses et aux paramètres.
+// Le journal est la page de droite : en glissant le doigt vers la gauche, l'écran
+// « La Gazette de nana » s'affiche un instant (le temps que l'accueil se prépare), puis l'accueil s'ouvre en fondu.
 // Les couleurs suivent la phase du cycle (Profil > Mon cycle) : rouge pour les règles, violet en phase folliculaire,
 // orange à l'ovulation, rose en phase lutéale ; des bulles autour du titre proposent des activités de la phase.
 
@@ -27,8 +45,7 @@ const PHRASES = [
   "Je regarde avec joie le chemin déjà parcouru."
 ];
 
-// Défis proposés, trois par jour à tour de rôle
-const DEFIS = ['Boire 1,5 L d’eau', 'Marcher 30 min', 'Cuisiner maison', 'Zéro dépense', 'Lire 10 pages'];
+const plural = (n: number, word: string) => `${n} ${word}${n > 1 ? 's' : ''}`;
 
 // Heure du navigateur, relue toutes les 15 s (null pendant le rendu côté serveur)
 function subscribeClock(onChange: () => void) {
@@ -37,7 +54,7 @@ function subscribeClock(onChange: () => void) {
 }
 const readMinute = () => Math.floor(Date.now() / 60_000);
 
-// Numéro du jour (change à minuit) : choisit la phrase et les défis du jour
+// Numéro du jour (change à minuit) : choisit la phrase du jour
 const dayNumber = (d: Date) => Math.floor((d.getTime() - d.getTimezoneOffset() * 60_000) / 86_400_000);
 
 function greeting(d: Date) {
@@ -74,11 +91,27 @@ function bounce(el: HTMLElement) {
   );
 }
 
-// Secousse : la carte part dans une direction au hasard, puis revient en oscillant de moins en moins
+// Secousse : la carte part dans une direction au hasard (en ralentissant), puis revient à sa place comme tirée par
+// un ressort, en oscillant de moins en moins. Le retour est calculé image par image (oscillation amortie) pour
+// rester aussi fluide que le départ : pas d'arrêt brusque à chaque changement de sens.
+const WOBBLE_MS = 1300;
+const WOBBLE_OUT = 0.2; // part du temps passée à partir
+function wobbleAmount(t: number) {
+  if (t <= WOBBLE_OUT) {
+    const p = t / WOBBLE_OUT;
+    return 1 - (1 - p) ** 3; // départ qui ralentit jusqu'au point le plus loin
+  }
+  const s = (t - WOBBLE_OUT) / (1 - WOBBLE_OUT);
+  // retour en ressort : vitesse nulle au départ, puis oscillations qui s'éteignent jusqu'à zéro
+  return Math.exp(-4.2 * s) * Math.cos(Math.PI * 2.4 * s) * (1 - s ** 6);
+}
 function wobble(el: HTMLElement, delay: number) {
   const [x, y, r] = [sign() * random(14, 34), sign() * random(10, 28), sign() * random(6, 14)];
-  const at = (k: number) => ({ transform: `translate(${x * k}px, ${y * k}px) rotate(${r * k}deg)` });
-  el.animate([at(0), at(1), at(-0.6), at(0.35), at(-0.15), at(0)], { duration: 1000, delay, easing: 'ease-in-out' });
+  const frames = Array.from({ length: 49 }, (_, i) => {
+    const k = wobbleAmount(i / 48);
+    return { transform: `translate(${x * k}px, ${y * k}px) rotate(${r * k}deg)` };
+  });
+  el.animate(frames, { duration: WOBBLE_MS, delay, easing: 'linear' });
 }
 
 // Une carte posée sur la pile : position et inclinaison (en % de la scène), entrée décalée, et léger flottement.
@@ -136,11 +169,35 @@ function Label({ children, light = false }: { children: ReactNode; light?: boole
   return <p className={`text-[3.4cqw] leading-tight ${light ? 'text-white/80' : 'text-neutral-500'}`}>{children}</p>;
 }
 
-export function MorningCards({ onContinue }: { onContinue: () => void }) {
+export function MorningCards() {
   const minute = useSyncExternalStore(subscribeClock, readMinute, () => null);
   const now = minute == null ? null : new Date(minute * 60_000);
   const lists = useActiveLists().data;
   const list = lists?.[0];
+  const stores = useStores().data;
+  // Données des notifications : relevés et virements, budgets de courses, aliments sans catégorie
+  const coverage = useCoverage().data;
+  const budgets = useShoppingBudgets().data;
+  const uncategorized = useUncategorizedCount().data ?? 0;
+  const noticeHours = useNoticeHours();
+  const { startTransition } = usePageTransition();
+  // Journal (la page de droite) : on y passe en glissant le doigt vers la gauche ; l'écran de la gazette s'affiche,
+  // puis l'accueil s'ouvre en fondu
+  const [toJournal, setToJournal] = useState(false);
+  useEffect(() => {
+    if (!toJournal) return;
+    const timer = window.setTimeout(() => startTransition('/accueil', 'fade'), GAZETTE_SPLASH_MS);
+    return () => window.clearTimeout(timer);
+  }, [toJournal, startTransition]);
+  const swipe = useHorizontalSwipe({ onLeft: () => setToJournal(true) });
+  // Menu en trèfle : le profil, les finances, les courses et les paramètres (pages séparées, on n'y accède que par ce menu)
+  const menu = [
+    { label: 'Mon profil', icon: UserRound, onSelect: () => startTransition('/profile', 'fade') },
+    { label: 'Finances', icon: Wallet, onSelect: () => startTransition('/banque/comptes', 'fade') },
+    { label: 'Courses', icon: ShoppingBasket, onSelect: () => startTransition('/course', 'fade') },
+    { label: 'Paramètres', icon: Settings, onSelect: () => startTransition('/settings', 'fade') }
+  ];
+  const verifySnapshot = useSyncExternalStore(subscribeTransfersToVerify, readTransfersToVerify, () => '');
   // Phase du cycle du jour (null si le cycle n'est pas renseigné : couleurs par défaut, sans bulles)
   const cycleSettings = useCycle().data;
   const cycle = now ? cyclePhase(cycleSettings, now) : null;
@@ -167,17 +224,68 @@ export function MorningCards({ onContinue }: { onContinue: () => void }) {
 
   const day = now ? dayNumber(now) : 0;
   const phrase = PHRASES[day % PHRASES.length];
-  const defis = [0, 1, 2].map((i) => DEFIS[(day + i) % DEFIS.length]);
+
+  // Notifications, de la plus importante à la moins importante
+  const notices: string[] = [];
+  if (coverage) {
+    // Mois où les comptes ne concordent pas : virements à préciser, opérations estimées qui ne collent plus, ou à revérifier
+    const toCheck = [
+      ...new Set([...coverage.mismatches.map((m) => m.month), ...coverage.questions.map((q) => q.date.slice(0, 7)), ...monthsToVerify(verifySnapshot)])
+    ].sort();
+    if (toCheck.length === 1) notices.push(`Incohérence possible dans les comptes de ${monthLabel(toCheck[0])}`);
+    else if (toCheck.length > 1) notices.push(`Incohérences possibles dans les comptes sur ${toCheck.length} mois`);
+    // Relevés du mois dernier pas encore importés
+    if (now) {
+      const last = shiftMonth(monthKey(now), -1);
+      const missing = missingAccounts(coverage, last);
+      if (missing.length === 1) notices.push(`Relevé ${missing[0]} de ${monthLabel(last)} manquant`);
+      else if (missing.length > 1) notices.push(`${missing.length} relevés de ${monthLabel(last)} manquants`);
+    }
+  }
+  if (uncategorized > 0) notices.push(`${plural(uncategorized, 'aliment')} sans catégorie`);
+  for (const b of budgets ?? []) notices.push(`Reste ${formatEuros(b.remaining)} sur ${b.settings.name}`);
+  // Notification affichée en ce moment (elles se relaient toutes les N heures)
+  const shown = now ? noticeIndex(now, noticeHours, notices.length) : 0;
+  const notice = notices[shown];
   const [line1, line2] = now ? greeting(now) : ['', ''];
   const weekday = now?.toLocaleDateString('fr-FR', { weekday: 'long' }) ?? '';
   const date = now?.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) ?? '';
   const items = list?.items ?? [];
-  const names = items.map((it) => it.ingredient?.name).filter((n): n is string => !!n);
+  // Magasin choisi pour la liste active (rien d'affiché s'il n'y en a pas)
+  const store = list?.store_id ? stores?.find((s) => s.id === list.store_id) : undefined;
 
   return (
-    <section className="morning-page relative flex h-dvh snap-start flex-col overflow-hidden" style={theme ? themeVars(theme.colors) : undefined}>
+    <section {...swipe} className="morning-page relative flex h-dvh flex-col overflow-hidden" style={theme ? themeVars(theme.colors) : undefined}>
+      {/* Écran de la gazette, le temps d'ouvrir le journal */}
+      {toJournal && (
+        <Portal>
+          <div
+            role="status"
+            aria-label="Ouverture du journal"
+            className="fixed inset-0 z-40 flex flex-col items-center justify-center"
+            style={{ backgroundColor: PAPER, color: NAVY, animation: 'page-fade-in 250ms ease-in both' }}
+          >
+            <p className="text-[58px] leading-none" style={{ fontFamily: 'var(--font-blackletter), serif' }}>
+              La Gazette
+            </p>
+            <p className="-mt-1 text-[30px] leading-none" style={{ fontFamily: 'var(--font-script), cursive' }}>
+              de nana
+            </p>
+          </div>
+        </Portal>
+      )}
+
       {/* Halos de couleur flous derrière le titre et les cartes */}
       <div aria-hidden className="morning-glow pointer-events-none absolute inset-0" />
+
+      {/* Déconnexion, en haut à gauche : retour à la page de connexion (la carte « Nana & Co ») */}
+      <button
+        type="button"
+        onClick={() => startTransition('/', 'fade')}
+        className="absolute left-2 top-[max(env(safe-area-inset-top),0.75rem)] z-20 inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-[12px] font-medium text-neutral-600"
+      >
+        <LogOut size={15} aria-hidden /> Déconnexion
+      </button>
 
       {/* Heure, puis la salutation en très grandes lettres, que les cartes viennent recouvrir en partie */}
       <header className="relative pt-[max(env(safe-area-inset-top),1.5rem)] text-center">
@@ -229,24 +337,19 @@ export function MorningCards({ onContinue }: { onContinue: () => void }) {
             className="morning-list flex flex-col text-white"
           >
             <p className="text-[3.4cqw] uppercase tracking-[0.18em] text-white/75">Courses</p>
-            <p className="mt-[1cqw] line-clamp-2 text-[5cqw] font-bold leading-tight">{list?.name ?? 'Aucune liste active'}</p>
             {list ? (
-              <ul className="mt-[3cqw] flex-1 space-y-[1.2cqw] overflow-hidden text-[3.8cqw] leading-snug">
-                {names.slice(0, 4).map((n, i) => (
-                  <li key={i} className="flex gap-[1.5cqw] truncate">
-                    <span aria-hidden>•</span>
-                    <span className="truncate">{n}</span>
-                  </li>
-                ))}
-                {names.length > 4 && <li className="text-white/75">+ {names.length - 4} autres</li>}
-              </ul>
+              <>
+                <p className="mt-[1cqw] line-clamp-3 text-[5cqw] font-bold leading-tight">{list.name}</p>
+                {store && <p className="mt-[2cqw] truncate text-[3.8cqw] text-white/85">{store.name}</p>}
+                <div className="flex-1" />
+                <p className="text-[3.8cqw] text-white/85">
+                  {items.length} élément{items.length > 1 ? 's' : ''}
+                </p>
+                <p className="text-[5cqw] font-bold leading-tight">{formatEuros(listTotal(items))}</p>
+                <p className="text-[3cqw] text-white/75">total estimé</p>
+              </>
             ) : (
-              <p className="mt-[3cqw] flex-1 text-[3.8cqw] leading-snug text-white/85">Prépare ta prochaine liste dans les paramètres.</p>
-            )}
-            {list && (
-              <p className="text-[3.6cqw] font-semibold">
-                {items.length} article{items.length > 1 ? 's' : ''} · {formatEuros(listTotal(items))}
-              </p>
+              <p className="mt-[1cqw] text-[5cqw] font-bold leading-tight">Pas de courses prévues</p>
             )}
           </Card>
 
@@ -263,31 +366,40 @@ export function MorningCards({ onContinue }: { onContinue: () => void }) {
             <Label>Aperçu du jour</Label>
           </Card>
 
-          {/* Défis du jour */}
+          {/* Notifications : incohérences dans les comptes, relevés manquants, aliments sans catégorie, reste des budgets */}
           <Card index={3} register={register} place={{ left: '53%', top: '65%', width: '43%', rotate: 5, z: 10 }} className="bg-white/90">
-            <ul className="mb-[3cqw] space-y-[1.6cqw] text-[3.8cqw] leading-tight text-neutral-800">
-              {defis.map((d) => (
-                <li key={d} className="flex items-start gap-[1.8cqw]">
-                  <span aria-hidden className="mt-[0.4cqw] size-[3.4cqw] shrink-0 rounded-full border-2 border-[var(--m-accent,#c58db7)] opacity-70" />
-                  {d}
-                </li>
-              ))}
-            </ul>
-            <Label>Défis du jour</Label>
+            {/* Une seule notification à la fois : la suivante prend sa place toutes les N heures (Paramètres > Accueil) */}
+            <p className="mb-[3cqw] flex items-start gap-[1.8cqw] text-[3.4cqw] leading-tight text-neutral-800">
+              {notice ? (
+                <>
+                  <span aria-hidden className="mt-[0.6cqw] size-[2.4cqw] shrink-0 rounded-full bg-[var(--m-accent,#c58db7)] opacity-80" />
+                  {notice}
+                </>
+              ) : (
+                'Rien à signaler'
+              )}
+            </p>
+            <Label>Notifications{notices.length > 1 ? ` · ${shown + 1}/${notices.length}` : ''}</Label>
           </Card>
         </div>
       </div>
 
-      {/* Invitation à faire défiler vers la page de titre (un toucher y descend aussi) */}
-      <div className="relative px-4 pb-[max(env(safe-area-inset-bottom),1rem)] pt-2">
-        <button
-          type="button"
-          onClick={onContinue}
-          className="morning-hint mx-auto block px-5 py-3 text-center text-neutral-600"
-        >
-          Fais défiler pour entrer
-        </button>
-      </div>
+      {/* Place réservée au bouton du menu et aux deux points de l'accueil, sous les cartes */}
+      <div aria-hidden className="h-[calc(60px+max(env(safe-area-inset-bottom),1rem)+2.25rem)] shrink-0" />
+
+      {/* Deux points pour passer de l'accueil 1 (ici) à l'accueil 2 (le journal) */}
+      <HomeDots current={0} onGo={() => setToJournal(true)} color="var(--m-accent, #9b6a92)" />
+
+      {/* Lettre fixée en bas à droite : messagerie de nana */}
+      <MessagesButton />
+
+      {/* Menu en trèfle, au centre en bas de l'écran : seul accès aux grandes parties de l'application */}
+      <QuatrefoilMenu
+        entries={menu}
+        anchor="bottom"
+        className="absolute left-1/2 z-50 -translate-x-1/2"
+        style={{ bottom: 'max(calc(env(safe-area-inset-bottom) - 4px), 0.75rem)' }}
+      />
     </section>
   );
 }

@@ -1,13 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { usePageTransition } from '@/components/PageTransitionProvider';
+import { useHorizontalSwipe } from '@/lib/swipe';
 import { ArrowLeft, Check } from 'lucide-react';
 import { Sommaire } from '@/components/gazette/Sommaire';
-import { RewardsCorner } from '@/components/gazette/ChallengeCorner';
-import { MessagesButton } from '@/components/MessagesButton';
-import ShoppingReceipts from '@/components/ShoppingReceipts';
-import { SwipePages } from '@/components/SwipePages';
+import { HomeDots } from '@/components/HomeDots';
 import { TrendChart } from '@/components/finance/TrendChart';
 import { Bow, Flourish, LaceEdge, LaceFrame, MIST, NAVY, PAPER, Rosette } from '@/components/gazette/Lace';
 import { byPeriod, formatEuros, monthIndicators, monthKey, monthLabel, monthEndLabel, shiftMonth, totals } from '@/lib/finance';
@@ -18,10 +18,10 @@ import { useParcours } from '@/lib/parcours';
 import { unlockCreditsAudio } from '@/lib/creditsAudio';
 import { formatIssue, gazetteIssue } from '@/lib/gazette';
 
-// Accueil : la gazette du jour, en bleu nuit sur papier blanc, ornée de dentelle, sur deux pages que l'on fait glisser.
-// Page de gauche, le journal : à la une le bilan et le compte de résultat du dernier mois rempli, puis les graphiques
-// de santé financière et le parcours vers l'autonomie. Page de droite : le ticket de caisse de la liste de courses
-// active et les coupons à gagner avec les points des défis (les défis en cours restent dans Paramètres > Défis).
+// Accueil : la gazette du jour, en bleu nuit sur papier blanc, ornée de dentelle. À la une le bilan et le compte
+// de résultat du dernier mois rempli, puis les graphiques de santé financière et le parcours vers l'autonomie.
+// Les courses ont leur propre page (/course) : on passe de l'une à l'autre par le menu de la page des cartes du jour (/cartes),
+// qui est la page à gauche du journal (on y revient en glissant le doigt vers la droite).
 
 const serif = { fontFamily: 'var(--font-serif), Georgia, serif' };
 const blackletter = { fontFamily: 'var(--font-blackletter), serif' };
@@ -127,10 +127,10 @@ function Masthead({ today }: { today: Date | null }) {
 
   return (
     <header className="relative pt-3 text-center">
-      {/* Ligne du haut : flèche de retour à l'écran titre et numéro, date, et le « Sommaire » (menu) à droite */}
+      {/* Ligne du haut : flèche de retour à la page des cartes du jour et numéro, date, et le « Sommaire » (menu) à droite */}
       <div className="grid h-[22px] grid-cols-[1fr_auto_1fr] items-center gap-2 text-[10px] uppercase tracking-[0.18em]">
         <p className="flex items-center gap-2 text-left">
-          <Link href="/" aria-label="Retour à l'écran titre" className="-m-2 inline-flex p-2">
+          <Link href="/cartes" aria-label="Retour aux cartes du jour" className="-m-2 inline-flex p-2">
             <ArrowLeft size={18} strokeWidth={1.8} />
           </Link>
           <span>
@@ -142,11 +142,7 @@ function Masthead({ today }: { today: Date | null }) {
           {/* MENU : feuille de sommaire qui se déplie sous la barre de séparation */}
           <Sommaire
             top={47}
-            entries={[
-              { label: 'Finances', href: '/banque/comptes', page: 2 },
-              { label: 'Profil', href: '/profile', page: 3 },
-              { label: 'Paramètres', href: '/settings?tab=lists', page: 4 }
-            ]}
+            entries={[{ label: 'Crédits', href: '/credits', page: 2, onClick: () => unlockCreditsAudio() }]}
           />
         </div>
       </div>
@@ -538,16 +534,14 @@ export default function Accueil() {
   const todayKey = useSyncExternalStore(noSubscribe, readToday, () => null);
   const today = useMemo(() => (todayKey ? new Date(todayKey) : null), [todayKey]);
   const currentMonth = today ? monthKey(today) : null;
-  // Deux pages côte à côte : à gauche le journal, à droite la liste de courses active et les défis
-  const [page, setPage] = useState(0);
-  // Arrivée par /accueil#ticket (anciens liens de la page Courses, activation d'une liste dans les paramètres) :
-  // on ouvre directement la page de droite, et on retire #ticket de l'adresse
+  const router = useRouter();
+  // Anciens liens vers le ticket (/accueil#ticket) : les courses ont maintenant leur propre page
   useEffect(() => {
-    if (window.location.hash !== '#ticket') return;
-    window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- l'adresse n'est lisible qu'une fois dans le navigateur
-    setPage(1);
-  }, []);
+    if (window.location.hash === '#ticket') router.replace('/course');
+  }, [router]);
+  // Le journal est la page à droite des cartes du jour : glisser le doigt vers la droite y ramène
+  const { startTransition } = usePageTransition();
+  const swipe = useHorizontalSwipe({ onRight: () => startTransition('/cartes', 'fade') });
 
   const footer = (
     <div className="mt-8">
@@ -567,42 +561,27 @@ export default function Accueil() {
   return (
     <>
       {/* Toute la gazette en caractères à empattements, chiffres alignés (sans chiffres elzéviriens) */}
-      <div className="gazette overflow-x-clip pb-4 [font-variant-numeric:lining-nums_tabular-nums]" style={{ backgroundColor: PAPER, color: NAVY, ...serif }}>
+      <div
+        {...swipe}
+        className="gazette overflow-x-clip pb-4 [font-variant-numeric:lining-nums_tabular-nums]"
+        style={{ backgroundColor: PAPER, color: NAVY, ...serif }}
+      >
         <LaceEdge />
-        {/* On passe d'une page à l'autre en glissant le doigt, ou avec les deux points en bas de l'écran */}
-        <SwipePages
-          color={NAVY}
-          page={page}
-          onPageChange={setPage}
-          labels={['Le journal', 'Courses et défis']}
-          pages={[
-            <div key="journal" className="mx-auto max-w-[430px] px-4">
-              <Masthead today={today} />
+        <div className="mx-auto max-w-[430px] px-4">
+          <Masthead today={today} />
 
-              {/* À LA UNE : les comptes du mois, puis la santé financière */}
-              {currentMonth ? <FinanceNews currentMonth={currentMonth} /> : <Printing />}
+          {/* À LA UNE : les comptes du mois, puis la santé financière */}
+          {currentMonth ? <FinanceNews currentMonth={currentMonth} /> : <Printing />}
 
-              {footer}
-            </div>,
-            <div key="courses" className="mx-auto max-w-[430px] px-4">
-              {/* COURSES : le ticket de caisse de la liste active (toujours affiché) */}
-              <div id="ticket" className="pt-6">
-                <ShoppingReceipts blue />
-              </div>
-
-              {/* BONS D'ACHAT : récupérés avec les points des défis réussis */}
-              <RewardsCorner ribbon={(title) => <Ribbon>{title}</Ribbon>} />
-              {footer}
-            </div>
-          ]}
-        />
+          {footer}
+        </div>
       </div>
       <div style={{ backgroundColor: PAPER }}>
         <LaceEdge flip />
       </div>
 
-      {/* LETTRE FIXÉE EN BAS À DROITE : messagerie de nana */}
-      <MessagesButton />
+      {/* Deux points pour revenir à l'accueil 1 (les cartes du jour) ; la messagerie est sur l'accueil 1 */}
+      <HomeDots current={1} onGo={() => startTransition('/cartes', 'fade')} color={NAVY} bottom="max(env(safe-area-inset-bottom), 0.75rem)" />
     </>
   );
 }

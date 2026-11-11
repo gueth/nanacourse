@@ -58,7 +58,7 @@ export function PageWipeTransition({ active, onCovered, onFinished }: Props) {
         {Array.from({ length: BARS }).map((_, i) => (
           <div
             key={i}
-            className="absolute left-0 bg-paper rounded-full"
+            className="absolute left-0 bg-backdrop rounded-full"
             style={{
               width: `${(BAR_WIDTH / CONTAINER_WIDTH) * 100}%`,
               top: `${(i / BARS) * 100 - OVERLAP / 2}%`,

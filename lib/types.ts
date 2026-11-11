@@ -31,6 +31,18 @@ export type Ingredient = {
   photo_url: string | null;
   category_id: string | null;
   type: string | null;
+  // Bannière qui regroupe les variantes d'un même produit (voir lib/ingredientGroups.ts) ; aucune = ingrédient seul
+  group_id?: string | null;
+};
+
+// Bannière d'ingrédients (« Œufs », « Lait »...) : affichée à la place de ses variantes dans la création d'une liste.
+// Elle porte la photo et la catégorie ; ses ingrédients prennent sa catégorie.
+export type IngredientGroup = {
+  id: string;
+  name: string;
+  photo_url: string | null;
+  category_id: string | null;
+  category: Category | null; // catégorie jointe à la lecture
 };
 
 export type IngredientPrice = {

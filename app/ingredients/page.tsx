@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 
-// Les ingrédients (et leurs photos) se gèrent dans Paramètres (onglet Ingrédients) : les anciens liens y mènent
+// Les ingrédients (et leurs photos) se gèrent depuis le menu de la page des courses : les anciens liens y mènent
 export default function IngredientsPage() {
-  redirect('/settings?tab=ingredients');
+  redirect('/course?gerer=ingredients');
 }

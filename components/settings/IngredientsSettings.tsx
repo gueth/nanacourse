@@ -10,6 +10,8 @@ import PriceEditor from '@/components/PriceEditor';
 import NewIngredientForm from '@/components/NewIngredientForm';
 import CollapsibleForm from '@/components/settings/CollapsibleForm';
 import { deleteIngredient } from '@/lib/deletions';
+import { saveIngredientGroup, setIngredientGroup, uploadGroupPhoto, useIngredientGroups } from '@/lib/ingredientGroups';
+import type { IngredientGroup } from '@/lib/types';
 import { useConfirm } from '@/components/ConfirmDialog';
 import { EditActions, EditFields, RowActions, RowList, SearchBar } from '@/components/settings/ui';
 
@@ -28,6 +30,7 @@ type EditForm = {
   note: string;
   category_id: string;
   type: string;
+  group: string; // nom de la bannière (vide = aucune) : une bannière existante, ou une nouvelle à créer
 };
 
 // Onglet "Ingrédients" des paramètres : liste de tous les ingrédients,
@@ -42,7 +45,11 @@ export default function IngredientsSettings({ ingredients, categories, stores, o
 
   // Ingrédient en cours de modification (null = aucun) et ses valeurs temporaires
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState<EditForm>({ name: '', note: '', category_id: '', type: '' });
+  const [form, setForm] = useState<EditForm>({ name: '', note: '', category_id: '', type: '', group: '' });
+  // Bannières (Œufs, Lait...) qui regroupent les variantes d'un même produit
+  const groupsQuery = useIngredientGroups();
+  const groups = groupsQuery.data ?? [];
+  const groupById = new Map(groups.map((g) => [g.id, g]));
 
   // Formulaire d'ajout : nom pré-rempli, et compteur qui force sa réinitialisation (via "key")
   const [newIngredientName, setNewIngredientName] = useState('');
@@ -82,7 +89,8 @@ export default function IngredientsSettings({ ingredients, categories, stores, o
       name: ing.name,
       note: ing.note ?? '',
       category_id: ing.category_id ?? '',
-      type: ing.type ?? ''
+      type: ing.type ?? '',
+      group: (ing.group_id && groupById.get(ing.group_id)?.name) || ''
     });
   }
 
@@ -99,6 +107,19 @@ export default function IngredientsSettings({ ingredients, categories, stores, o
       })
       .eq('id', id);
     if (error) return console.error(error);
+    // Bannière : celle qui porte ce nom (créée au besoin), ou aucune si le champ est vide
+    const ing = ingredients.find((i) => i.id === id);
+    const previous = ing?.group_id ?? null;
+    const wanted = form.group.trim();
+    const existing = groups.find((g) => g.name.toLowerCase() === wanted.toLowerCase());
+    if ((existing?.id ?? null) !== previous || (wanted && !existing)) {
+      const groupError = await setIngredientGroup(id, previous, existing ? { groupId: existing.id } : wanted ? { newName: wanted } : { groupId: null });
+      if (groupError) {
+        console.error(groupError);
+        setErrorMessage(groupError.message);
+      }
+      groupsQuery.reload();
+    }
     setEditingId(null);
     onChange();
   }
@@ -181,7 +202,7 @@ export default function IngredientsSettings({ ingredients, categories, stores, o
       )}
 
       {/* LISTE : une ligne par ingrédient (photo, nom, résumé, prix le moins cher), avec modifier / supprimer.
-          Les variantes d'un même produit sont regroupées sous une ligne dépliable (ex : Œufs (3)) ;
+          Les variantes d'un même produit sont rangées sous leur bannière, une ligne dépliable (ex : Œufs (3)) ;
           pendant une recherche ou un filtre, tous les groupes sont ouverts. */}
       {filtered.length > 0 && (
         <RowList>
@@ -189,6 +210,30 @@ export default function IngredientsSettings({ ingredients, categories, stores, o
             rows
             items={filtered}
             nameOf={(ing) => ing.name}
+            groupOf={(ing) => {
+              const g = ing.group_id ? groupById.get(ing.group_id) : undefined;
+              return g ? { key: g.id, label: g.name } : { key: '', label: '' };
+            }}
+            groupThumb={(key) => {
+              const photo = groupById.get(key)?.photo_url;
+              // eslint-disable-next-line @next/next/no-img-element -- photos venant de Supabase Storage
+              return photo ? <img src={photo} alt="" className="w-8 h-8 object-cover rounded border-2 border-ink shrink-0" /> : null;
+            }}
+            groupPanel={(key) => {
+              const g = groupById.get(key);
+              return g ? (
+                <GroupPanel
+                  key={`${g.id}-${g.name}-${g.category_id}`}
+                  group={g}
+                  categories={categories}
+                  onSaved={() => {
+                    groupsQuery.reload();
+                    onChange();
+                  }}
+                  onError={setErrorMessage}
+                />
+              ) : null;
+            }}
             collapsible
             forceOpen={!!search.trim() || !!filterCategoryId}
             renderItem={(ing, nested) => {
@@ -240,7 +285,14 @@ export default function IngredientsSettings({ ingredients, categories, stores, o
                         </div>
                         <div>
                           <label className="field-label">Catégorie</label>
-                          <select value={form.category_id} onChange={(e) => setField('category_id', e.target.value)} className="input-hand w-full">
+                          {/* Dans une bannière qui a une catégorie : c'est la sienne (elle se change sur la bannière) */}
+                          <select
+                            value={form.category_id}
+                            onChange={(e) => setField('category_id', e.target.value)}
+                            disabled={!!(ing.group_id && groupById.get(ing.group_id)?.category_id)}
+                            title={ing.group_id && groupById.get(ing.group_id)?.category_id ? 'Catégorie de la bannière' : undefined}
+                            className="input-hand w-full disabled:opacity-60"
+                          >
                             <option value="">—</option>
                             {categories.map((c) => (
                               <option key={c.id} value={c.id}>
@@ -260,6 +312,21 @@ export default function IngredientsSettings({ ingredients, categories, stores, o
                           <datalist id="settings-type-suggestions">
                             {TYPE_SUGGESTIONS.map((t) => (
                               <option key={t} value={t} />
+                            ))}
+                          </datalist>
+                        </div>
+                        <div>
+                          <label className="field-label">Bannière</label>
+                          <input
+                            value={form.group}
+                            onChange={(e) => setField('group', e.target.value)}
+                            list="settings-group-suggestions"
+                            placeholder="aucune (ex : Œufs, Lait)"
+                            className="input-hand w-full"
+                          />
+                          <datalist id="settings-group-suggestions">
+                            {groups.map((g) => (
+                              <option key={g.id} value={g.name} />
                             ))}
                           </datalist>
                         </div>
@@ -302,5 +369,79 @@ export default function IngredientsSettings({ ingredients, categories, stores, o
         </RowList>
       )}
     </div>
+  );
+}
+
+// Modification d'une bannière, en tête de son groupe : nom, catégorie (donnée à tous ses ingrédients) et photo
+function GroupPanel({
+  group,
+  categories,
+  onSaved,
+  onError
+}: {
+  group: IngredientGroup;
+  categories: Category[];
+  onSaved: () => void;
+  onError: (message: string) => void;
+}) {
+  const [name, setName] = useState(group.name);
+  const [categoryId, setCategoryId] = useState(group.category_id ?? '');
+  const [busy, setBusy] = useState(false);
+  const changed = name.trim() !== group.name || categoryId !== (group.category_id ?? '');
+
+  async function save() {
+    if (!name.trim()) return;
+    setBusy(true);
+    const error = await saveIngredientGroup(group.id, { name, category_id: categoryId || null });
+    setBusy(false);
+    if (error) return onError(error.message);
+    onSaved();
+  }
+
+  async function changePhoto(file: File) {
+    setBusy(true);
+    const error = await uploadGroupPhoto(group.id, file);
+    setBusy(false);
+    if (error) return onError(error.message);
+    onSaved();
+  }
+
+  return (
+    <li className="py-3 pl-10 pr-4 bg-mustard/10">
+      <p className="field-label">Bannière</p>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex flex-col items-center gap-1 cursor-pointer text-xs">
+          {group.photo_url ? (
+            // eslint-disable-next-line @next/next/no-img-element -- photos venant de Supabase Storage
+            <img src={group.photo_url} alt="" className="w-14 h-14 object-cover rounded border-2 border-ink" />
+          ) : (
+            <span className="w-14 h-14 rounded border-2 border-dashed border-ink flex items-center justify-center opacity-60">+</span>
+          )}
+          <span className="btn-ghost text-xs">{group.photo_url ? 'changer' : 'photo'}</span>
+          <input type="file" accept="image/*" className="hidden" disabled={busy} onChange={(e) => e.target.files?.[0] && changePhoto(e.target.files[0])} />
+        </label>
+        <div className="flex-1 min-w-[8rem]">
+          <label className="field-label">Nom</label>
+          <input value={name} onChange={(e) => setName(e.target.value)} className="input-hand w-full" />
+        </div>
+        <div className="flex-1 min-w-[8rem]">
+          <label className="field-label">Catégorie</label>
+          <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className="input-hand w-full">
+            <option value="">—</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        {changed && (
+          <button type="button" onClick={save} disabled={busy} className="btn-hand text-sm">
+            {busy ? '…' : 'Enregistrer'}
+          </button>
+        )}
+      </div>
+      <p className="text-xs opacity-60 mt-2">La catégorie de la bannière est donnée à tous ses ingrédients.</p>
+    </li>
   );
 }

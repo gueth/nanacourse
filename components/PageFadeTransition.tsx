@@ -1,9 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { PAPER } from '@/components/gazette/Lace';
 
-// Fondu (page de titre -> accueil) : un voile couleur papier de l'accueil (gris bleuté, pas le beige du thème)
+// Fondu entre deux pages : un voile du bleu de fond de l'application (--color-backdrop, bleu du profil)
 // apparaît par-dessus la page, on change de page, puis il s'efface.
 // Le voile reste opaque tant que la page suivante n'est pas affichée ("ready") : sinon, si elle tarde,
 // on reverrait la page de départ entre le fondu d'entrée et celui de sortie.
@@ -49,5 +48,5 @@ export function PageFadeTransition({ ready, onCovered, onFinished }: Props) {
   const animation =
     phase === 'in' ? `page-fade-in ${FADE_IN_MS}ms ease-in both` : phase === 'out' ? `page-fade-out ${FADE_OUT_MS}ms ease-out both` : undefined;
 
-  return <div className="fixed inset-0 z-50 pointer-events-none" style={{ backgroundColor: PAPER, animation }} />;
+  return <div className="fixed inset-0 z-50 pointer-events-none" style={{ backgroundColor: 'var(--color-backdrop)', animation }} />;
 }

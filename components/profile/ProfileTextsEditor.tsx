@@ -8,8 +8,14 @@ type Field = { key: keyof ProfileTexts; label: string; multiline?: boolean; hint
 
 // Champs modifiables, rubrique par rubrique
 const GROUPS = {
-  name: { title: 'Nana', fields: [{ key: 'name', label: 'Prénom affiché' }] },
-  about: { title: 'À propos', fields: [{ key: 'about', label: 'Texte', multiline: true, hint: 'Une ligne vide pour changer de paragraphe' }] },
+  // Carte « À propos » : un seul crayon pour le texte et le prénom signé en bas
+  about: {
+    title: 'À propos',
+    fields: [
+      { key: 'about', label: 'Texte', multiline: true, hint: 'Une ligne vide pour changer de paragraphe' },
+      { key: 'name', label: 'Prénom affiché' }
+    ]
+  },
   position: {
     title: 'Ma position',
     fields: [
@@ -25,12 +31,11 @@ const GROUPS = {
     ]
   },
   identity: {
-    title: "Je m'appelle",
+    title: 'Carte de visite',
     fields: [
-      { key: 'birth', label: 'Naissance' },
       { key: 'phone', label: 'Téléphone' },
       { key: 'email', label: 'Email' },
-      { key: 'handle', label: 'Instagram' },
+      { key: 'website', label: 'Site web' },
       { key: 'quote', label: 'Phrase du bas' }
     ]
   }
