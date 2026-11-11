@@ -4,13 +4,12 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { ChevronLeft, Pencil, Trash2 } from 'lucide-react';
 import { BudgetForm } from '@/components/settings/BudgetSettings';
-import IncomePlanEditor from '@/components/profile/IncomePlanEditor';
 import CycleEditor from '@/components/profile/CycleEditor';
 import { cyclePhase, DEFAULT_CYCLE, PHASES, useCycle } from '@/lib/cycle';
 import ProfileTextsEditor, { type ProfileSection } from '@/components/profile/ProfileTextsEditor';
 import { getDefaultProfileTexts, getProfileTexts, lines, paragraphs, subscribeProfileTexts, syncProfileTexts } from '@/lib/profileTexts';
-import { DEFAULT_PLAN, deleteBudget, describeBudgetError, newBudget, periodLabel, type BudgetState } from '@/lib/budget';
-import { useIncomePlan, useShoppingBudgets } from '@/lib/coursesQueries';
+import { deleteBudget, describeBudgetError, newBudget, periodLabel, type BudgetState } from '@/lib/budget';
+import { useShoppingBudgets } from '@/lib/coursesQueries';
 import { ChallengeForm, useChallengeActions } from '@/components/challenges/ChallengeDialogs';
 import {
   activeChallenge,
@@ -29,7 +28,7 @@ import { Doily, EditablePhoto, EditButton, Envelope, mono, NoteSection, paperGra
 
 // Informations d'exemple, pour voir la page une fois remplie (à remplacer par les vraies).
 // Les textes modifiables (à propos, nom, position, objectifs, défis, carte) viennent de lib/profileTexts ;
-// la répartition du revenu et les budgets sont les vrais (lib/budget).
+// les budgets sont les vrais (lib/budget). La répartition du revenu est dans les Finances (Gestion et Budget).
 const DEMO = {
   fullName: 'Ana Moreau',
   year: '2026',
@@ -49,8 +48,8 @@ export default function ProfilePage() {
   }, []);
   // Rubrique de texte dont la fenêtre de modification est ouverte
   const [editingSection, setEditingSection] = useState<ProfileSection | null>(null);
-  // Fenêtre ouverte pour la répartition du revenu ou l'ajout d'un budget
-  const [budgetPopup, setBudgetPopup] = useState<'repartition' | 'nouveau' | null>(null);
+  // Fenêtre ouverte pour l'ajout d'un budget
+  const [budgetPopup, setBudgetPopup] = useState<'nouveau' | null>(null);
   // Budget en cours de modification
   const [editingBudget, setEditingBudget] = useState<BudgetState | null>(null);
   const [budgetError, setBudgetError] = useState('');
@@ -75,8 +74,6 @@ export default function ProfilePage() {
     rewardsQuery.reload();
   }
   const budgetsQuery = useShoppingBudgets();
-  const planQuery = useIncomePlan();
-  const plan = planQuery.data ?? DEFAULT_PLAN;
   // Cycle menstruel (colore la page de titre selon la phase du jour)
   const cycleQuery = useCycle();
   const [cycleOpen, setCycleOpen] = useState(false);
@@ -245,14 +242,6 @@ export default function ProfilePage() {
                 <p className="mb-0.5">POSITION :</p>
                 <p className="break-words">{txt.positionAddress.toUpperCase()}</p>
                 <p className="my-1.5 tracking-[0.1em]">--------------------------</p>
-                <p className="mb-0.5">RÉPARTITION :</p>
-                {plan.parts.map((part) => (
-                  <p key={part.id} className="flex justify-between gap-1">
-                    <span className="truncate">{part.label.toUpperCase()}</span>
-                    <span>{part.pct} %</span>
-                  </p>
-                ))}
-                <p className="my-1.5 tracking-[0.1em]">--------------------------</p>
                 <p className="mb-0.5">BUDGETS (RESTE) :</p>
                 {budgets.length === 0 && <p>AUCUN</p>}
                 {budgets.map((b) => (
@@ -373,22 +362,19 @@ export default function ProfilePage() {
                 <NoteSection title="Ma position" n={1} onEdit={() => setEditingSection('position')}>
                   <p className="opacity-75">Ton point de départ, pour te conseiller le magasin le plus proche.</p>
                 </NoteSection>
-                <NoteSection title="Répartition" n={2} onEdit={() => setBudgetPopup('repartition')}>
-                  <p className="opacity-75">Comment ton revenu se partage entre tes grandes dépenses.</p>
-                </NoteSection>
-                <NoteSection title="Budgets" n={3} onEdit={() => setPanel('budgets')}>
+                <NoteSection title="Budgets" n={2} onEdit={() => setPanel('budgets')}>
                   <p className="opacity-75">Tes enveloppes de courses et ce qu&apos;il reste dans chacune.</p>
                 </NoteSection>
-                <NoteSection title="Objectifs" n={4} onEdit={() => setEditingSection('goals')}>
+                <NoteSection title="Objectifs" n={3} onEdit={() => setEditingSection('goals')}>
                   <p className="opacity-75">Ce que tu mets de côté, et pour quoi.</p>
                 </NoteSection>
-                <NoteSection title="Défis" n={5} onEdit={() => setPanel('defis')}>
+                <NoteSection title="Défis" n={4} onEdit={() => setPanel('defis')}>
                   <p className="opacity-75">Le défi de la semaine, qui te rapporte des points.</p>
                 </NoteSection>
-                <NoteSection title="Mes coupons" n={6} onEdit={() => setPanel('coupons')}>
+                <NoteSection title="Mes coupons" n={5} onEdit={() => setPanel('coupons')}>
                   <p className="opacity-75">Les récompenses gagnées avec tes points, à utiliser quand tu veux.</p>
                 </NoteSection>
-                <NoteSection title="Mon cycle" n={7} onEdit={() => cycleQuery.data && setCycleOpen(true)}>
+                <NoteSection title="Mon cycle" n={6} onEdit={() => cycleQuery.data && setCycleOpen(true)}>
                   <p className="opacity-75">Les dates de ton cycle, qui colorent les cartes du jour.</p>
                   {cycleQuery.error && <p className="text-[8.5px] text-brick">{cycleQuery.error}</p>}
                 </NoteSection>
@@ -504,31 +490,10 @@ export default function ProfilePage() {
         </PaperModal>
       )}
 
-      {budgetPopup === 'repartition' &&
-        (planQuery.data === undefined ? (
-          <PaperModal title="Répartition" onClose={() => setBudgetPopup(null)}>
-            <p className="text-sm">{planQuery.error ?? 'Chargement…'}</p>
-          </PaperModal>
-        ) : (
-          <IncomePlanEditor
-            plan={plan}
-            budgets={budgets}
-            confirm={confirm}
-            onClose={() => setBudgetPopup(null)}
-            onSaved={() => {
-              planQuery.reload();
-              // Les plafonds en pourcentage et la partie des budgets changent avec la répartition
-              budgetsQuery.reload();
-              setBudgetPopup(null);
-            }}
-          />
-        ))}
-
       {editingBudget && (
         <PaperModal title={`Modifier « ${editingBudget.settings.name} »`} onClose={() => setEditingBudget(null)}>
           <BudgetForm
             initial={editingBudget.settings}
-            plan={plan}
             onCancel={() => setEditingBudget(null)}
             onSaved={() => {
               budgetsQuery.reload();
@@ -563,7 +528,6 @@ export default function ProfilePage() {
         <PaperModal title="Nouveau budget" onClose={() => setBudgetPopup(null)}>
           <BudgetForm
             initial={newBudget()}
-            plan={plan}
             onCancel={() => setBudgetPopup(null)}
             onSaved={() => {
               budgetsQuery.reload();

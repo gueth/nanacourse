@@ -3,6 +3,8 @@
 import { useMemo } from 'react';
 import { orThrow, useCached } from '@/lib/cache';
 import { fetchLines, fetchLinesRange, shiftMonth } from '@/lib/finance';
+import { fetchMonthPlans } from '@/lib/repartition';
+import { fetchBalanceLinks, linkCategories } from '@/lib/balanceLinks';
 import { countTransactions, fetchBudgets, fetchCoverage, fetchMonthBudgets, fetchTransactions, loadCategories } from '@/lib/transactions';
 
 // Données des pages Finances gardées en mémoire (lib/cache) : partagées entre les pages Santé, Bilan,
@@ -65,6 +67,14 @@ export function useMonthBudgets() {
   });
 }
 
+// Répartitions du revenu propres aux mois passés (lib/repartition) ; la répartition par défaut : useIncomePlan
+export function useMonthPlans() {
+  return useCached('finances:repartitions-des-mois', async () => {
+    const { monthPlans, error } = await fetchMonthPlans();
+    return orThrow(monthPlans, error);
+  });
+}
+
 // Catégories personnalisées et supprimées, rangées dans CATEGORIES (lib/transactions) : même mémoire que la page Budget
 export function useCategories() {
   return useCached('finances:categories', async () => orThrow(Date.now(), await loadCategories()));
@@ -78,4 +88,21 @@ export function useMonthTransactions(month: string | null) {
     const { transactions, error } = await fetchTransactions(`${month}-01`, `${month}-${String(last).padStart(2, '0')}`);
     return orThrow(transactions, error);
   });
+}
+
+// Catégories des créances et des dettes (lignes du bilan « Sommes à recevoir » et « Autres dettes » reliées à des
+// catégories dans Finances > Gestion) : prêts aux proches, emprunts entre proches et leurs remboursements.
+// Les chiffres d'indication des cartes Finances ne les comptent pas (ce n'est ni un revenu ni une dépense).
+export function useDebtCategories() {
+  const links = useCached('finances:lignes-reliees', async () => {
+    const { links, error } = await fetchBalanceLinks();
+    return orThrow(links, error);
+  }).data;
+  return useMemo(
+    () =>
+      new Set(
+        (links ?? []).filter((l) => l.section === 'creances' || l.section === 'dettes').flatMap((l) => linkCategories([...l.targets, ...l.decreases]))
+      ),
+    [links]
+  );
 }

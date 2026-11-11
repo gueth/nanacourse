@@ -2,36 +2,32 @@
 
 import { useState } from 'react';
 import {
+  categoryLimit,
   ceilingFor,
   describeBudgetError,
-  partAmount,
-  partLabel,
-  partOf,
+  maxCeiling,
   periodLabel,
   saveBudget,
   shoppingCategoryOf,
-  type BudgetPart,
   type BudgetSettings as Settings,
-  type IncomePlan,
   type PeriodUnit
 } from '@/lib/budget';
-import { useCategories } from '@/lib/financeQueries';
-import { byLabel, CATEGORIES } from '@/lib/transactions';
+import { useCategories, useCategoryLimits } from '@/lib/financeQueries';
+import { byLabel, CATEGORIES, categoryById, categoryGroups } from '@/lib/transactions';
 
-// Formulaire d'un budget (Profil > Budgets) : un nom, sa partie de la répartition du revenu, la somme à ne pas
-// dépasser sur une période (en euros, ou en pourcentage de sa partie), la marge si des prix manquent, et la durée
+// Formulaire d'un budget (Profil > Budgets) : un nom, sa catégorie des Finances, la somme à ne pas dépasser sur une
+// période (en euros, ou en pourcentage de la limite mensuelle de la catégorie), la marge si des prix manquent, et la durée
 // de la période (en jours, semaines ou mois) au bout de laquelle le budget se réactive.
-// Chaque liste de courses (Paramètres > Listes) et chaque reçu scanné est rattaché à l'un de ces budgets.
-// Chaque budget mène aussi à une catégorie des Finances (« Courses » par défaut) : ses achats y sont retrouvés à l'import
-// des relevés, et sa limite mensuelle dans les Finances est la somme des budgets de courses qui y mènent.
+// La catégorie choisie affiche sa limite mensuelle (Finances > Budget, ou à défaut celle de sa grande catégorie) :
+// le plafond, ramené au mois, ne peut pas la dépasser.
+// Chaque liste de courses (Paramètres > Listes) et chaque reçu scanné est rattaché à l'un de ces budgets ; ses achats sont
+// retrouvés dans cette catégorie à l'import des relevés.
 
 const euros = (n: number) => `${n.toFixed(2).replace('.', ',')} €`;
+const toNumber = (v: string) => Number(v.replace(',', '.')) || 0;
 
-// Formulaire de création ou de modification d'un budget : sa partie du revenu, et son plafond en euros ou en pourcentage
-export function BudgetForm({ initial, plan, onSaved, onCancel }: { initial: Settings; plan: IncomePlan; onSaved: () => void; onCancel: () => void }) {
+export function BudgetForm({ initial, onSaved, onCancel }: { initial: Settings; onSaved: () => void; onCancel: () => void }) {
   const [name, setName] = useState(initial.name);
-  // Partie du budget (la première si la sienne a été supprimée)
-  const [part, setPart] = useState<BudgetPart>(partOf(plan, initial.part)?.id ?? 'charges');
   const [mode, setMode] = useState<'euros' | 'percent'>(initial.amount_mode ?? 'euros');
   const [percent, setPercent] = useState(initial.percent != null ? String(initial.percent) : '');
   const [amount, setAmount] = useState(String(initial.amount));
@@ -40,29 +36,39 @@ export function BudgetForm({ initial, plan, onSaved, onCancel }: { initial: Sett
   const [periodUnit, setPeriodUnit] = useState<PeriodUnit>(initial.period_unit);
   const [startDate, setStartDate] = useState(initial.start_date);
   const [category, setCategory] = useState(shoppingCategoryOf(initial));
-  // Catégories des Finances (chargées une fois, partagées avec les pages Finances)
+  // Catégories des Finances et leurs limites (chargées une fois, partagées avec les pages Finances)
   const categoriesLoaded = useCategories().data !== undefined;
+  const limitsQuery = useCategoryLimits();
   const expenseCategories = categoriesLoaded ? CATEGORIES.filter((c) => c.kind === 'variable' || c.kind === 'fixed').sort(byLabel) : [];
   const [errorMessage, setErrorMessage] = useState('');
   const [saving, setSaving] = useState(false);
 
-  // Plafond par période d'un budget en pourcentage : pourcentage de la partie, ramené à la période du budget
-  const preview = ceilingFor(
-    { ...initial, part, amount_mode: 'percent', percent: Number(percent.replace(',', '.')) || 0, period_value: Number(periodValue) || 1, period_unit: periodUnit },
-    plan
-  );
+  // Limite mensuelle de la catégorie choisie : la sienne, sinon celle de sa grande catégorie
+  const limit =
+    categoriesLoaded && limitsQuery.data
+      ? categoryLimit(category, limitsQuery.data, (id) => categoryGroups().find((g) => g.id === categoryById(id).group) ?? null)
+      : null;
+  const period = { period_value: Math.max(1, Number(periodValue) || 1), period_unit: periodUnit };
+  const max = limit ? maxCeiling(period, limit.limit) : null;
+  const percentValue = Math.min(100, toNumber(percent));
+  // Plafond par période d'un budget en pourcentage : pourcentage de la limite de la catégorie, ramené à la période
+  const preview = ceilingFor({ ...initial, ...period, amount_mode: 'percent', percent: percentValue }, limit?.limit ?? null);
+  const ceiling = mode === 'percent' ? preview : toNumber(amount);
+  const tooHigh = max !== null && ceiling > max + 0.005;
+  const loading = !categoriesLoaded || limitsQuery.data === undefined;
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
+    if (tooHigh || (mode === 'percent' && !limit)) return;
     setSaving(true);
     setErrorMessage('');
     const error = await saveBudget({
       id: initial.id,
       name,
-      part,
+      part: initial.part,
       amount_mode: mode,
-      percent: mode === 'percent' ? Number(percent.replace(',', '.')) || 0 : null,
-      amount: mode === 'percent' ? preview : Number(amount),
+      percent: mode === 'percent' ? percentValue : null,
+      amount: ceiling,
       missing_margin: Number(margin),
       period_value: Number(periodValue),
       period_unit: periodUnit,
@@ -81,16 +87,6 @@ export function BudgetForm({ initial, plan, onSaved, onCancel }: { initial: Sett
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Courses de la semaine" className="input-hand" />
       </div>
       <div className="w-full">
-        <label className="field-label">Partie du revenu</label>
-        <select value={part} onChange={(e) => setPart(e.target.value as BudgetPart)} className="input-hand w-full">
-          {plan.parts.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label} ({euros(partAmount(plan, p.id))} / mois)
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="w-full">
         <label className="field-label">Catégorie dans les Finances</label>
         <select value={category} onChange={(e) => setCategory(e.target.value)} className="input-hand w-full">
           {!expenseCategories.some((c) => c.id === category) && <option value={category}>Courses</option>}
@@ -100,6 +96,14 @@ export function BudgetForm({ initial, plan, onSaved, onCancel }: { initial: Sett
             </option>
           ))}
         </select>
+        {/* Limite de la catégorie : le plafond du budget ne peut pas la dépasser */}
+        <p className="mt-1 text-xs opacity-75">
+          {loading
+            ? 'Chargement de la limite…'
+            : limit
+              ? `Limite : ${euros(limit.limit)} par mois${limit.from === 'group' ? ` (celle de « ${limit.label} »)` : ''}, soit au plus ${euros(max!)} par période (${periodLabel({ ...initial, ...period })}).`
+              : 'Pas de limite pour cette catégorie : fixe-la dans Finances > Budget pour plafonner ce budget.'}
+        </p>
       </div>
       <div>
         <label className="field-label">Plafond</label>
@@ -107,26 +111,28 @@ export function BudgetForm({ initial, plan, onSaved, onCancel }: { initial: Sett
           <label className="flex items-center gap-1">
             <input type="radio" checked={mode === 'euros'} onChange={() => setMode('euros')} /> en €
           </label>
-          <label className="flex items-center gap-1">
-            <input type="radio" checked={mode === 'percent'} onChange={() => setMode('percent')} /> en % de la partie
+          <label className={`flex items-center gap-1 ${limit ? '' : 'opacity-50'}`}>
+            <input type="radio" checked={mode === 'percent'} disabled={!limit} onChange={() => setMode('percent')} /> en % de la limite
           </label>
         </span>
       </div>
       {mode === 'euros' ? (
         <div>
           <label className="field-label">Budget par période (€)</label>
-          <input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" min={0} step="0.01" className="input-hand" />
+          <input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" min={0} max={max ?? undefined} step="0.01" className="input-hand" />
         </div>
       ) : (
         <div>
-          <label className="field-label">Part de « {partLabel(plan, part)} » (%)</label>
+          <label className="field-label">Part de la limite (%)</label>
           <input value={percent} onChange={(e) => setPercent(e.target.value)} type="number" min={0} max={100} step="0.1" className="input-hand" />
           <p className="mt-1 text-xs opacity-70">
-            Soit {euros(preview)} par période ({periodLabel({ ...initial, period_value: Number(periodValue) || 1, period_unit: periodUnit })})
-            {plan.income === 0 && ' — renseigne ton revenu dans la répartition'}
+            {limit
+              ? `Soit ${euros(preview)} par période (${periodLabel({ ...initial, ...period })})`
+              : 'Choisis une catégorie qui a une limite.'}
           </p>
         </div>
       )}
+      {tooHigh && <p className="w-full text-xs text-brick">Le plafond dépasse la limite de la catégorie : au plus {euros(max!)} par période.</p>}
       <div>
         <label className="field-label">Marge si des prix manquent (€)</label>
         <input value={margin} onChange={(e) => setMargin(e.target.value)} type="number" min={0} step="0.01" className="input-hand" />
@@ -147,7 +153,7 @@ export function BudgetForm({ initial, plan, onSaved, onCancel }: { initial: Sett
         <input value={startDate} onChange={(e) => setStartDate(e.target.value)} type="date" className="input-hand" />
       </div>
       <div className="flex flex-wrap items-center gap-3 w-full">
-        <button type="submit" disabled={saving} className="btn-hand">
+        <button type="submit" disabled={saving || tooHigh || (mode === 'percent' && !limit)} className="btn-hand">
           {initial.id ? 'Enregistrer' : 'Créer le budget'}
         </button>
         <button type="button" onClick={onCancel} className="btn-ghost">

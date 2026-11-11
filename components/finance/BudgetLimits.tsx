@@ -1,9 +1,10 @@
 'use client';
 
 import { useState } from 'react';
+import { ChevronDown, Pencil } from 'lucide-react';
 import { formatEuros, monthLabel } from '@/lib/finance';
 import { useCategoryLimits, useMonthBudgets } from '@/lib/financeQueries';
-import { debtOfMonth, monthLimits, plannedFrom } from '@/lib/selfDebt';
+import { activePlans as plansOfMonth, AMORTIZE_TARGET, debtOfMonth, monthLimits } from '@/lib/selfDebt';
 import {
   annualCategoryId,
   annualPlans,
@@ -27,10 +28,10 @@ import {
 import { describeDbError } from '@/lib/financePlans';
 import { orThrow, useCached } from '@/lib/cache';
 import { fetchShoppingCategories } from '@/lib/budget';
-import { FIN, Meter, NumberField, Panel } from '@/components/finance/FinanceParts';
+import { FIN, FinModal, Meter, NumberField, Panel } from '@/components/finance/FinanceParts';
 
 // Page Budget, pour le mois affiché : ce que le relevé dit qui a été dépensé, par grande catégorie et par catégorie,
-// face aux limites (barre de progression, dépassement et de combien). Les dépenses annuelles ont pour limite un douzième
+// face aux limites (barre de progression et dépassement pour les grandes catégories ; dépensé / limite pour les petites). Les dépenses annuelles ont pour limite un douzième
 // de leur montant. onCategoriesChanged : une limite de grande catégorie a changé.
 // Mois passé : ses limites lui sont propres (les changer ne touche que lui). Pour chaque dépassement ou économie,
 // on choisit s'il compte dans la dette à moi-même de ce mois.
@@ -47,7 +48,8 @@ export function BudgetLimits({
   onError: (message: string) => void;
   onCategoriesChanged: () => void;
 }) {
-  const [editing, setEditing] = useState<string | null>(null); // catégorie (ou « groupe:id ») dont on modifie la limite
+  const [editing, setEditing] = useState<string | null>(null); // catégorie (ou « groupe:id ») dont la fenêtre de limite est ouverte
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set()); // grandes catégories dépliées (repliées de base)
   const budgetsQuery = useCategoryLimits();
   const budgets = budgetsQuery.data ?? [];
   const monthBudgetsQuery = useMonthBudgets();
@@ -68,7 +70,7 @@ export function BudgetLimits({
 
   // Dépenses annuelles comptées ce mois-ci (créées ce mois ou avant) : leur limite est un douzième de leur montant
   const plans = annualPlans();
-  const activePlans = plans.filter((p) => plannedFrom(p) <= period);
+  const activePlans = plansOfMonth(plans, period);
   const annualShare = new Map(activePlans.map((p) => [annualCategoryId(p.id), p.amount / 12]));
   const limitOf = (c: Category) => (c.annual ? (annualShare.get(c.id) ?? null) : limits.category(c.id));
   const debt = debtOfMonth(period, monthTx, budgets, plans, monthBudgets);
@@ -93,7 +95,16 @@ export function BudgetLimits({
     .filter((g) => g.spent > 0 || g.group.monthly_limit !== null || g.rows.length > 0)
     .sort((a, b) => b.spent - a.spent);
   const looseRows = expenseCategories.filter((r) => !r.cat.group || !expenseGroups.some((g) => g.group.id === r.cat.group));
-  const unbudgeted = CATEGORIES.filter((c) => c.kind !== 'income' && c.kind !== 'transfer' && !isLockedCategory(c) && !fromShopping(c) && limits.category(c.id) === null).sort(byLabel);
+  // Les catégories rangées dans aucune grande catégorie forment un bandeau à part (« Sans grande catégorie »),
+  // pour que toute la liste reste regroupée et alignée
+  const looseGroup = looseRows.length
+    ? {
+        group: { id: '__sans-groupe', label: 'Sans grande catégorie', kind: 'expense', monthly_limit: null, virtual: true } as unknown as CategoryGroup & { virtual?: boolean },
+        spent: looseRows.reduce((s, r) => s + r.spent, 0),
+        rows: looseRows
+      }
+    : null;
+  const unbudgeted = CATEGORIES.filter((c) => c.kind !== 'income' && c.kind !== 'transfer' && !isLockedCategory(c) && limits.category(c.id) === null).sort(byLabel);
 
   // Ligne propre au mois affiché (limite et/ou choix de compter dans la dette), modifiée tout de suite à l'écran
   async function saveForMonth(target: string, changes: Partial<Pick<MonthBudget, 'custom_limit' | 'monthly_limit' | 'counted'>>) {
@@ -125,6 +136,24 @@ export function BudgetLimits({
 
   // Dépassement (ou économie) de cette ligne ce mois-ci : on demande s'il compte dans la dette à moi-même
   function debtQuestion(target: string) {
+    // Mois amorti : pas de question, juste ce que l'amortissement a fait de la ligne
+    const amortized = debt.amortization;
+    if (amortized) {
+      const used = amortized.used.get(target);
+      const over = debt.items.find((i) => i.target === target && i.kind === 'depassement');
+      const text = used
+        ? `${formatEuros(used)} de cette économie amortissent les dépassements.`
+        : over
+          ? `${over.absorbed ? `Amorti de ${formatEuros(over.absorbed)} · ` : ''}${formatEuros(over.amount)} vont dans la dette à moi-même.`
+          : null;
+      return (
+        text && (
+          <p className="mt-1 text-[10px]" style={{ color: FIN.slate }}>
+            {text}
+          </p>
+        )
+      );
+    }
     const item = debt.items.find((i) => i.target === target);
     if (!item) return null;
     const choice = (counted: boolean, text: string) => {
@@ -145,8 +174,8 @@ export function BudgetLimits({
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px]" style={{ color: FIN.slate }}>
         <span>
           {item.amount > 0
-            ? `Compter ces ${formatEuros(item.amount)} dans la dette à moi-même ?`
-            : `Retirer ces ${formatEuros(-item.amount)} de la dette à moi-même ?`}
+            ? 'Compter dans la dette à moi-même ?'
+            : 'Retirer de la dette à moi-même ?'}
         </span>
         {choice(true, 'Oui')}
         {choice(false, 'Non')}
@@ -156,10 +185,13 @@ export function BudgetLimits({
 
   // Comparaison au centime près : dépenser exactement la limite n'est pas un dépassement
   const cents = (n: number) => Math.round(n * 100);
+  const BLUE = '#3d63a6';
   const colorOf = (spent: number, limit: number | null) => {
     const ratio = limit ? spent / limit : 0;
     const over = !!limit && cents(spent) > cents(limit);
-    return { ratio, color: !limit ? FIN.slate : over ? FIN.rose : ratio >= 0.8 ? FIN.gold : FIN.sage };
+    const under = !!limit && cents(spent) < cents(limit);
+    // Rouge : dépassement ; vert : en dessous de la limite ; bleu : limite atteinte pile, ou pas de limite
+    return { ratio, color: over ? FIN.rose : under ? FIN.sage : BLUE };
   };
   const warning = (spent: number, limit: number, ratio: number, color: string) =>
     ratio >= 0.8 && (
@@ -172,125 +204,255 @@ export function BudgetLimits({
       </p>
     );
 
-  function limitRow({ cat, spent, limit }: { cat: Category; spent: number; limit: number | null }) {
+  // Petit crayon qui ouvre la fenêtre de la limite
+  const editButton = (target: string, label: string) => (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        setEditing(target);
+      }}
+      aria-label={`Modifier la limite · ${label}`}
+      className="-my-1 flex size-7 shrink-0 items-center justify-center rounded-full"
+      style={{ color: FIN.slate }}
+    >
+      <Pencil size={13} />
+    </button>
+  );
+
+  // Barre de progression, même sans limite (cohérence visuelle) : face à la limite si elle existe,
+  // sinon, en gris, la part de la dépense dans l'ensemble (share)
+  const bar = (spent: number, limit: number | null, share: number) => {
     const { ratio, color } = colorOf(spent, limit);
+    return <Meter value={limit !== null ? ratio : share} color={limit !== null ? color : FIN.slate} />;
+  };
+
+  // Petite catégorie : juste le dépensé / la limite et le crayon (la barre de progression est réservée aux grandes catégories)
+  function limitRow({ cat, spent, limit }: { cat: Category; spent: number; limit: number | null }) {
+    const { color } = colorOf(spent, limit);
+    // Dépense annuelle (sa limite vient de son montant) ou dette à moi-même : pas de limite à fixer ici
+    const editable = !cat.annual && cat.id !== SELF_DEBT_ID;
     return (
-      <li key={cat.id}>
-        <div className="flex items-baseline justify-between gap-2 text-[12px]">
-          <span>{cat.label}</span>
-          {cat.annual || cat.id === SELF_DEBT_ID || fromShopping(cat) ? (
-            // Dépense annuelle (sa limite vient de son montant), dette à moi-même, ou catégorie des budgets de courses
-            // (sa limite est la somme de ces budgets) : pas de limite à fixer ici
-            <span className="text-right" style={{ color }}>
+      <li key={cat.id} className="px-2.5 py-1.5" style={{ borderColor: FIN.line }}>
+        <div className="flex items-center justify-between gap-2 text-[12px]">
+          <span className="flex min-w-0 items-baseline gap-1.5" style={{ color: FIN.slate }}>
+            {/* Puce : petite catégorie */}
+            <span aria-hidden className="size-1.5 shrink-0 -translate-y-px rounded-full" style={{ backgroundColor: FIN.gold }} />
+            <span className="min-w-0">
+            {cat.label}
+            {/* Catégorie des budgets de courses : sa limite plafonne ces budgets (Profil > Budgets) */}
+            {fromShopping(cat) && (
+              <span className="block text-[9px]" style={{ color: FIN.slate }}>
+                plafonne tes budgets de courses
+              </span>
+            )}
+            </span>
+          </span>
+          <span className="flex shrink-0 items-center gap-1">
+            <span className="rounded-sm px-1.5 py-0.5 text-right" style={{ color, backgroundColor: `${color}1f` }}>
               {formatEuros(spent)}
               {limit !== null && <span style={{ color: FIN.slate }}>{` / ${formatEuros(limit)}`}</span>}
-              {fromShopping(cat) && (
-                <span className="block text-[9px]" style={{ color: FIN.slate }}>
-                  fixée par tes budgets de courses
-                </span>
-              )}
             </span>
-          ) : (
-            <button type="button" onClick={() => setEditing(editing === cat.id ? null : cat.id)} className="text-right" style={{ color }}>
-              {formatEuros(spent)}
-              <span style={{ color: FIN.slate }}>{limit ? ` / ${formatEuros(limit)}` : ' · fixer une limite'}</span>
-            </button>
-          )}
+            {editable ? editButton(cat.id, cat.label) : <span aria-hidden className="size-7 shrink-0" />}
+          </span>
         </div>
-        {limit !== null && <Meter value={ratio} color={color} />}
-        {limit !== null && warning(spent, limit, ratio, color)}
         {debtQuestion(cat.id)}
-        {editing === cat.id && (
-          <div className="mt-1 flex items-end gap-2">
-            <NumberField label="Limite mensuelle" value={limit} onChange={(n) => setLimit(cat.id, n)} />
-            {limit !== null && (
-              <button type="button" onClick={() => setLimit(cat.id, null)} className="pb-1 text-[10px] underline" style={{ color: FIN.rose }}>
-                Retirer
-              </button>
-            )}
-          </div>
-        )}
       </li>
     );
   }
 
+  const monthSpent = expenseGroups.reduce((s, g) => s + g.spent, 0) + looseRows.reduce((s, r) => s + r.spent, 0);
+  const toggleGroup = (id: string) =>
+    setOpenGroups((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  // Fenêtre de la limite en cours de modification : grande catégorie (« groupe:id ») ou catégorie
+  const editingGroup = editing?.startsWith('groupe:') ? expenseGroups.find((g) => `groupe:${g.group.id}` === editing)?.group : undefined;
+  const editingLabel = editing ? (editingGroup ? editingGroup.label : categoryById(editing).label) : '';
+  const editingLimit = editing ? (editingGroup ? editingGroup.monthly_limit : limits.category(editing)) : null;
+  const saveEditing = (n: number | null) => {
+    if (!editing) return;
+    if (editingGroup) setGroupLimit(editingGroup, n);
+    else setLimit(editing, n);
+  };
+
   return (
-      <Panel
-        collapsible
-        title="Budget du mois"
-        subtitle={`${debt.allowed > 0 ? `${formatEuros(debt.spent)} dépensés sur ${formatEuros(debt.allowed)} prévus (limites et parts des dépenses annuelles). ` : ''}${
-          past
-            ? `Limites propres à ${monthLabel(period)} : touche un montant pour la changer, seul ce mois (et sa dette à moi-même) change.`
-            : "Touche un montant pour fixer sa limite (les mois passés gardent la leur) : la barre passe à l'orange à 80 %, au rouge en cas de dépassement."
-        }`}
-      >
-        <ul className="space-y-3">
-          {expenseGroups.map(({ group, spent, rows }) => {
-            const limit = group.monthly_limit;
-            const { ratio, color } = colorOf(spent, limit);
-            const key = `groupe:${group.id}`;
-            return (
-              <li key={group.id}>
-                <div className="flex items-baseline justify-between gap-2 text-[12px] font-bold uppercase tracking-[0.05em]">
-                  <span>{group.label}</span>
-                  <button
-                    type="button"
-                    disabled={group.virtual}
-                    onClick={() => setEditing(editing === key ? null : key)}
-                    className="text-right normal-case tracking-normal"
-                    style={{ color }}
-                  >
-                    {formatEuros(spent)}
-                    <span className="font-normal" style={{ color: FIN.slate }}>
-                      {limit ? ` / ${formatEuros(limit)}` : ' · fixer une limite'}
-                    </span>
-                  </button>
-                </div>
-                {limit !== null && <Meter value={ratio} color={color} />}
-                {limit !== null && warning(spent, limit, ratio, color)}
-                {debtQuestion(key)}
-                {editing === key && (
-                  <div className="mt-1 flex items-end gap-2">
-                    <NumberField label={`Limite mensuelle · ${group.label}`} value={limit} onChange={(n) => setGroupLimit(group, n)} />
-                    {limit !== null && (
-                      <button type="button" onClick={() => setGroupLimit(group, null)} className="pb-1 text-[10px] underline" style={{ color: FIN.rose }}>
-                        Retirer
-                      </button>
-                    )}
-                  </div>
-                )}
-                {rows.length > 0 && (
-                  <ul className="mt-2 space-y-2 border-l pl-3" style={{ borderColor: FIN.line }}>
-                    {rows.map(limitRow)}
-                  </ul>
-                )}
-              </li>
-            );
-          })}
-          {looseRows.map(limitRow)}
-        </ul>
-        {unbudgeted.length > 0 && (
-          <select value="" onChange={(e) => e.target.value && setEditing(e.target.value)} className="fin-select mt-3 w-full py-1.5 pl-2 text-[11px]" style={{ color: FIN.slate }}>
-            <option value="">+ Limite pour une autre catégorie…</option>
-            {unbudgeted.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.label}
-              </option>
-            ))}
-          </select>
-        )}
-        {editing && !editing.startsWith('groupe:') && !expenseCategories.some((r) => r.cat.id === editing) && (
-          <div className="mt-2">
-            <NumberField label={`Limite · ${categoryById(editing).label}`} value={null} onChange={(n) => setLimit(editing, n)} />
-          </div>
-        )}
-        {/* Ce que ce mois ajoute à la dette à moi-même (ou en retire), avec les choix ci-dessus */}
-        {debt.items.length > 0 && (
-          <p className="mt-3 flex items-baseline justify-between gap-2 border-t pt-2 text-[12px] font-bold" style={{ borderColor: FIN.line }}>
-            <span>{debt.delta >= 0 ? 'Ajouté à la dette à moi-même' : 'Retiré de la dette à moi-même'}</span>
-            <span style={{ color: debt.delta > 0 ? FIN.rose : FIN.sage }}>{formatEuros(Math.abs(debt.delta))}</span>
+    <Panel
+      collapsible
+      title="Budget du mois"
+      subtitle="Est-ce que vous avez réussi à respecter votre budget ?"
+    >
+      {/* Réponse : le dépassement, ou ce qui reste, sur l'ensemble des limites (et parts des dépenses annuelles) du mois */}
+      {debt.allowed > 0 ? (
+        debt.spent > debt.allowed + 0.005 ? (
+          <p className="text-[13px] font-bold" style={{ color: FIN.rose }}>
+            Non : dépassement de {formatEuros(debt.spent - debt.allowed)}
           </p>
+        ) : (
+          <p className="text-[13px] font-bold" style={{ color: FIN.sage }}>
+            Oui : il reste {formatEuros(debt.allowed - debt.spent)}
+          </p>
+        )
+      ) : (
+        <p className="text-[11px]" style={{ color: FIN.slate }}>
+          Aucune limite fixée pour ce mois.
+        </p>
+      )}
+      {/* AMORTIR LES DÉPASSEMENTS : les économies de certaines catégories couvrent les dépassements des autres,
+          seul le reste va dans la dette à moi-même (réglé pour ce mois, voir lib/selfDebt) */}
+      {(debt.amortization || debt.items.some((i) => i.kind === 'depassement')) && (
+        <div className="mt-2 rounded-sm border px-3 py-2" style={{ borderColor: FIN.line, backgroundColor: '#fff' }}>
+          <button
+            type="button"
+            aria-pressed={!!debt.amortization}
+            onClick={() => saveForMonth(AMORTIZE_TARGET, { counted: !debt.amortization })}
+            className="w-full rounded-full border px-3 py-2 text-[11px] font-bold uppercase tracking-[0.15em]"
+            style={
+              debt.amortization ? { backgroundColor: FIN.accent, borderColor: FIN.accent, color: FIN.paper } : { borderColor: FIN.accent, color: FIN.accent }
+            }
+          >
+            {debt.amortization ? 'Dépassements amortis · annuler' : 'Amortir les dépassements'}
+          </button>
+          {debt.amortization ? (
+            <div className="mt-2 space-y-0.5 text-[11px]" style={{ color: FIN.slate }}>
+              <p className="flex justify-between gap-2">
+                <span>Dépassements</span>
+                <b style={{ color: FIN.rose }}>{formatEuros(debt.amortization.over)}</b>
+              </p>
+              <p className="flex justify-between gap-2">
+                <span>Couverts par les économies</span>
+                <b style={{ color: FIN.sage }}>− {formatEuros(debt.amortization.covered)}</b>
+              </p>
+              <p className="flex justify-between gap-2 border-t pt-0.5 font-bold" style={{ borderColor: FIN.line, color: FIN.navy }}>
+                <span>Reste dans la dette à moi-même</span>
+                <span>{formatEuros(debt.amortization.over - debt.amortization.covered)}</span>
+              </p>
+              {debt.amortization.surplus > debt.amortization.covered && (
+                <p className="text-[10px]">{formatEuros(debt.amortization.surplus - debt.amortization.covered)} d&apos;économies restent hors de la dette.</p>
+              )}
+            </div>
+          ) : (
+            <p className="mt-1.5 text-[10px]" style={{ color: FIN.slate }}>
+              Les économies des autres catégories réduisent les dépassements ; seul le reste va dans la dette à moi-même.
+            </p>
+          )}
+        </div>
+      )}
+      {/* Ajout d'une limite pour une autre catégorie, en tête de la liste */}
+      {unbudgeted.length > 0 && (
+        <select value="" onChange={(e) => e.target.value && setEditing(e.target.value)} className="fin-select mt-2 w-full py-1.5 pl-2 text-[11px]" style={{ color: FIN.slate }}>
+          <option value="">+ Limite pour une autre catégorie…</option>
+          {unbudgeted.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      )}
+      <ul className="mt-3 space-y-3">
+        {[...expenseGroups, ...(looseGroup ? [looseGroup] : [])].map(({ group, spent, rows }) => {
+          const limit = group.monthly_limit;
+          const { ratio, color } = colorOf(spent, limit);
+          const key = `groupe:${group.id}`;
+          const open = openGroups.has(group.id);
+          return (
+            // Grande catégorie : bandeau teinté avec un liseré à gauche, à la couleur de son état (rouge : dépassement ;
+            // vert : sous la limite ; bleu : pile ou sans limite) ; les petites catégories, sur fond clair, sont dedans
+            <li key={group.id} className="rounded-sm border-l-[3px] px-2.5 py-2" style={{ backgroundColor: `${color}14`, borderColor: color, color: FIN.navy }}>
+              {/* Grande catégorie, repliée de base : on la déplie en la touchant */}
+              <div className="flex items-center justify-between gap-2 text-[12px] font-bold uppercase tracking-[0.05em]">
+                <button
+                  type="button"
+                  onClick={() => rows.length > 0 && toggleGroup(group.id)}
+                  aria-expanded={rows.length > 0 ? open : undefined}
+                  className="flex min-w-0 items-center gap-1 text-left uppercase"
+                >
+                  <ChevronDown
+                    size={14}
+                    aria-hidden
+                    className="shrink-0 transition-transform"
+                    style={{ color: FIN.gold, transform: open ? 'rotate(180deg)' : undefined, visibility: rows.length > 0 ? 'visible' : 'hidden' }}
+                  />
+                  <span className="min-w-0">{group.label}</span>
+                </button>
+                <span className="flex shrink-0 items-center gap-1 normal-case tracking-normal">
+                  <span className="rounded-sm px-1.5 py-0.5 text-right" style={{ color, backgroundColor: `${color}1f` }}>
+                    {formatEuros(spent)}
+                    {limit !== null && <span className="font-normal" style={{ color: FIN.slate }}>{` / ${formatEuros(limit)}`}</span>}
+                  </span>
+                  {group.virtual ? <span aria-hidden className="size-7 shrink-0" /> : editButton(key, group.label)}
+                </span>
+              </div>
+              <div className="mt-0.5">{bar(spent, limit, monthSpent > 0 ? spent / monthSpent : 0)}</div>
+              {limit !== null && warning(spent, limit, ratio, color)}
+              {group.id !== '__sans-groupe' && debtQuestion(key)}
+              {open && rows.length > 0 && (
+                <ul className="mt-2 divide-y rounded-sm" style={{ backgroundColor: FIN.paper }}>
+                  {rows.map((r) => limitRow(r))}
+                </ul>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {/* Ce que ce mois ajoute à la dette à moi-même (ou en retire), avec les choix ci-dessus */}
+      {debt.items.length > 0 && (
+        <p className="mt-3 flex items-baseline justify-between gap-2 border-t pt-2 text-[12px] font-bold" style={{ borderColor: FIN.line }}>
+          <span>{debt.delta >= 0 ? 'Ajouté à la dette à moi-même' : 'Retiré de la dette à moi-même'}</span>
+          <span style={{ color: debt.delta > 0 ? FIN.rose : FIN.sage }}>{formatEuros(Math.abs(debt.delta))}</span>
+        </p>
+      )}
+
+      {editing && <LimitModal label={editingLabel} limit={editingLimit} past={past} period={period} onSave={saveEditing} onClose={() => setEditing(null)} />}
+    </Panel>
+  );
+}
+
+// Fenêtre de modification d'une limite mensuelle : enregistrer, retirer la limite, ou fermer sans rien changer
+function LimitModal({
+  label,
+  limit,
+  past,
+  period,
+  onSave,
+  onClose
+}: {
+  label: string;
+  limit: number | null;
+  past: boolean;
+  period: string;
+  onSave: (n: number | null) => void;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState<number | null>(limit);
+  return (
+    <FinModal title="Limite" onClose={onClose}>
+      <p className="mb-3 text-[11px]" style={{ color: FIN.slate }}>
+        {label}
+        {past ? ` · pour ${monthLabel(period)} seulement` : ' · les mois passés gardent la leur'}
+      </p>
+      <NumberField label="Limite mensuelle" value={draft} onChange={setDraft} />
+      <div className="mt-4 flex items-center justify-between gap-2">
+        {limit !== null ? (
+          <button type="button" onClick={() => onSave(null)} className="text-[11px] underline" style={{ color: FIN.rose }}>
+            Retirer la limite
+          </button>
+        ) : (
+          <span />
         )}
-      </Panel>
+        <button
+          type="button"
+          onClick={() => onSave(draft)}
+          className="rounded-full px-4 py-1.5 text-[11px] uppercase tracking-[0.15em]"
+          style={{ backgroundColor: FIN.accent, color: FIN.paper }}
+        >
+          Enregistrer
+        </button>
+      </div>
+    </FinModal>
   );
 }

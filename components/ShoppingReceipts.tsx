@@ -9,6 +9,7 @@
 // useState : stocker des valeurs qui, quand elles changent, redessinent la page.
 // useEffect : lancer du code après l'affichage du composant (ici : charger les données).
 import { useEffect, useRef, useState } from 'react';
+import { playSfx } from '@/lib/sfx';
 // Le client Supabase configuré dans lib/supabase.ts, qui permet de lire/écrire dans la base de données.
 import { supabase } from '@/lib/supabase';
 // Budget de la période : ce qui reste à dépenser, dépassement, enregistrement des courses validées
@@ -508,6 +509,7 @@ export default function ShoppingReceipts({ theme }: { theme?: 'blue' | 'cuisine'
 
     // 7. Fin de la validation : on réactive les boutons, on recharge les listes et le budget restant.
     setValidating(null);
+    playSfx('success');
     await loadLists();
 
     // 8. Tous les articles étaient barrés : la liste est terminée. On demande s'il faut la garder

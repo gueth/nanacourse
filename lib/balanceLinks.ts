@@ -1,8 +1,8 @@
 import { supabase } from '@/lib/supabase';
 import { addLine, deleteLine, monthKey, SECTIONS, setLineAmount, shiftMonth, updateLine } from '@/lib/finance';
-import { CATEGORIES, categoryById, groupKindOf, lastDayOf, monthOf, type Transaction } from '@/lib/transactions';
+import { CATEGORIES, categoryById, groupKindOf, lastDayOf, monthOf, refreshStatements, type Transaction } from '@/lib/transactions';
 
-// Lignes du bilan complétées par des catégories du Budget (Finances > Gestion, « Compléter les tableaux ») :
+// Lignes du bilan complétées par des catégories du Budget (Finances > Gestion, « Créer des connecteurs ») :
 // chaque ligne (sommes à recevoir, emprunts, autres dettes) a des catégories qui l'augmentent et d'autres qui la diminuent
 // (un remboursement). Une catégorie compte pour le montant de ses opérations : entrée reçue ou sortie payée.
 // Le montant inscrit chaque fin de mois est le cumul de ces mouvements (plus un montant de départ facultatif), depuis le mois
@@ -13,7 +13,8 @@ export type BalanceLink = {
   id: string;
   section: string; // rubrique du bilan : creances, emprunts ou dettes
   label: string; // ligne de cette rubrique
-  targets: string[]; // catégories qui augmentent la ligne, ou grandes catégories ("groupe:<id>")
+  targets: string[]; // catégories qui augmentent la ligne, ou grandes catégories ("groupe:<id>") ; précédées de « = » (EQUAL),
+  // la ligne vaut leur montant du mois (sans cumul), gardé tant qu'un autre mois ne le change pas
   decreases: string[]; // catégories qui la diminuent (remboursements), même forme
   opening: number; // montant au dernier jour du mois de départ (0 par défaut)
   opening_month: string | null; // AAAA-MM, facultatif : sans lui, tout l'historique des catégories compte
@@ -29,19 +30,50 @@ export const groupTarget = (groupId: string) => `groupe:${groupId}`;
 // La créance monte quand tu prêtes et baisse quand on te rembourse ; la dette monte quand on te prête et baisse quand tu rembourses.
 // Le montant de la dette est aussi reporté sur la créance (refreshBalanceLinks).
 export const PROCHES = {
-  creance: { section: 'creances', label: 'Créances envers des proches' },
-  dette: { section: 'dettes', label: 'Dettes envers des proches' }
+  creance: { section: 'creances', label: 'Créance' },
+  dette: { section: 'dettes', label: 'Dette' }
 } as const;
+// Anciens noms de ces lignes, renommés au prochain recalcul du bilan (renameProchesLines)
+const OLD_PROCHES = { creance: 'Créances envers des proches', dette: 'Dettes envers des proches' } as const;
 export type ProchesPart = keyof typeof PROCHES;
 const sameLine = (link: Pick<BalanceLink, 'section' | 'label'>, line: { section: string; label: string }) =>
   link.section === line.section && link.label.trim().toLowerCase() === line.label.toLowerCase();
 export const isProches = (link: Pick<BalanceLink, 'section' | 'label'>) => sameLine(link, PROCHES.creance) || sameLine(link, PROCHES.dette);
 export const prochesPart = (links: BalanceLink[], part: ProchesPart) => links.find((l) => sameLine(l, PROCHES[part]));
 
-// Catégories désignées par une liste (les sous-catégories des grandes catégories choisies)
+// Nature d'une liaison entre une catégorie et une ligne du bilan :
+//  « + » la ligne augmente du montant de la catégorie, mois après mois (targets) ;
+//  « − » elle en diminue (decreases) ;
+//  « = » elle vaut le montant de la catégorie dans le mois, sans cumul, et le garde les mois
+//      suivants tant que la catégorie n'a pas de nouvelle opération (dans targets, précédée de « = »).
+export type LinkNature = '=' | '+' | '-';
+export const EQUAL = '=';
+export const isEqualTarget = (target: string) => target.startsWith(EQUAL);
+export const plainTarget = (target: string) => (isEqualTarget(target) ? target.slice(EQUAL.length) : target);
+
+// Nature de la liaison d'une catégorie (ou grande catégorie) avec une ligne, null si elle n'y est pas reliée
+export function natureOf(link: Pick<BalanceLink, 'targets' | 'decreases'>, target: string): LinkNature | null {
+  if (link.targets.includes(EQUAL + target)) return '=';
+  if (link.targets.includes(target)) return '+';
+  return link.decreases.includes(target) ? '-' : null;
+}
+
+// Relie une catégorie à une ligne avec la nature choisie (elle quitte sa place précédente dans cette ligne)
+export function withNature(link: Pick<BalanceLink, 'targets' | 'decreases'>, target: string, nature: LinkNature) {
+  const keep = (list: string[]) => list.filter((t) => plainTarget(t) !== target);
+  const targets = keep(link.targets);
+  const decreases = keep(link.decreases);
+  if (nature === '+') targets.push(target);
+  else if (nature === '=') targets.push(EQUAL + target);
+  else decreases.push(target);
+  return { targets, decreases };
+}
+
+// Catégories désignées par une liste (les sous-catégories des grandes catégories choisies), quelle que soit leur nature
 export function linkCategories(targets: string[]) {
   const ids = new Set<string>();
-  for (const target of targets) {
+  for (const raw of targets) {
+    const target = plainTarget(raw);
     if (target.startsWith('groupe:')) CATEGORIES.filter((c) => c.group === target.slice(7)).forEach((c) => ids.add(c.id));
     else ids.add(target);
   }
@@ -55,12 +87,49 @@ export const sideOf = (section: string) => SECTIONS.find((s) => s.id === section
 // Montant d'une opération pour sa catégorie : une entrée reçue ou une sortie payée compte en positif (un avoir, en négatif)
 const moveOf = (t: Pick<Transaction, 'amount' | 'category'>) => (groupKindOf(categoryById(t.category)) === 'income' ? t.amount : -t.amount);
 
-// Montant de la ligne à la fin de chaque mois, jusqu'à "lastMonth" : cumul de ce qui l'augmente, moins ce qui la diminue
+// Catégories reliées retenues dans ce navigateur lors du dernier recalcul (null : jamais recalculé ici)
+const CONNECTED_KEY = 'finances:categories-reliees';
+function readConnected(): Set<string> | null {
+  try {
+    const raw = window.localStorage.getItem(CONNECTED_KEY);
+    return raw ? new Set(JSON.parse(raw) as string[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Une catégorie reliée à un connecteur ne compte plus dans le compte de résultat (comme un virement), et y revient quand
+// on la détache : les mois où les catégories reliées ou détachées depuis le dernier recalcul ont des opérations sont
+// recalculés (au premier passage dans ce navigateur, tous ceux des catégories reliées).
+async function syncConnectedStatements(links: BalanceLink[]) {
+  const now = new Set(links.flatMap((l) => [...linkCategories(l.targets), ...linkCategories(l.decreases)]));
+  const before = readConnected();
+  const changed = before ? [...new Set([...now, ...before])].filter((id) => now.has(id) !== before.has(id)) : [...now];
+  if (changed.length) {
+    const { data, error } = await supabase.from('bank_transactions').select('date').in('category', changed);
+    if (error) return error;
+    const months = [...new Set(((data as { date: string }[]) ?? []).map((t) => monthOf(t.date)))];
+    if (months.length) {
+      const { error: refreshError } = await refreshStatements(months);
+      if (refreshError) return refreshError;
+    }
+  }
+  try {
+    window.localStorage.setItem(CONNECTED_KEY, JSON.stringify([...now]));
+  } catch {
+    // pas de stockage : le prochain recalcul repartira de zéro
+  }
+  return null;
+}
+
+// Montant de la ligne à la fin de chaque mois, jusqu'à "lastMonth" : cumul de ce qui l'augmente, moins ce qui la diminue,
+// plus le montant du mois des catégories reliées par « = »
 export function linkBalances(link: BalanceLink, transactions: Pick<Transaction, 'date' | 'amount' | 'category'>[], lastMonth: string) {
-  const up = new Set(linkCategories(link.targets));
+  const up = new Set(linkCategories(link.targets.filter((t) => !isEqualTarget(t))));
+  const equal = new Set(linkCategories(link.targets.filter(isEqualTarget)));
   const down = new Set(linkCategories(link.decreases));
   const start = link.opening_month ? lastDayOf(link.opening_month) : '';
-  const moves = transactions.filter((t) => (up.has(t.category) || down.has(t.category)) && t.date > start);
+  const moves = transactions.filter((t) => (up.has(t.category) || down.has(t.category) || equal.has(t.category)) && t.date > start);
   const result: { month: string; balance: number }[] = [];
   let balance = link.opening;
   let month = link.opening_month ?? moves.map((t) => monthOf(t.date)).sort()[0] ?? lastMonth;
@@ -68,12 +137,22 @@ export function linkBalances(link: BalanceLink, transactions: Pick<Transaction, 
     result.push({ month, balance: round(balance) });
     month = shiftMonth(month, 1);
   }
+  // Montant des catégories reliées par « = » : il reste le même, mois après mois, jusqu'à un mois où elles ont des
+  // opérations (« + » et « − » se cumulent, et gardent donc aussi leur valeur les mois sans opération)
+  let equalValue = 0;
   for (; month <= lastMonth; month = shiftMonth(month, 1)) {
+    let ofMonth = 0;
+    let equalMoved = false;
     for (const t of moves.filter((m) => monthOf(m.date) === month)) {
       if (up.has(t.category)) balance += moveOf(t);
       if (down.has(t.category)) balance -= moveOf(t);
+      if (equal.has(t.category)) {
+        ofMonth += moveOf(t);
+        equalMoved = true;
+      }
     }
-    result.push({ month, balance: round(balance) });
+    if (equalMoved) equalValue = ofMonth;
+    result.push({ month, balance: round(balance + equalValue) });
   }
   return result;
 }
@@ -127,13 +206,26 @@ export async function deleteBalanceLinks(links: BalanceLink[]) {
   return refreshBalanceLinks();
 }
 
+// « Créances envers des proches » devient « Créance », « Dettes envers des proches » devient « Dette » : liaisons et lignes
+// déjà inscrites au bilan, tous mois confondus (sans effet une fois fait)
+async function renameProchesLines() {
+  for (const part of ['creance', 'dette'] as const) {
+    const { section, label } = PROCHES[part];
+    await supabase.from('balance_links').update({ label }).eq('section', section).ilike('label', OLD_PROCHES[part]);
+    await supabase.from('finance_lines').update({ label }).eq('section', section).ilike('label', OLD_PROCHES[part]);
+  }
+}
+
 // Inscrit au bilan le solde de chaque ligne reliée, pour chaque mois déjà ouvert (qui a des lignes) depuis son mois de départ.
 // À relancer après un import, un reclassement, une opération ajoutée à la main, ou une liaison créée, modifiée ou retirée :
 // tout est recalculé depuis le départ. Les montants calculés qui ne correspondent plus à aucune liaison (ligne renommée ou
 // déliée, mois avant le nouveau mois de départ…) sont remis à zéro ; deux liaisons sur la même ligne s'additionnent.
 export async function refreshBalanceLinks() {
+  await renameProchesLines();
   const { links, error } = await fetchBalanceLinks();
   if (error) return /balance_links/.test(error.message) ? null : error; // table pas encore créée : rien à faire
+  const statementError = await syncConnectedStatements(links);
+  if (statementError) return statementError;
   const currentMonth = monthKey(new Date());
   const { data: lineRows, error: lineError } = await supabase.from('finance_lines').select('id, period, statement, section, label, amount').lte('period', currentMonth);
   if (lineError) return lineError;

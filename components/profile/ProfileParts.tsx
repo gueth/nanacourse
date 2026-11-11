@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import Portal from '@/components/Portal';
+import { useModalSfx } from '@/lib/sfx';
 import { Camera, Pencil, Plus, X } from 'lucide-react';
 import { resetProfilePhoto, uploadProfilePhoto, type ProfilePhoto } from '@/lib/profileTexts';
 
@@ -307,6 +308,7 @@ export function EditButton({ label, onClick, add = false, className = '' }: { la
 // Fenêtre sur papier de la page Profil : titre calligraphié, contenu qui défile, pied facultatif (boutons).
 // Toujours au centre de l'écran, téléphone compris.
 export function PaperModal({ title, onClose, footer, children }: { title: string; onClose: () => void; footer?: React.ReactNode; children: React.ReactNode }) {
+  useModalSfx();
   return (
     <Portal>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>

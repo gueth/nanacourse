@@ -1,5 +1,6 @@
 'use client';
 
+import { playSfx } from '@/lib/sfx';
 import { useCallback, useRef, useState } from 'react';
 import Modal from '@/components/Modal';
 import { PaperModal, PF, serif } from '@/components/profile/ProfileParts';
@@ -62,6 +63,7 @@ export function useChallengeActions(variant: Variant, onChanged: () => void) {
       setError(describeChallengeError(err));
       return false;
     }
+    playSfx(outcome === 'success' ? 'success' : 'close');
     return true;
   }
 

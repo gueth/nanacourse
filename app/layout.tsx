@@ -2,6 +2,8 @@ import { Archivo_Narrow, Caveat, Courier_Prime, DM_Sans, Great_Vibes, Grenze_Got
 import './globals.css';
 import { PageShell } from '@/components/PageShell';
 import { MobileSelectPicker } from '@/components/MobileSelectPicker';
+import { SystemBarsColor } from '@/components/SystemBarsColor';
+import { SoundEffects } from '@/components/SoundEffects';
 
 const caveat = Caveat({ subsets: ['latin'], variable: '--font-caveat', weight: ['600', '700'] });
 const courierPrime = Courier_Prime({ subsets: ['latin'], variable: '--font-courier', weight: ['400', '700'] });
@@ -26,7 +28,8 @@ export const metadata = {
   appleWebApp: { capable: true, title: 'nana', statusBarStyle: 'default' }
 };
 
-// Couleur de la barre du téléphone (heure, batterie) quand l'application est installée : le bleu de fond
+// Couleur de départ de la barre du téléphone (heure, batterie) : le bleu de fond,
+// ensuite remplacée par la couleur de la page affichée (components/SystemBarsColor.tsx)
 export const viewport = {
   themeColor: '#8494c6'
 };
@@ -38,6 +41,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <PageShell>{children}</PageShell>
         {/* Sur téléphone : listes déroulantes ouvertes dans un menu au style de l'application */}
         <MobileSelectPicker />
+        {/* Barres du téléphone (haut et bas) à la couleur de la page affichée */}
+        <SystemBarsColor />
+        {/* Bruitages doux des boutons, popins et pages (volume dans Paramètres > Sons) */}
+        <SoundEffects />
       </body>
     </html>
   );

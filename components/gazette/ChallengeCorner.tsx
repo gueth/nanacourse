@@ -1,5 +1,6 @@
 'use client';
 
+import { playSfx } from '@/lib/sfx';
 import { useMemo, useState } from 'react';
 import { useConfirm } from '@/components/ConfirmDialog';
 import { DefiCoupons, type CouponPalette } from '@/components/gazette/DefiCoupons';
@@ -54,6 +55,7 @@ export function RewardsCorner({
       setMessage(describeChallengeError(err));
       return false;
     }
+    playSfx('success');
     setMessage(`Coupon gagné : ${r.label}. Il est rangé dans ton profil.`);
     rewardsQuery.reload();
     return true;

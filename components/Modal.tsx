@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect } from 'react';
 import { X } from 'lucide-react';
 import Portal from '@/components/Portal';
+import { useModalSfx } from '@/lib/sfx';
 
 export type ModalVariant = 'default' | 'gazette' | 'cuisine' | 'm3';
 
@@ -29,6 +30,8 @@ type Props = {
 export default function Modal({ title, onClose, children, wide = false, variant: asked, heading }: Props) {
   const inherited = useContext(ModalVariantContext);
   const variant = asked ?? inherited;
+  // Bruitages d'ouverture et de fermeture
+  useModalSfx();
   // Fermeture avec la touche Échap
   useEffect(() => {
     function onKey(e: KeyboardEvent) {

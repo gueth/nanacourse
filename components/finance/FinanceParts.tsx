@@ -2,8 +2,9 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Portal from '@/components/Portal';
+import { useModalSfx } from '@/lib/sfx';
 import { ChevronDown, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { formatEuros, monthLabel, type FinanceLine, type Section } from '@/lib/finance';
 import { forgetFinanceMonth, useFinanceTone } from '@/lib/health';
@@ -22,6 +23,11 @@ export const FIN = {
   gold: '#b08d57',
   sage: '#5f7d6a',
   rose: '#a2525a'
+};
+
+// Précisions des lignes du bilan, par « rubrique|nom de la ligne en minuscules »
+const LINE_NOTES: Record<string, string> = {
+  'dettes|dette': 'ce que les autres me doivent'
 };
 
 const script = { fontFamily: 'var(--font-script), cursive' };
@@ -311,6 +317,8 @@ export function SectionBlock({
             <td className="border-r px-1 py-0.5" style={{ borderColor: FIN.line }}>
               <p className="px-1 py-1 text-[12px]" style={{ color: FIN.navy }}>
                 {line.label}
+                {/* Précision affichée à côté de certaines lignes (le nom enregistré ne change pas) */}
+                {LINE_NOTES[`${line.section}|${line.label.trim().toLowerCase()}`] && ` (${LINE_NOTES[`${line.section}|${line.label.trim().toLowerCase()}`]})`}
                 {estimated?.(line) && (
                   <span className="block text-[9px] italic" style={{ color: FIN.slate }}>
                     relevé manquant · solde estimé
@@ -342,29 +350,35 @@ export function Panel({
   title,
   subtitle,
   collapsible = false,
+  preview,
   children
 }: {
   title: string;
   subtitle?: string;
   // true : le panneau s'ouvre et se referme en touchant son titre, et commence plié
   collapsible?: boolean;
+  // Panneau repliable : ce qui reste visible même replié (les chiffres principaux), sous le titre
+  preview?: React.ReactNode;
   children: React.ReactNode;
 }) {
   if (collapsible)
     return (
       <details className="group mt-5 rounded-sm border px-4 pb-3 pt-3" style={{ backgroundColor: FIN.paper, borderColor: FIN.line }}>
-        <summary className="flex cursor-pointer list-none items-start justify-between gap-2 [&::-webkit-details-marker]:hidden">
-          <span className="min-w-0">
-            <h2 className="text-[32px] leading-tight" style={{ ...script, color: FIN.navy }}>
-              {title}
-            </h2>
-            {subtitle && (
-              <p className="-mt-1 text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
-                {subtitle}
-              </p>
-            )}
+        <summary className="block cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+          <span className="flex items-start justify-between gap-2">
+            <span className="min-w-0">
+              <h2 className="text-[32px] leading-tight" style={{ ...script, color: FIN.navy }}>
+                {title}
+              </h2>
+              {subtitle && (
+                <p className="-mt-1 text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
+                  {subtitle}
+                </p>
+              )}
+            </span>
+            <ChevronDown size={20} aria-hidden className="mt-3 shrink-0 transition-transform group-open:rotate-180" style={{ color: FIN.gold }} />
           </span>
-          <ChevronDown size={20} aria-hidden className="mt-3 shrink-0 transition-transform group-open:rotate-180" style={{ color: FIN.gold }} />
+          {preview && <span className="mt-2 block">{preview}</span>}
         </summary>
         <div className="mt-2 pb-1">{children}</div>
       </details>
@@ -493,6 +507,7 @@ export function FinButton({
 // Popin des Finances : cadre papier au-dessus de la page, titre calligraphié.
 // Se ferme avec la croix, la touche Échap ou un toucher en dehors du cadre.
 export function FinModal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  useModalSfx();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
@@ -559,4 +574,54 @@ export function FinancePage({ header, children }: { header: React.ReactNode; chi
       <main className="mx-auto max-w-md px-4">{children}</main>
     </div>
   );
+}
+
+// Confirmation au style des Finances (même cadre que FinModal), même usage que useConfirm (components/ConfirmDialog) :
+//   const [confirm, confirmDialog] = useFinConfirm();
+//   if (!(await confirm('Délier', 'Ne plus relier… ?', { confirm: 'Délier', cancel: 'Annuler' }))) return;
+// Le bouton prudent (refus) a le focus.
+export function useFinConfirm() {
+  const [request, setRequest] = useState<{ title: string; message: string; labels?: { confirm?: string; cancel?: string } } | null>(null);
+  const resolveRef = useRef<(ok: boolean) => void>(() => {});
+
+  const confirm = useCallback((title: string, message: string, labels?: { confirm?: string; cancel?: string }) => {
+    setRequest({ title, message, labels });
+    return new Promise<boolean>((resolve) => {
+      resolveRef.current = resolve;
+    });
+  }, []);
+
+  const answer = (ok: boolean) => {
+    setRequest(null);
+    resolveRef.current(ok);
+  };
+
+  const dialog = request && (
+    <FinModal title={request.title} onClose={() => answer(false)}>
+      <p className="mt-1 text-[13px] leading-relaxed" style={{ color: FIN.navy }}>
+        {request.message}
+      </p>
+      <div className="mt-5 flex items-center justify-end gap-2">
+        <button
+          type="button"
+          autoFocus
+          onClick={() => answer(false)}
+          className="rounded-full border px-4 py-1.5 text-[11px] uppercase tracking-[0.15em]"
+          style={{ borderColor: FIN.line, color: FIN.slate, backgroundColor: '#fff' }}
+        >
+          {request.labels?.cancel ?? 'Annuler'}
+        </button>
+        <button
+          type="button"
+          onClick={() => answer(true)}
+          className="rounded-full border px-4 py-1.5 text-[11px] uppercase tracking-[0.15em]"
+          style={{ backgroundColor: FIN.rose, borderColor: FIN.rose, color: FIN.paper }}
+        >
+          {request.labels?.confirm ?? 'Supprimer'}
+        </button>
+      </div>
+    </FinModal>
+  );
+
+  return [confirm, dialog] as const;
 }

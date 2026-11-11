@@ -2,11 +2,13 @@
 
 import { useState } from 'react';
 import { ChevronRight, Pencil, Plus, Trash2 } from 'lucide-react';
-import { useConfirm } from '@/components/ConfirmDialog';
-import { ErrorNote, FIN, FinButton, FinModal, NumberField, Panel } from '@/components/finance/FinanceParts';
+import { ErrorNote, FIN, FinButton, FinModal, NumberField, Panel, useFinConfirm } from '@/components/finance/FinanceParts';
 import { formatEuros, SECTIONS } from '@/lib/finance';
 import { describeDbError } from '@/lib/financePlans';
-import { useCategoryLimits } from '@/lib/financeQueries';
+import { useCategoryLimits, useMonthPlans } from '@/lib/financeQueries';
+import { useIncomePlan } from '@/lib/coursesQueries';
+import { DEFAULT_PLAN } from '@/lib/budget';
+import { assignTargets, expenseTargets, moveTarget, saveDefaultRepartition } from '@/lib/repartition';
 import {
   addCategoryGroup,
   addCustomCategory,
@@ -30,8 +32,9 @@ import {
   type GroupKind
 } from '@/lib/transactions';
 
-// Gestion des catégories de la page Gestion : sorties à gauche, entrées à droite.
-// Dans chaque colonne, les grandes catégories (avec leurs sous-catégories), puis les catégories sans regroupement.
+// Gestion des catégories de la page Gestion : deux boutons « Sorties » et « Entrées » affichent l'une ou l'autre liste,
+// et l'ajout d'une catégorie ou d'une grande catégorie demande d'abord si c'est pour une entrée ou une sortie.
+// Dans chaque liste, les grandes catégories (avec leurs sous-catégories), puis les catégories sans regroupement.
 // Les opérations ne vont que dans les sous-catégories ; une grande catégorie sert à regrouper et peut avoir
 // une limite mensuelle. Elle peut être dissoute (ses sous-catégories restent) ou supprimée avec ses sous-catégories
 // (leurs opérations vont alors dans « Autres »). Création et modification se font dans une popin.
@@ -85,6 +88,39 @@ function DangerButton({ onClick, children }: { onClick: () => void; children: Re
   );
 }
 
+// Choix du sens (sortie ou entrée), obligatoire pour créer une catégorie ou une grande catégorie
+function SensePicker({ value, onChange }: { value: GroupKind | null; onChange: (kind: GroupKind) => void }) {
+  return (
+    <div className="mt-3">
+      <span className="mb-1 block text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+        Pour une entrée ou une sortie ?
+      </span>
+      <div className="grid grid-cols-2 gap-2">
+        {(
+          [
+            { kind: 'expense', label: 'Sortie', color: FIN.rose },
+            { kind: 'income', label: 'Entrée', color: FIN.sage }
+          ] as const
+        ).map((o) => {
+          const on = value === o.kind;
+          return (
+            <button
+              key={o.kind}
+              type="button"
+              aria-pressed={on}
+              onClick={() => onChange(o.kind)}
+              className="rounded-full border px-3 py-2 text-[11px] font-bold uppercase tracking-[0.15em]"
+              style={on ? { backgroundColor: o.color, borderColor: o.color, color: FIN.paper } : { borderColor: o.color, color: o.color }}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Boutons d'une popin : enregistrer / annuler, puis les actions destructives séparées par un filet
 function FormActions({ saveLabel, disabled, onSave, onCancel, danger }: { saveLabel: string; disabled: boolean; onSave: () => void; onCancel: () => void; danger?: React.ReactNode }) {
   return (
@@ -122,7 +158,8 @@ export function NewCategoryForm({
   onCancel: () => void;
 }) {
   const [label, setLabel] = useState('');
-  const [kind, setKind] = useState<CustomCategory['kind']>(fixedKind ?? 'variable');
+  // Sans sens imposé, il faut le choisir (rien n'est coché au départ)
+  const [kind, setKind] = useState<CustomCategory['kind'] | null>(fixedKind ?? null);
   const [section, setSection] = useState(fixedKind === 'income' ? 'autres_revenus' : 'vie_courante');
   const [group, setGroup] = useState<string | null>(initialGroup);
   const [busy, setBusy] = useState(false);
@@ -131,7 +168,7 @@ export function NewCategoryForm({
   const taken = CATEGORIES.some((c) => sameLabel(c.label, label));
 
   async function create() {
-    if (!label.trim() || taken) return;
+    if (!label.trim() || taken || !kind) return;
     setBusy(true);
     const { category, error: err } = await addCustomCategory(label, kind, section);
     const groupErr = category && group ? await setCategoryGroup(category.id, group) : null;
@@ -160,22 +197,17 @@ export function NewCategoryForm({
         </p>
       )}
       {!fixedKind && (
-        <Field label="Sens">
-          <select
-            value={kind}
-            onChange={(e) => {
-              const k = e.target.value as CustomCategory['kind'];
-              setKind(k);
-              setSection(k === 'income' ? 'autres_revenus' : 'vie_courante');
-              setGroup(null);
-            }}
-            className={selectClass}
-          >
-            <option value="variable">Dépense</option>
-            <option value="income">Entrée d&apos;argent</option>
-          </select>
-        </Field>
+        <SensePicker
+          value={kind === null ? null : kind === 'income' ? 'income' : 'expense'}
+          onChange={(k) => {
+            setKind(k === 'income' ? 'income' : 'variable');
+            setSection(k === 'income' ? 'autres_revenus' : 'vie_courante');
+            setGroup(null);
+          }}
+        />
       )}
+      {kind && (
+        <>
       <Field label="Rubrique du compte de résultat">
         <select value={section} onChange={(e) => setSection(e.target.value)} className={selectClass}>
           {sections.map((s) => (
@@ -186,39 +218,59 @@ export function NewCategoryForm({
         </select>
       </Field>
       <GroupSelect kind={kind === 'income' ? 'income' : 'expense'} value={group} onChange={setGroup} />
-      <FormActions saveLabel="Créer" disabled={busy || !label.trim() || taken} onSave={create} onCancel={onCancel} />
+        </>
+      )}
+      <FormActions saveLabel="Créer" disabled={busy || !label.trim() || taken || !kind} onSave={create} onCancel={onCancel} />
     </div>
   );
 }
 
 // Création ou modification d'une grande catégorie : nom, et montant par mois (limite des sorties, entrées prévues)
 function GroupForm({
-  kind,
+  kind: fixedKind,
   group,
   onDone,
   onCancel,
   danger
 }: {
-  kind: GroupKind;
+  kind?: GroupKind; // sans lui (création depuis le panneau), le sens se choisit dans la popin
   group?: CategoryGroup;
   onDone: (message: string) => void;
   onCancel: () => void;
   danger?: React.ReactNode;
 }) {
+  const [kind, setKind] = useState<GroupKind | null>(group?.kind ?? fixedKind ?? null);
   const [label, setLabel] = useState(group?.label ?? '');
   const [limit, setLimit] = useState<number | null>(group?.monthly_limit ?? null);
+  // Partie de la répartition du revenu (Gestion > Répartition) où compter cette grande catégorie de sorties
+  const planQuery = useIncomePlan();
+  const monthPlansQuery = useMonthPlans();
+  const plan = planQuery.data ?? DEFAULT_PLAN;
+  const spendingParts = plan.parts.filter((p) => !p.savings);
+  const currentPart = group ? (assignTargets(plan.parts, expenseTargets()).get(`groupe:${group.id}`) ?? null) : null;
+  const [part, setPart] = useState<string | null | undefined>(undefined); // undefined : pas encore touché
+  const chosenPart = part === undefined ? currentPart : part;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const taken = categoryGroups().some((g) => g.id !== group?.id && sameLabel(g.label, label));
 
   async function save() {
-    if (!label.trim() || taken) return;
+    if (!label.trim() || taken || !kind) return;
     setBusy(true);
     let err;
+    let groupId = group?.id;
     if (group) err = await updateCategoryGroup(group.id, { label: label.trim(), monthly_limit: limit });
     else {
       const created = await addCategoryGroup(label, kind);
       err = created.error ?? (created.group && limit !== null ? await updateCategoryGroup(created.group.id, { monthly_limit: limit }) : null);
+      groupId = created.group?.id;
+    }
+    // Répartition : seulement pour une sortie, et si le choix a changé (s'applique au mois en cours et aux suivants)
+    if (!err && kind === 'expense' && groupId && planQuery.data && chosenPart !== currentPart) {
+      const parts = moveTarget(plan.parts, expenseTargets(), `groupe:${groupId}`, chosenPart);
+      err = await saveDefaultRepartition(plan.parts, { ...plan, parts });
+      planQuery.reload();
+      monthPlansQuery.reload();
     }
     setBusy(false);
     if (err) return setError(describeDbError(err.message));
@@ -234,7 +286,7 @@ function GroupForm({
           value={label}
           onChange={(e) => setLabel(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && save()}
-          placeholder={kind === 'expense' ? 'Ex. Maison, Plaisirs…' : 'Ex. Revenus du travail…'}
+          placeholder={kind === 'income' ? 'Ex. Revenus du travail…' : 'Ex. Maison, Plaisirs…'}
           className={inputClass}
           style={{ borderColor: FIN.line }}
         />
@@ -244,10 +296,28 @@ function GroupForm({
           Cette grande catégorie existe déjà.
         </p>
       )}
+      {!group && !fixedKind && <SensePicker value={kind} onChange={setKind} />}
       <div className="mt-3">
         <NumberField label="Limite par mois" value={limit} onChange={setLimit} />
       </div>
-      <FormActions saveLabel={group ? 'Enregistrer' : 'Créer'} disabled={busy || !label.trim() || taken} onSave={save} onCancel={onCancel} danger={danger} />
+      {kind === 'expense' && spendingParts.length > 0 && (
+        <div className="mt-3">
+          <Field label="Partie de la répartition">
+            <select value={chosenPart ?? ''} onChange={(e) => setPart(e.target.value || null)} className={selectClass}>
+              <option value="">Aucune partie</option>
+              {spendingParts.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label} · {p.pct} %
+                </option>
+              ))}
+            </select>
+          </Field>
+          <p className="mt-1 text-[10px]" style={{ color: FIN.slate }}>
+            Ses dépenses comptent dans cette partie, dans la répartition du Budget (mois en cours et suivants ; les mois passés gardent la leur).
+          </p>
+        </div>
+      )}
+      <FormActions saveLabel={group ? 'Enregistrer' : 'Créer'} disabled={busy || !label.trim() || taken || !kind} onSave={save} onCancel={onCancel} danger={danger} />
     </>
   );
 }
@@ -305,12 +375,10 @@ function RowButton({ label, color, onClick, children }: { label: string; color: 
   );
 }
 
-// Popin ouverte : modification d'une catégorie ou d'une grande catégorie, ou création dans la colonne
+// Popin ouverte : modification d'une catégorie ou d'une grande catégorie
 type Editing =
   | { type: 'categorie'; category: Category }
-  | { type: 'groupe'; group: CategoryGroup }
-  | { type: 'nouvelle' }
-  | { type: 'nouveau-groupe' };
+  | { type: 'groupe'; group: CategoryGroup };
 
 // Total des limites d'un sens : la limite de chaque grande catégorie (à défaut, celles de ses catégories),
 // plus celles des catégories sans regroupement
@@ -322,9 +390,9 @@ function limitsTotal(kind: GroupKind, budgets: Budget[]) {
   return fromGroups + loose.reduce((s, c) => s + limitOf(c), 0);
 }
 
-// Une colonne : sorties ou entrées
+// Une liste : sorties ou entrées
 function Column({ kind, budgets, onChanged, onError }: { kind: GroupKind; budgets: Budget[]; onChanged: (message: string) => void; onError: (message: string) => void }) {
-  const [confirm, confirmDialog] = useConfirm();
+  const [confirm, confirmDialog] = useFinConfirm();
   const [editing, setEditing] = useState<Editing | null>(null);
   // Grandes catégories dépliées (toutes pliées au départ)
   const [unfolded, setUnfolded] = useState<string[]>([]);
@@ -438,24 +506,6 @@ function Column({ kind, budgets, onChanged, onError }: { kind: GroupKind; budget
         </p>
       </div>
 
-      {/* Ajouts dans cette colonne */}
-      <div className="mb-3 mt-2 flex flex-col items-stretch gap-1.5">
-        {[
-          { label: 'Catégorie', open: { type: 'nouvelle' } as const },
-          { label: 'Grande catégorie', open: { type: 'nouveau-groupe' } as const }
-        ].map((b) => (
-          <button
-            key={b.label}
-            type="button"
-            onClick={() => setEditing(b.open)}
-            className="flex items-center justify-center gap-1 rounded-full border px-2 py-2 text-[10px] uppercase tracking-[0.12em]"
-            style={{ borderColor: FIN.gold, color: FIN.gold }}
-          >
-            <Plus size={13} /> {b.label}
-          </button>
-        ))}
-      </div>
-
       {/* Grandes catégories et leurs sous-catégories */}
       {groups.map((g) => {
         const members = groupMembers(g.id);
@@ -547,59 +597,98 @@ function Column({ kind, budgets, onChanged, onError }: { kind: GroupKind; budget
           />
         </FinModal>
       )}
-      {editing?.type === 'nouvelle' && (
-        <FinModal title={kind === 'income' ? 'Nouvelle entrée' : 'Nouvelle dépense'} onClose={close}>
-          <NewCategoryForm
-            kind={kind === 'income' ? 'income' : 'variable'}
-            framed={false}
-            onCancel={close}
-            onCreated={(id) => done(`Catégorie « ${categoryById(id).label} » créée.`)}
-          />
-        </FinModal>
-      )}
-      {editing?.type === 'nouveau-groupe' && (
-        <FinModal title="Nouvelle grande catégorie" onClose={close}>
-          <GroupForm kind={kind} onDone={done} onCancel={close} />
-        </FinModal>
-      )}
     </div>
   );
 }
 
-// Panneau « Catégories » de la page Gestion
+// Panneau « Catégories » de la page Gestion : boutons « Sorties » et « Entrées » (l'un ou l'autre, ou aucun),
+// puis la liste choisie ; l'ajout d'une catégorie ou d'une grande catégorie demande pour quel sens.
 // Une catégorie supprimée l'est pour de bon (après confirmation) : on ne la rétablit pas
 export function CategoriesPanel({ onChanged }: { onChanged: (message: string) => void }) {
-  const [open, setOpen] = useState(false);
+  const [shown, setShown] = useState<GroupKind | null>(null);
+  const [adding, setAdding] = useState<'categorie' | 'groupe' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const budgets = useCategoryLimits().data ?? [];
   const transfers = CATEGORIES.filter((c) => groupKindOf(c) === null);
+  const count = (kind: GroupKind) => CATEGORIES.filter((c) => groupKindOf(c) === kind).length;
 
   const changed = (message: string) => {
     setError(null);
+    setAdding(null);
     onChanged(message);
   };
 
   return (
     <Panel title="Catégories">
       <ErrorNote message={error} />
-      {open && (
-        <>
-          <div className="grid grid-cols-2 gap-3">
-            <Column kind="expense" budgets={budgets} onChanged={changed} onError={setError} />
-            <Column kind="income" budgets={budgets} onChanged={changed} onError={setError} />
-          </div>
-          {transfers.length > 0 && (
-            <p className="mt-3 text-[10px]" style={{ color: FIN.slate }}>
-              Ni sortie ni entrée : {transfers.map((c) => c.label).join(', ')}.
-            </p>
-          )}
-        </>
-      )}
-      <div className="mt-3 flex flex-wrap gap-2">
-        <FinButton outline onClick={() => setOpen(!open)}>
-          {open ? 'Masquer les catégories' : `Voir les ${CATEGORIES.length} catégories`}
-        </FinButton>
+      {/* AJOUTS, en haut de la carte : le sens (entrée ou sortie) se choisit dans la popin */}
+      <div className="grid grid-cols-2 gap-2">
+        {(
+          [
+            { id: 'categorie', label: 'Catégorie' },
+            { id: 'groupe', label: 'Grande catégorie' }
+          ] as const
+        ).map((b) => (
+          <button
+            key={b.id}
+            type="button"
+            onClick={() => setAdding(b.id)}
+            className="flex items-center justify-center gap-1 rounded-full border px-2 py-2 text-[10px] uppercase tracking-[0.12em]"
+            style={{ borderColor: FIN.gold, color: FIN.gold }}
+          >
+            <Plus size={13} /> {b.label}
+          </button>
+        ))}
       </div>
+
+      {/* SORTIES / ENTRÉES : toucher l'un affiche ses catégories, le retoucher les masque */}
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        {(
+          [
+            { kind: 'expense', label: 'Sorties', color: FIN.rose },
+            { kind: 'income', label: 'Entrées', color: FIN.sage }
+          ] as const
+        ).map((o) => {
+          const on = shown === o.kind;
+          return (
+            <button
+              key={o.kind}
+              type="button"
+              aria-pressed={on}
+              onClick={() => setShown(on ? null : o.kind)}
+              className="rounded-sm border px-3 py-2.5 text-center"
+              style={on ? { backgroundColor: o.color, borderColor: o.color, color: FIN.paper } : { borderColor: o.color, color: o.color, backgroundColor: '#fff' }}
+            >
+              <span className="block text-[12px] font-bold uppercase tracking-[0.2em]">{o.label}</span>
+              <span className="block text-[10px] opacity-80">
+                {count(o.kind)} catégorie{count(o.kind) > 1 ? 's' : ''}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {shown && (
+        <div className="mt-4">
+          <Column key={shown} kind={shown} budgets={budgets} onChanged={changed} onError={setError} />
+        </div>
+      )}
+      {shown && transfers.length > 0 && (
+        <p className="mt-3 text-[10px]" style={{ color: FIN.slate }}>
+          Ni sortie ni entrée : {transfers.map((c) => c.label).join(', ')}.
+        </p>
+      )}
+
+      {adding === 'categorie' && (
+        <FinModal title="Nouvelle catégorie" onClose={() => setAdding(null)}>
+          <NewCategoryForm framed={false} onCancel={() => setAdding(null)} onCreated={(id) => changed(`Catégorie « ${categoryById(id).label} » créée.`)} />
+        </FinModal>
+      )}
+      {adding === 'groupe' && (
+        <FinModal title="Nouvelle grande catégorie" onClose={() => setAdding(null)}>
+          <GroupForm onDone={changed} onCancel={() => setAdding(null)} />
+        </FinModal>
+      )}
     </Panel>
   );
 }

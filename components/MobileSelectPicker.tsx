@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, X } from 'lucide-react';
+import { playSfx } from '@/lib/sfx';
 
 // SUR TÉLÉPHONE, LES LISTES DÉROULANTES S'OUVRENT DANS UN MENU AU STYLE DE L'APPLICATION.
 // Le menu natif d'Android / iOS ignore tout le CSS (fond, police, couleurs). Sur écran tactile, on l'empêche
@@ -96,6 +97,7 @@ export function MobileSelectPicker() {
       if (openRef.current) return;
       openRef.current = true;
       select.blur();
+      playSfx('open');
       setPicker({ select, title: titleOf(select), groups: groupsOf(select), value: select.value, theme: themeOf(select) });
     };
 

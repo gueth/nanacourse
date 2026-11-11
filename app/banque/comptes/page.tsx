@@ -249,6 +249,9 @@ export default function FinancePage() {
                     <Ledger title="Actif" total={known(t.actif)} color={ON_NAVY.sage} totalLabel="Total de l'actif">
                       {renderSide('actif')}
                     </Ledger>
+                    <Explain>
+                      L&apos;actif, c&apos;est tout ce que tu possèdes à la fin du mois : l&apos;argent sur tes comptes et livrets, tes placements, tes biens de valeur, et les sommes qu&apos;on te doit encore.
+                    </Explain>
                   </div>,
                   <div key="passif">
                     <SwipeCaption page={1} labels={BILAN_PAGES} date={`Au ${monthEndLabel(period)}`} />
@@ -272,17 +275,9 @@ export default function FinancePage() {
                       />
                       {renderSide('passif')}
                     </Ledger>
-                    {!incomplete && (
-                      <p className="mt-2 text-center text-[10px] uppercase tracking-[0.2em]" style={{ color: FIN.sage }}>
-                        ✓ Actif = Passif = {estimatedBilan ? '≈ ' : ''}
-                        {formatEuros(t.actif)}
-                        {estimatedBilan ? ' (soldes estimés)' : ''}
-                      </p>
-                    )}
-                    <p className="mt-1 text-center text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
-                      Le passif dit d&apos;où vient ce que tu possèdes : de tes dettes, ou de toi (capitaux propres). Le résultat du mois s&apos;ajoute à tes
-                      capitaux propres.
-                    </p>
+                    <Explain>
+                      Le passif dit d&apos;où vient ce que tu possèdes : de tes dettes (emprunts, découvert, argent que tu dois à des proches), ou de toi-même (capitaux propres). Le résultat du mois s&apos;ajoute à tes capitaux propres.
+                    </Explain>
                   </div>
                 ]}
               />
@@ -297,6 +292,9 @@ export default function FinancePage() {
                     <Ledger title="Produits" total={knownResult(t.produits)} color={ON_NAVY.sage} totalLabel="Total des produits">
                       {renderSide('produits')}
                     </Ledger>
+                    <Explain>
+                      Les produits, c&apos;est tout l&apos;argent qui est entré pendant le mois : salaire, primes, aides, intérêts, remboursements reçus…
+                    </Explain>
                   </div>,
                   <div key="charges">
                     <SwipeCaption page={1} labels={RESULT_PAGES} date={`Du 1er au ${monthEndLabel(period)}`} />
@@ -329,6 +327,9 @@ export default function FinancePage() {
                         </tr>
                       </tbody>
                     </table>
+                    <Explain>
+                      Les charges, c&apos;est tout l&apos;argent dépensé pendant le mois : logement, courses, transport, abonnements, loisirs… Produits moins charges donne le résultat : ce que tu as épargné (ou perdu) ce mois-ci.
+                    </Explain>
                   </div>
                 ]}
               />
@@ -337,6 +338,15 @@ export default function FinancePage() {
         )}
       </main>
     </div>
+  );
+}
+
+// Explication en bas d'une partie du bilan ou du compte de résultat (ce qu'est l'actif, le passif...)
+function Explain({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="mt-3 text-[11px] leading-relaxed" style={{ color: FIN.slate }}>
+      {children}
+    </p>
   );
 }
 

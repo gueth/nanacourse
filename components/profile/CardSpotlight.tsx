@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { useModalSfx } from '@/lib/sfx';
 
 // Carte mise au premier plan : partant de sa place sur la page (rect), elle s'avance au centre de l'écran en grandissant
 // et en se redressant, sur un fond assombri. Un toucher sur le fond (ou Échap) la renvoie à sa place, par le même chemin.
 // La carte est dessinée à la même largeur que sur la page, puis agrandie : son contenu reste identique.
 export function CardSpotlight({ rect, label, onClose, children }: { rect: DOMRect; label: string; onClose: () => void; children: ReactNode }) {
+  useModalSfx();
   const card = useRef<HTMLDivElement>(null);
   const backdrop = useRef<HTMLDivElement>(null);
   const closing = useRef(false);

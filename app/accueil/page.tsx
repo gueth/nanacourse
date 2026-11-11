@@ -11,7 +11,10 @@ import { HomeDots } from '@/components/HomeDots';
 import { TrendChart } from '@/components/finance/TrendChart';
 import { Bow, Flourish, LaceEdge, LaceFrame, MIST, NAVY, PAPER, Rosette } from '@/components/gazette/Lace';
 import { byPeriod, formatEuros, monthIndicators, monthKey, monthLabel, monthEndLabel, shiftMonth, totals } from '@/lib/finance';
-import { useCoverage, useFinanceLines } from '@/lib/financeQueries';
+import { useCategories, useCategoryLimits, useCoverage, useFinanceLines, useMonthBudgets } from '@/lib/financeQueries';
+import { orThrow, useCached } from '@/lib/cache';
+import { budgetLinesOf } from '@/lib/selfDebt';
+import { fetchTransactions, monthOf, summarize, type Transaction } from '@/lib/transactions';
 import { knownLines } from '@/lib/coverage';
 import { SAVINGS_TARGET } from '@/lib/health';
 import { useParcours } from '@/lib/parcours';
@@ -19,7 +22,8 @@ import { unlockCreditsAudio } from '@/lib/creditsAudio';
 import { formatIssue, gazetteIssue } from '@/lib/gazette';
 
 // Accueil : la gazette du jour, en bleu nuit sur papier blanc, ornée de dentelle. À la une le bilan et le compte
-// de résultat du dernier mois rempli, puis les graphiques de santé financière et le parcours vers l'autonomie.
+// de résultat du dernier mois rempli, puis les graphiques de santé financière, la prédiction des dépenses à venir
+// (rythme actuel face aux budgets) et le parcours vers l'autonomie.
 // Les courses ont leur propre page (/course) : on passe de l'une à l'autre par le menu de la page des cartes du jour (/cartes),
 // qui est la page à gauche du journal (on y revient en glissant le doigt vers la droite).
 
@@ -162,7 +166,7 @@ function Masthead({ today }: { today: Date | null }) {
       {/* Double filet et devise, comme sous le titre d'un quotidien */}
       <div className={`mt-3 border-t-[3px] border-double ${FULL_WIDTH}`} style={{ borderColor: NAVY }} />
       <p className="py-1 text-[9px] uppercase tracking-[0.22em]" style={serif}>
-        L&apos;édition du jour · finances · courses · défis
+        L&apos;édition du jour · finances · épargne · dépenses
       </p>
       <div className={`border-t ${FULL_WIDTH}`} style={{ borderColor: NAVY }} />
     </header>
@@ -270,7 +274,7 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
           </p>
         </div>
         <div className="mt-3">
-          <Byline>Par nana · rubrique finances</Byline>
+          <Byline>Rubrique comptable</Byline>
         </div>
 
         {/* Texte en deux colonnes séparées par un filet, avec lettrine */}
@@ -477,8 +481,190 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
         </p>
       </div>
 
+      {/* PRÉDICTION ET ESTIMATION : les dépenses à venir au rythme actuel, face à celles voulues par les budgets */}
+      <Forecast currentMonth={currentMonth} />
+
       {/* PARCOURS vers l'autonomie financière, validé à partir des chiffres */}
       <Parcours currentMonth={currentMonth} />
+    </>
+  );
+}
+
+// Nombre de mois prévus (le mois en cours compris) et de mois terminés qui donnent le rythme actuel
+const FORECAST_MONTHS = 6;
+const PACE_MONTHS = 3;
+
+// PRÉDICTION ET ESTIMATION : sur les postes qui ont un budget (grandes catégories et catégories limitées, Finances > Budget),
+// le total des dépenses à venir si le comportement des derniers mois relevés continue, face au total voulu par les limites.
+// Le mois en cours ajoute à ce qui est déjà relevé ce qu'il reste à dépenser au même rythme.
+// Les dépenses annuelles sont laissées de côté : payées une fois par an, elles fausseraient le rythme.
+function Forecast({ currentMonth }: { currentMonth: string }) {
+  const categoriesReady = useCategories().data;
+  const budgets = useCategoryLimits().data;
+  const monthBudgets = useMonthBudgets().data;
+  const operations = useCached(`journal:operations-prevision:${currentMonth}`, async () => {
+    const [y, m] = currentMonth.split('-').map(Number);
+    const lastDay = String(new Date(y, m, 0).getDate()).padStart(2, '0');
+    const { transactions, error } = await fetchTransactions(`${shiftMonth(currentMonth, -PACE_MONTHS)}-01`, `${currentMonth}-${lastDay}`);
+    return orThrow(transactions, error);
+  }).data;
+
+  const forecast = useMemo(() => {
+    if (!categoriesReady || !budgets || !monthBudgets || !operations) return null;
+    const byMonth = new Map<string, Transaction[]>();
+    for (const t of operations) byMonth.set(monthOf(t.date), [...(byMonth.get(monthOf(t.date)) ?? []), t]);
+    // Postes budgétés avec leurs limites d'aujourd'hui ; ce que chacun a coûté un mois donné
+    const linesIn = (month: string) => budgetLinesOf(currentMonth, summarize(byMonth.get(month) ?? []).byCategory, budgets, monthBudgets);
+    const lines = linesIn(currentMonth);
+    const allowed = lines.reduce((s, l) => s + l.limit, 0);
+    if (!lines.length) return { lines: [], allowed: 0, pace: null };
+
+    // Rythme actuel : moyenne des mois terminés qui ont un relevé
+    const past = Array.from({ length: PACE_MONTHS }, (_, i) => shiftMonth(currentMonth, -(i + 1))).filter((m) => byMonth.get(m)?.length);
+    const pastLines = past.map(linesIn);
+    const avgOf = (target: string) => pastLines.reduce((s, ls) => s + (ls.find((l) => l.target === target)?.spent ?? 0), 0) / (past.length || 1);
+
+    // Mois en cours : déjà relevé jusqu'à la dernière opération, puis le reste du mois au même rythme
+    const currentTx = byMonth.get(currentMonth) ?? [];
+    const soFar = lines.reduce((s, l) => s + l.spent, 0);
+    const [y, m] = currentMonth.split('-').map(Number);
+    const days = new Date(y, m, 0).getDate();
+    const lastDay = currentTx.reduce((d, t) => Math.max(d, Number(t.date.slice(8, 10))), 0);
+    const elapsed = lastDay / days;
+    if (!past.length && !currentTx.length) return { lines, allowed, pace: null };
+
+    const pace = past.length ? lines.reduce((s, l) => s + avgOf(l.target), 0) : soFar / elapsed;
+    const thisMonth = currentTx.length ? soFar + pace * (1 - elapsed) : pace;
+    const months = Array.from({ length: FORECAST_MONTHS }, (_, i) => shiftMonth(currentMonth, i));
+    const projected = months.map((_, i) => thisMonth + pace * i);
+    const wanted = months.map((_, i) => allowed * (i + 1));
+    const rows = lines
+      .map((l) => ({ label: l.label, limit: l.limit, monthly: past.length ? avgOf(l.target) : l.spent / elapsed }))
+      .sort((a, b) => b.monthly - b.limit - (a.monthly - a.limit));
+    return { lines, allowed, pace, past: past.length, soFar, hasCurrent: currentTx.length > 0, thisMonth, months, projected, wanted, rows };
+  }, [categoriesReady, budgets, monthBudgets, operations, currentMonth]);
+
+  if (!forecast) return null;
+  const { allowed, pace } = forecast;
+
+  return (
+    <>
+      <Ribbon>Prédiction et estimation</Ribbon>
+      {!forecast.lines.length || pace === null ? (
+        <p className="mt-3 text-[12px] italic leading-relaxed" style={serif}>
+          {!forecast.lines.length ? (
+            <>
+              Fixe des limites à tes grandes catégories pour que la gazette compare tes dépenses à venir à celles que tu veux.{' '}
+              <Link href="/banque/budget" className="underline underline-offset-2">
+                Ouvrir le budget.
+              </Link>
+            </>
+          ) : (
+            <>Importe un relevé de compte : l&apos;estimation de tes dépenses à venir s&apos;écrira à partir de ton rythme.</>
+          )}
+        </p>
+      ) : (
+        (() => {
+          const { months, projected, wanted, rows, past, hasCurrent, soFar, thisMonth } = forecast as Required<typeof forecast>;
+          const last = months.length - 1;
+          const gap = projected[last] - wanted[last];
+          const top = Math.max(1, ...rows.map((r) => Math.max(r.monthly, r.limit)));
+          const drifting = rows.filter((r) => r.monthly - r.limit >= 1);
+          return (
+            <>
+              <div className="mt-3 flow-root text-[12px] leading-relaxed hyphens-auto">
+                <Figure side="left" caption={`Dépenses cumulées d'ici ${monthLabel(months[last])}.`}>
+                  <TrendChart
+                    months={months}
+                    kind="line"
+                    width={200}
+                    height={150}
+                    format={(n) => formatEuros(Math.round(n))}
+                    series={[
+                      { name: 'Ton rythme', color: NAVY, values: projected },
+                      { name: 'Tes budgets', color: LIGHT_BLUE, values: wanted }
+                    ]}
+                  />
+                </Figure>
+                <p className="text-justify">
+                  <span className="float-left mr-1 mt-1 text-[40px] leading-[0.75]" style={blackletter}>
+                    {past ? 'A' : 'D'}
+                  </span>
+                  {past ? (
+                    <>
+                      u rythme {past > 1 ? `des ${past} derniers mois relevés` : 'du dernier mois relevé'}, tes postes budgétés te coûtent environ{' '}
+                      <b>{formatEuros(Math.round(pace))}</b> par mois, pour <b>{formatEuros(Math.round(allowed))}</b> prévus par tes budgets.
+                    </>
+                  ) : (
+                    <>
+                      &apos;après ce mois-ci, tes postes budgétés te coûteraient environ <b>{formatEuros(Math.round(pace))}</b> par mois, pour{' '}
+                      <b>{formatEuros(Math.round(allowed))}</b> prévus par tes budgets.
+                    </>
+                  )}{' '}
+                  D&apos;ici fin <span className="italic">{monthLabel(months[last])}</span>, cela ferait <b>{formatEuros(Math.round(projected[last]))}</b> dépensés contre{' '}
+                  <b>{formatEuros(Math.round(wanted[last]))}</b> voulus :{' '}
+                  {Math.abs(gap) < 1 ? (
+                    <>pile dans tes budgets.</>
+                  ) : (
+                    <>
+                      <b>{formatEuros(Math.round(Math.abs(gap)))}</b> {gap > 0 ? 'de plus que prévu' : 'de moins que prévu, à mettre de côté'}.
+                    </>
+                  )}
+                  {hasCurrent && (
+                    <>
+                      {' '}
+                      Pour <span className="italic">{monthLabel(months[0])}</span>, {formatEuros(Math.round(soFar))} sont déjà relevés : la fin du mois est estimée à{' '}
+                      <b>{formatEuros(Math.round(thisMonth))}</b>.
+                    </>
+                  )}
+                </p>
+              </div>
+
+              {/* Un mois type au rythme actuel, poste par poste : la barre pleine est l'estimation, le trait la limite */}
+              <figure className="mt-4">
+                <ul className="space-y-2 rounded-sm px-2.5 py-2.5" style={{ backgroundColor: MIST }}>
+                  {rows.map((r) => {
+                    const over = r.monthly - r.limit;
+                    return (
+                      <li key={r.label}>
+                        <p className="flex items-baseline justify-between gap-2 text-[11px]">
+                          <span className="truncate">{r.label}</span>
+                          <span className="shrink-0 tabular-nums">
+                            <b>{formatEuros(Math.round(r.monthly))}</b> / {formatEuros(Math.round(r.limit))}
+                          </span>
+                        </p>
+                        <div className="relative mt-0.5 h-2.5">
+                          <div className="absolute inset-y-0 left-0 rounded-r-sm" style={{ width: `${(r.monthly / top) * 100}%`, backgroundColor: over >= 1 ? NAVY : LIGHT_BLUE }} />
+                          <div className="absolute -inset-y-0.5 w-0.5" style={{ left: `calc(${(r.limit / top) * 100}% - 1px)`, backgroundColor: NAVY }} aria-hidden />
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <figcaption className="mt-1 border-t pt-0.5 text-[10px] italic leading-snug" style={{ borderColor: NAVY }}>
+                  Un mois à ton rythme actuel, poste par poste : la barre est l&apos;estimation, le trait la limite (en bleu nuit, les postes qui la dépassent).
+                </figcaption>
+              </figure>
+              <p className="mt-2 text-[12px] leading-relaxed" style={serif}>
+                {drifting.length ? (
+                  <>
+                    À surveiller :{' '}
+                    {drifting.slice(0, 3).map((r, i) => (
+                      <span key={r.label}>
+                        {i > 0 && (i === Math.min(drifting.length, 3) - 1 ? ' et ' : ', ')}
+                        <span className="italic">{r.label}</span> (+{formatEuros(Math.round(r.monthly - r.limit))} par mois)
+                      </span>
+                    ))}
+                    .
+                  </>
+                ) : (
+                  <>Chaque poste tient dans sa limite à ce rythme : continue comme ça.</>
+                )}
+              </p>
+            </>
+          );
+        })()
+      )}
     </>
   );
 }

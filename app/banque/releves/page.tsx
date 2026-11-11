@@ -2,8 +2,7 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
-import { FileUp, Repeat, X } from 'lucide-react';
-import { useConfirm } from '@/components/ConfirmDialog';
+import { FileUp, Plus, Repeat, X } from 'lucide-react';
 import { formatEuros, monthKey, monthLabel, shiftMonth } from '@/lib/finance';
 import { parseStatement, readStatementFile, type ParseResult } from '@/lib/bankImport';
 import { readPdfStatement } from '@/lib/bankPdf';
@@ -39,7 +38,8 @@ import { checkGroceries, type UnmatchedGrocery } from '@/lib/groceryCheck';
 import { BalanceLinksPanel } from '@/components/finance/BalanceLinks';
 import { CategoriesPanel } from '@/components/finance/CategoryManager';
 import { SelfDebtPanel } from '@/components/finance/SelfDebt';
-import { ErrorNote, FIN, FinanceHeader, FinancePage, FinButton, NumberField, Panel } from '@/components/finance/FinanceParts';
+import { DefaultRepartitionPanel } from '@/components/finance/Repartition';
+import { ErrorNote, FIN, FinanceHeader, FinancePage, FinButton, FinModal, NumberField, Panel, useFinConfirm } from '@/components/finance/FinanceParts';
 
 const noSubscribe = () => () => {};
 const readMonth = () => monthKey(new Date());
@@ -60,7 +60,7 @@ function SubscriptionsPanel({ transactions }: { transactions: Transaction[] }) {
   const subscriptions = useMemo(() => detectSubscriptions(transactions), [transactions]);
   if (subscriptions.length === 0) return null;
   return (
-    <Panel title="Dépenses récurrentes" subtitle="Abonnements et prélèvements qui reviennent chaque mois : vérifie que tu les utilises tous.">
+    <Panel collapsible title="Dépenses récurrentes" subtitle="Abonnements et prélèvements qui reviennent chaque mois : vérifie que tu les utilises tous.">
       <ul className="space-y-1.5 text-[12px]">
         {subscriptions.map((s) => (
           <li key={s.key} className="flex items-center justify-between gap-2">
@@ -90,13 +90,15 @@ function SubscriptionsPanel({ transactions }: { transactions: Transaction[] }) {
   );
 }
 
-// Dépenses annuelles à étaler sur l'année : liste, somme à mettre de côté chaque mois, ajout et suppression
+// Dépenses annuelles à étaler sur l'année : liste, ajout et suppression
 // Chacune devient une sous-catégorie de « Dépenses annuelles » (limite : un douzième de son montant) ; onChanged
 // prévient la page pour mettre à jour la dette à moi-même
 function PlannedPanel({ onError, onChanged }: { onError: (message: string) => void; onChanged: () => void }) {
-  const [confirm, confirmDialog] = useConfirm();
+  const [confirm, confirmDialog] = useFinConfirm();
   const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
   const [newPlanned, setNewPlanned] = useState<{ label: string; amount: number | null; month: number }>({ label: '', amount: null, month: 1 });
+  // Popin d'ajout ouverte ou non
+  const [adding, setAdding] = useState(false);
   const plannedQuery = useCached('finances:depenses-prevues', async () => {
     const { planned, error } = await fetchPlanned();
     return orThrow(planned, error);
@@ -117,17 +119,42 @@ function PlannedPanel({ onError, onChanged }: { onError: (message: string) => vo
     report(err);
     if (p) setPlanned((ps) => [...ps, p].sort((a, b) => a.due_month - b.due_month));
     setNewPlanned({ label: '', amount: null, month: 1 });
+    setAdding(false);
     onChanged();
   }
 
-  // Jours restant avant chaque dépense annuelle, et somme à mettre de côté chaque mois
+  // Mois restant avant chaque dépense annuelle
   const thisMonth = currentMonth ? Number(currentMonth.slice(5)) : 1;
-  const provision = planned.reduce((s, p) => s + p.amount / 12, 0);
 
   return (
     <>
       {confirmDialog}
-      <Panel title="Dépenses annuelles" subtitle="Assurance, impôts, vacances, cadeaux de Noël… En les étalant sur l'année, elles ne déséquilibrent plus le mois où elles tombent.">
+      {/* Repliable : le titre, la description et le bouton d'ajout restent visibles, la liste se déplie */}
+      <Panel
+        collapsible
+        title="Dépenses annuelles"
+        subtitle="Assurance, impôts, vacances, cadeaux de Noël… En les étalant sur l'année, elles ne déséquilibrent plus le mois où elles tombent."
+        preview={
+          <button
+            type="button"
+            // Dans le titre repliable : ouvre la popin sans plier ni déplier la carte
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setAdding(true);
+            }}
+            className="flex w-full items-center justify-center gap-1 rounded-full border px-3 py-2 text-[10px] uppercase tracking-[0.12em]"
+            style={{ borderColor: FIN.gold, color: FIN.gold }}
+          >
+            <Plus size={13} /> Ajouter une dépense annuelle
+          </button>
+        }
+      >
+        {planned.length === 0 && (
+          <p className="text-[11px] italic" style={{ color: FIN.slate }}>
+            Aucune dépense annuelle pour l&apos;instant.
+          </p>
+        )}
         <ul className="space-y-1.5 text-[12px]">
           {planned.map((p) => {
             const monthsLeft = (p.due_month - thisMonth + 12) % 12;
@@ -172,48 +199,47 @@ function PlannedPanel({ onError, onChanged }: { onError: (message: string) => vo
             );
           })}
         </ul>
-        {planned.length > 0 && (
-          <p className="mt-2 rounded-sm px-3 py-2 text-[11px]" style={{ backgroundColor: FIN.mist }}>
-            À mettre de côté chaque mois : <b>{formatEuros(provision)}</b>
-          </p>
-        )}
-        <div className="mt-3 grid grid-cols-[1fr_90px] gap-2">
-          <label className="flex flex-col gap-0.5">
-            <span className="text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
-              Dépense
-            </span>
-            <input
-              value={newPlanned.label}
-              onChange={(e) => setNewPlanned({ ...newPlanned, label: e.target.value })}
-              placeholder="Assurance auto"
-              className="rounded-sm border bg-white px-2 py-1 text-[13px] outline-none"
-              style={{ borderColor: FIN.line }}
-            />
-          </label>
-          <NumberField label="Montant" value={newPlanned.amount} onChange={(n) => setNewPlanned({ ...newPlanned, amount: n })} />
-        </div>
-        <div className="mt-2 flex items-end gap-2">
-          <label className="flex flex-1 flex-col gap-0.5">
-            <span className="text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
-              Mois
-            </span>
-            <select
-              value={newPlanned.month}
-              onChange={(e) => setNewPlanned({ ...newPlanned, month: Number(e.target.value) })}
-              className="fin-select py-1.5 pl-2 text-[12px]"
-            >
-              {MONTHS.map((m, i) => (
-                <option key={m} value={i + 1}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </label>
-          <FinButton onClick={addPlannedExpense} disabled={!newPlanned.label.trim() || !newPlanned.amount}>
-            Ajouter
-          </FinButton>
-        </div>
       </Panel>
+      {adding && (
+        <FinModal title="Nouvelle dépense annuelle" onClose={() => setAdding(false)}>
+          <div className="grid grid-cols-[1fr_90px] gap-2">
+            <label className="flex flex-col gap-0.5">
+              <span className="text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+                Dépense
+              </span>
+              <input
+                value={newPlanned.label}
+                onChange={(e) => setNewPlanned({ ...newPlanned, label: e.target.value })}
+                placeholder="Assurance auto"
+                className="rounded-sm border bg-white px-2 py-1 text-[13px] outline-none"
+                style={{ borderColor: FIN.line }}
+              />
+            </label>
+            <NumberField label="Montant" value={newPlanned.amount} onChange={(n) => setNewPlanned({ ...newPlanned, amount: n })} />
+          </div>
+          <div className="mt-2 flex items-end gap-2">
+            <label className="flex flex-1 flex-col gap-0.5">
+              <span className="text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+                Mois
+              </span>
+              <select
+                value={newPlanned.month}
+                onChange={(e) => setNewPlanned({ ...newPlanned, month: Number(e.target.value) })}
+                className="fin-select py-1.5 pl-2 text-[12px]"
+              >
+                {MONTHS.map((m, i) => (
+                  <option key={m} value={i + 1}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <FinButton onClick={addPlannedExpense} disabled={!newPlanned.label.trim() || !newPlanned.amount}>
+              Ajouter
+            </FinButton>
+          </div>
+        </FinModal>
+      )}
     </>
   );
 }
@@ -229,7 +255,7 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
   const [help, setHelp] = useState(false);
   // Relevé comparé à ce qui est déjà enregistré sur le compte choisi (null pendant la vérification)
   const [check, setCheck] = useState<StatementCheck | null>(null);
-  const [ask, askDialog] = useConfirm();
+  const [ask, askDialog] = useFinConfirm();
 
   // Dès qu'un relevé est lu (ou que le compte change), on regarde s'il a déjà été importé
   useEffect(() => {
@@ -663,6 +689,8 @@ export default function GestionPage() {
           }}
         />
       </Panel>
+      {/* Répartition du revenu par défaut, pour le mois en cours et les suivants */}
+      <DefaultRepartitionPanel ready={categoriesQuery.data !== undefined} onError={setError} />
       <BalanceLinksPanel ready={categoriesQuery.data !== undefined} onError={setError} onChanged={(message) => setNotice({ message })} />
       <SubscriptionsPanel transactions={transactions} />
       <PlannedPanel onError={setError} onChanged={() => categoriesQuery.reload()} />

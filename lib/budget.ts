@@ -1,5 +1,4 @@
 import { supabase } from '@/lib/supabase';
-import { saveBudget as saveCategoryLimit } from '@/lib/transactions';
 
 // Budgets de courses (Profil > Budget) : on peut en avoir plusieurs (ex : « Courses de la semaine », « Gros
 // plein du mois »), chacun avec sa période. Chaque liste de courses et chaque reçu scanné est rattaché à un budget :
@@ -13,26 +12,21 @@ export type PeriodUnit = 'day' | 'week' | 'month';
 //  - charges : tout ce qui est nécessaire (loyer, nourriture, abonnements...) ;
 //  - investissement personnel : ce qu'on s'offre (sorties, cours de tennis...) ;
 //  - épargne.
-// On peut en ajouter, les renommer ou les supprimer (Profil > Répartition).
-// Chaque budget entre dans l'une de ces parties ; son plafond peut être un montant, ou un pourcentage de sa partie.
+// On peut en ajouter, les renommer ou les supprimer (Finances > Gestion pour la répartition par défaut, Finances > Budget
+// pour un mois passé). Chaque partie regroupe des grandes catégories ou catégories de dépenses (targets), sauf l'épargne
+// (savings), qui est ce qui reste des revenus du mois. Voir lib/repartition : la vérification, mois par mois, n'est qu'indicative.
 // Table Supabase "income_plan" (une seule ligne, parties dans la colonne "parts") ; voir supabase/shopping_budgets.sql.
 export type BudgetPart = string; // identifiant d'une partie
-export type IncomePart = { id: BudgetPart; label: string; hint?: string; pct: number };
+// targets : « groupe:<id> » (grande catégorie) ou identifiant de catégorie ; absent : choix par défaut (lib/repartition)
+export type IncomePart = { id: BudgetPart; label: string; hint?: string; pct: number; targets?: string[]; savings?: boolean };
 export type IncomePlan = { income: number; parts: IncomePart[] };
 
 export const DEFAULT_PARTS: IncomePart[] = [
   { id: 'charges', label: 'Charges', hint: 'Loyer, nourriture, abonnements…', pct: 40 },
   { id: 'plaisirs', label: 'Investissement personnel', hint: 'Sorties, cours de tennis…', pct: 40 },
-  { id: 'epargne', label: 'Épargne', hint: 'Ce que tu mets de côté', pct: 20 }
+  { id: 'epargne', label: 'Épargne', hint: 'Ce que tu mets de côté', pct: 20, savings: true }
 ];
 export const DEFAULT_PLAN: IncomePlan = { income: 0, parts: DEFAULT_PARTS };
-
-// Partie d'un budget ; une partie supprimée (ou absente) revient à la première
-export const partOf = (plan: IncomePlan, part: BudgetPart | null | undefined) => plan.parts.find((p) => p.id === part) ?? plan.parts[0];
-export const partLabel = (plan: IncomePlan, part: BudgetPart | null | undefined) => partOf(plan, part)?.label ?? 'Charges';
-
-// Montant mensuel d'une partie : revenu × son pourcentage
-export const partAmount = (plan: IncomePlan, part: BudgetPart | null | undefined) => (plan.income * (Number(partOf(plan, part)?.pct) || 0)) / 100;
 
 // Identifiant d'une nouvelle partie
 export const newPartId = () => `partie-${Date.now().toString(36)}`;
@@ -49,17 +43,15 @@ export async function fetchIncomePlan() {
     Array.isArray(row.parts) && row.parts.length > 0
       ? row.parts.map((p) => ({ ...p, pct: Number(p.pct) || 0 }))
       : DEFAULT_PARTS.map((p) => ({ ...p, pct: legacy[p.id] != null ? Number(legacy[p.id]) : p.pct }));
+  // Ancienne répartition sans partie « épargne » marquée : celle d'identifiant « epargne » l'est
+  if (!parts.some((p) => p.savings)) for (const p of parts) if (p.id === 'epargne') p.savings = true;
   return { plan: { income: Number(row.income), parts }, error };
 }
 
-// Enregistre la répartition ; les budgets d'une partie supprimée passent dans la première partie
+// Enregistre la répartition par défaut (voir saveDefaultRepartition dans lib/repartition, qui garde celle des mois passés)
 export async function saveIncomePlan(plan: IncomePlan) {
   const { error } = await supabase.from('income_plan').upsert({ id: 1, income: plan.income, parts: plan.parts, updated_at: new Date().toISOString() }, { onConflict: 'id' });
-  if (error || plan.parts.length === 0) return error;
-  const ids = plan.parts.map((p) => `"${p.id}"`).join(',');
-  const { error: moveError } = await supabase.from('budget_settings').update({ part: plan.parts[0].id }).not('part', 'in', `(${ids})`);
-  // Les plafonds en pourcentage dépendent du revenu : les limites des Finances suivent
-  return moveError ?? syncShoppingLimits();
+  return error;
 }
 
 // Nombre de périodes d'un budget dans un mois (en moyenne) : 1 pour un budget au mois, ~4,35 pour une semaine...
@@ -69,11 +61,42 @@ export function periodsPerMonth(settings: Pick<BudgetSettings, 'period_value' | 
   return settings.period_unit === 'month' ? 1 / n : settings.period_unit === 'week' ? DAYS_PER_MONTH / (7 * n) : DAYS_PER_MONTH / n;
 }
 
-// Plafond par période d'un budget : son montant, ou son pourcentage du montant mensuel de sa partie, ramené à sa période
-export function ceilingFor(settings: BudgetSettings, plan: IncomePlan) {
-  if (settings.amount_mode !== 'percent') return Number(settings.amount) || 0;
-  const monthly = (partAmount(plan, settings.part ?? 'charges') * (Number(settings.percent) || 0)) / 100;
+// Plafond par période d'un budget : son montant, ou son pourcentage de la limite mensuelle de sa catégorie des Finances
+// (limit, voir categoryLimit), ramené à sa période. Sans limite connue, le montant enregistré.
+export function ceilingFor(settings: BudgetSettings, limit: number | null) {
+  if (settings.amount_mode !== 'percent' || limit === null) return Number(settings.amount) || 0;
+  const monthly = (limit * (Number(settings.percent) || 0)) / 100;
   return Math.round((monthly / periodsPerMonth(settings)) * 100) / 100;
+}
+
+// Plus grand plafond par période d'un budget : la limite mensuelle de sa catégorie, ramenée à sa période
+export const maxCeiling = (settings: Pick<BudgetSettings, 'period_value' | 'period_unit'>, limit: number) =>
+  Math.floor((limit / periodsPerMonth(settings)) * 100) / 100;
+
+// Limite mensuelle d'une catégorie des Finances : la sienne (Finances > Budget), sinon celle de sa grande catégorie
+export type CategoryLimit = { limit: number; from: 'category' | 'group'; label?: string };
+export function categoryLimit(
+  category: string,
+  limits: { category: string; monthly_limit: number }[],
+  groupOf: (category: string) => { label: string; monthly_limit: number | null } | null
+): CategoryLimit | null {
+  const own = limits.find((b) => b.category === category);
+  if (own) return { limit: Number(own.monthly_limit), from: 'category' };
+  const group = groupOf(category);
+  return group?.monthly_limit != null ? { limit: Number(group.monthly_limit), from: 'group', label: group.label } : null;
+}
+
+// Mêmes limites, lues directement dans Supabase (hors des pages Finances, qui gardent les catégories en mémoire)
+async function fetchLimitOf() {
+  const [budgets, settings, groups] = await Promise.all([
+    supabase.from('budgets').select('category, monthly_limit'),
+    supabase.from('category_settings').select('category, group_id'),
+    supabase.from('category_groups').select('id, label, monthly_limit')
+  ]);
+  const limits = (budgets.data as { category: string; monthly_limit: number }[] | null) ?? [];
+  const groupIds = new Map(((settings.data as { category: string; group_id: string | null }[] | null) ?? []).map((r) => [r.category, r.group_id]));
+  const groupRows = (groups.data as { id: string; label: string; monthly_limit: number | null }[] | null) ?? [];
+  return (category: string) => categoryLimit(category, limits, (c) => groupRows.find((g) => g.id === groupIds.get(c)) ?? null)?.limit ?? null;
 }
 
 export type BudgetSettings = {
@@ -88,37 +111,18 @@ export type BudgetSettings = {
   part?: BudgetPart | null; // partie du revenu dans laquelle il entre (charges par défaut)
   amount_mode?: 'euros' | 'percent'; // plafond en euros, ou en pourcentage de sa partie
   percent?: number | null; // pourcentage de la partie (plafond en pourcentage)
-  category?: string | null; // catégorie des Finances de ces achats (« Courses » par défaut) : voir syncShoppingLimits
+  category?: string | null; // catégorie des Finances de ces achats (« Courses » par défaut) : son plafond ne dépasse pas sa limite
 };
 
-// Catégorie des Finances d'un budget de courses : ses achats y sont classés à l'import des relevés, et sa limite
-// mensuelle dans les Finances est la somme des budgets de courses qui y mènent
+// Catégorie des Finances d'un budget de courses : ses achats y sont classés à l'import des relevés, et son plafond
+// (ramené au mois) ne peut pas dépasser la limite mensuelle de cette catégorie
 export const SHOPPING_CATEGORY = 'courses';
 export const shoppingCategoryOf = (settings: Pick<BudgetSettings, 'category'>) => settings.category || SHOPPING_CATEGORY;
 
-// Catégories des Finances reliées à au moins un budget de courses : leur limite mensuelle ne se fixe pas à la main
+// Catégories des Finances reliées à au moins un budget de courses (signalées dans Finances > Budget)
 export async function fetchShoppingCategories() {
   const { data, error } = await supabase.from('budget_settings').select('*');
   return { categories: [...new Set(((data as BudgetSettings[]) ?? []).map(shoppingCategoryOf))], error };
-}
-
-// Limite mensuelle, dans les Finances, de chaque catégorie reliée à des budgets de courses : la somme de leurs plafonds
-// ramenés au mois. Relancée après chaque modification d'un budget de courses ou de la répartition du revenu.
-export async function syncShoppingLimits() {
-  const [{ data, error }, { plan }] = await Promise.all([supabase.from('budget_settings').select('*'), fetchIncomePlan()]);
-  if (error) return error;
-  const byCategory = new Map<string, number>();
-  for (const row of (data as BudgetSettings[]) ?? []) {
-    const settings = { ...row, amount: Number(row.amount), percent: row.percent == null ? null : Number(row.percent) };
-    const monthly = ceilingFor(settings, plan) * periodsPerMonth(settings);
-    const category = shoppingCategoryOf(settings);
-    byCategory.set(category, (byCategory.get(category) ?? 0) + monthly);
-  }
-  for (const [category, limit] of byCategory) {
-    const err = await saveCategoryLimit(category, Math.round(limit * 100) / 100 || null);
-    if (err) return err;
-  }
-  return null;
 }
 
 // Une dépense : le prix d'une course validée ou d'un reçu scanné
@@ -180,13 +184,13 @@ function countedFrom(settings: BudgetSettings, period: { start: Date }) {
 
 // Tous les budgets, avec la période en cours, ses dépenses et ce qui reste, dans l'ordre de création.
 // Les dépenses d'avant les budgets multiples comptent dans le premier budget.
-// Un plafond en pourcentage est converti en montant pour la période, d'après la répartition du revenu.
+// Un plafond en pourcentage est converti en montant pour la période, d'après la limite de sa catégorie des Finances.
 export async function fetchBudgets(): Promise<{ budgets: BudgetState[]; error: { code?: string; message: string } | null }> {
-  const [{ data: rows, error }, { plan }] = await Promise.all([supabase.from('budget_settings').select('*').order('created_at'), fetchIncomePlan()]);
+  const [{ data: rows, error }, limitOf] = await Promise.all([supabase.from('budget_settings').select('*').order('created_at'), fetchLimitOf()]);
   if (error) return { budgets: [], error };
   const settingsList = ((rows as BudgetSettings[]) ?? []).map((r) => {
     const s = { ...r, amount: Number(r.amount), missing_margin: Number(r.missing_margin), percent: r.percent === null || r.percent === undefined ? null : Number(r.percent) };
-    return { ...s, amount: ceilingFor(s, plan) };
+    return { ...s, amount: ceilingFor(s, limitOf(shoppingCategoryOf(s))) };
   });
   if (settingsList.length === 0) return { budgets: [], error: null };
 
@@ -246,19 +250,13 @@ export async function saveBudget(values: BudgetSettings) {
     void _skip;
     error = await write(rest);
   }
-  return error ?? syncShoppingLimits();
+  return error;
 }
 
 // Suppression d'un budget : ses dépenses ne comptent plus nulle part, et ses listes passent sur le premier budget
 export async function deleteBudget(id: string) {
-  const { data } = await supabase.from('budget_settings').select('category').eq('id', id).maybeSingle();
   const { error } = await supabase.from('budget_settings').delete().eq('id', id);
-  if (error) return error;
-  // Plus aucun budget de courses dans sa catégorie : sa limite dans les Finances est retirée
-  const category = (data as { category?: string | null } | null)?.category || SHOPPING_CATEGORY;
-  const { count } = await supabase.from('budget_settings').select('id', { count: 'exact', head: true }).eq('category', category);
-  if (!count) await saveCategoryLimit(category, null);
-  return syncShoppingLimits();
+  return error;
 }
 
 // Enregistre le prix d'une course validée ou d'un reçu : il est déduit de ce qui reste sur la période du budget

@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, CircleCheck, House, ListChecks, Plus, ReceiptText, ShoppingBasket, Trophy, X, type LucideIcon } from 'lucide-react';
+import { ArrowLeft, CircleCheck, House, ListChecks, Plus, ReceiptText, ShoppingBasket, Trophy, Volume2, X, type LucideIcon } from 'lucide-react';
 import Modal, { ModalVariantContext } from '@/components/Modal';
 import ReceiptScan from '@/components/ReceiptScan';
 import { useCatalog } from '@/lib/coursesQueries';
@@ -10,13 +10,15 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import ListsSettings from '@/components/settings/ListsSettings';
 import ChallengesSettings from '@/components/settings/ChallengesSettings';
 import HomeSettings from '@/components/settings/HomeSettings';
+import SoundSettings from '@/components/settings/SoundSettings';
 
 // Les onglets de la page Paramètres.
 // Les ingrédients, catégories et supermarchés se gèrent depuis le menu de la page des courses (components/KitchenManager).
-const TABS: readonly { id: 'lists' | 'defis' | 'accueil'; label: string; title: string; icon: LucideIcon }[] = [
+const TABS: readonly { id: 'lists' | 'defis' | 'accueil' | 'sons'; label: string; title: string; icon: LucideIcon }[] = [
   { id: 'lists', label: 'Listes', title: 'Mes listes de courses', icon: ListChecks },
   { id: 'defis', label: 'Défis', title: 'Mes défis et mes points', icon: Trophy },
-  { id: 'accueil', label: 'Accueil', title: 'La page de titre', icon: House }
+  { id: 'accueil', label: 'Accueil', title: 'La page de titre', icon: House },
+  { id: 'sons', label: 'Sons', title: 'Les bruitages', icon: Volume2 }
 ];
 
 type TabId = (typeof TABS)[number]['id'];
@@ -121,6 +123,9 @@ function SettingsContent() {
       // Réglages de la page de titre (gardés dans le navigateur)
       case 'accueil':
         return <HomeSettings />;
+      // Volume des bruitages (gardé dans le navigateur)
+      case 'sons':
+        return <SoundSettings />;
     }
   }
 

@@ -3,7 +3,6 @@
 import { useMemo, useState, useSyncExternalStore } from 'react';
 import { latestCached, orThrow, setCachedAll, useCached } from '@/lib/cache';
 import { Plus, X } from 'lucide-react';
-import { useConfirm } from '@/components/ConfirmDialog';
 import { formatEuros, monthKey, monthLabel, shiftMonth } from '@/lib/finance';
 import {
   addManualTransaction,
@@ -34,8 +33,9 @@ import { syncFinances } from '@/lib/financeSync';
 import { rememberedFinanceMonth, useViewedMonth } from '@/lib/health';
 import { NewCategoryForm } from '@/components/finance/CategoryManager';
 import { BudgetLimits } from '@/components/finance/BudgetLimits';
+import { MonthRepartitionPanel } from '@/components/finance/Repartition';
 import { KeyFigures } from '@/components/finance/KeyFigures';
-import { useCoverage } from '@/lib/financeQueries';
+import { useCoverage, useDebtCategories } from '@/lib/financeQueries';
 import { flagTransfersToVerify } from '@/lib/coverage';
 import { EstimatedOperations } from '@/components/finance/EstimatedOperations';
 import {
@@ -47,7 +47,8 @@ import {
   NewMonthCard,
   NumberField,
   Panel,
-  SummaryTile
+  SummaryTile,
+  useFinConfirm
 } from '@/components/finance/FinanceParts';
 
 // Fenêtre d'opérations en mémoire : du mois "from" au mois "to" (inclus)
@@ -298,7 +299,7 @@ function AddOperationForm({
 }
 
 export default function BudgetPage() {
-  const [confirm, confirmDialog] = useConfirm();
+  const [confirm, confirmDialog] = useFinConfirm();
   const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
   const [offset, setOffset] = useState(0);
   const askedMonth = useSyncExternalStore(noSubscribe, readAskedMonth, () => null);
@@ -337,12 +338,17 @@ export default function BudgetPage() {
   const setTransactions = (update: (ts: Transaction[]) => Transaction[]) => setCachedAll<TxWindow>(TX_PREFIX, (w) => ({ ...w, list: update(w.list) }));
 
   const monthTx = useMemo(() => transactions.filter((t) => period && monthOf(t.date) === period), [transactions, period]);
-  const history = useMemo(() => transactions.filter((t) => period && monthOf(t.date) < period), [transactions, period]);
-  const summary = summarize(monthTx);
+  // Chiffres d'indication des cartes (entrées, sorties, reste, en bref, limites, répartition) : sans les créances ni les
+  // dettes (prêts aux proches, emprunts et leurs remboursements). La liste des opérations, elle, les garde toutes.
+  const debtCategories = useDebtCategories();
+  const figureTransactions = useMemo(() => transactions.filter((t) => !debtCategories.has(t.category)), [transactions, debtCategories]);
+  const figureTx = useMemo(() => monthTx.filter((t) => !debtCategories.has(t.category)), [monthTx, debtCategories]);
+  const history = useMemo(() => figureTransactions.filter((t) => period && monthOf(t.date) < period), [figureTransactions, period]);
+  const summary = summarize(figureTx);
   // Dépenses inhabituelles : comptées comme occasionnelles dans la barre fixes / variables / occasionnelles
-  const unusual = useMemo(() => detectUnusual(monthTx, history), [monthTx, history]);
+  const unusual = useMemo(() => detectUnusual(figureTx, history), [figureTx, history]);
   const unusualIds = new Set(unusual.map((t) => t.id));
-  const split = splitByKind(monthTx, unusualIds);
+  const split = splitByKind(figureTx, unusualIds);
   // Mes comptes : ceux des opérations chargées, ceux des relevés importés, et toujours compte courant, Livret A et LEP
   const coverageQuery = useCoverage();
   const accounts = useMemo(() => {
@@ -511,10 +517,12 @@ export default function BudgetPage() {
           )}
 
           <OthersPanel items={monthTx.filter((t) => OTHER_IDS.includes(t.category))} onClassify={classifyOther} />
-          <KeyFigures period={period!} currentMonth={currentMonth} transactions={transactions} fixed={split.fixed} />
+          <KeyFigures period={period!} currentMonth={currentMonth} transactions={figureTransactions} fixed={split.fixed} />
 
           {/* Ce que dit le relevé face aux limites : barre de progression, dépassement et de combien */}
-          <BudgetLimits period={period!} currentMonth={currentMonth} monthTx={monthTx} onError={setError} onCategoriesChanged={() => categoriesQuery.reload()} />
+          <BudgetLimits period={period!} currentMonth={currentMonth} monthTx={figureTx} onError={setError} onCategoriesChanged={() => categoriesQuery.reload()} />
+          {/* La répartition du revenu choisie pour ce mois, face aux relevés : à titre indicatif */}
+          <MonthRepartitionPanel period={period!} currentMonth={currentMonth} monthTx={figureTx} onError={setError} />
 
           <Panel collapsible title="Liste des opérations" subtitle="Corrige une catégorie si besoin : l'appli peut retenir ta correction pour les fois suivantes.">
             {adding ? (

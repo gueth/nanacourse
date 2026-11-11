@@ -130,7 +130,7 @@ const annualGroup = (): CategoryGroup => ({
   id: ANNUAL_GROUP_ID,
   label: 'Dépenses annuelles',
   kind: 'expense',
-  monthly_limit: planned.reduce((s, p) => s + p.amount / 12, 0),
+  monthly_limit: planned.filter(isOwnAnnual).reduce((s, p) => s + p.amount / 12, 0),
   virtual: true
 });
 
@@ -661,7 +661,13 @@ export const countedIn = (month: string, target: string, monthBudgets: MonthBudg
 
 // Dépenses annuelles à anticiper (assurance, impôts, vacances...) : mises de côté chaque mois.
 // Chacune devient une sous-catégorie de « Dépenses annuelles » (voir annualCategoryId).
-export type PlannedExpense = { id: string; label: string; amount: number; due_month: number; created_at: string };
+// category : catégorie du Budget à laquelle elle est reliée (Gestion > Créer des connecteurs, supabase/annual_links.sql) :
+// la limite mensuelle de cette catégorie devient la somme de ses dépenses annuelles divisée par douze, et la dépense
+// ne compte plus dans « Dépenses annuelles » (sa part du mois est alors tenue par la limite de la catégorie).
+export type PlannedExpense = { id: string; label: string; amount: number; due_month: number; created_at: string; category?: string | null };
+
+// Dépense annuelle tenue par la grande catégorie « Dépenses annuelles » (non reliée à une catégorie)
+export const isOwnAnnual = (p: PlannedExpense) => !p.category;
 
 export async function fetchPlanned() {
   const { data, error } = await supabase.from('planned_expenses').select('*').order('due_month');
@@ -682,12 +688,44 @@ export async function addPlanned(label: string, amount: number, dueMonth: number
 export async function deletePlanned(id: string) {
   const moved = await supabase.from('bank_transactions').update({ category: 'autre_depense' }).eq('category', annualCategoryId(id));
   if (moved.error) return moved.error;
+  const linked = planned.find((p) => p.id === id)?.category ?? null;
   const { error } = await supabase.from('planned_expenses').delete().eq('id', id);
   if (!error) {
     planned = planned.filter((p) => p.id !== id);
     rebuildCategories();
+    // Reliée à une catégorie : sa limite suit
+    if (linked) return syncAnnualLimit(linked);
   }
   return error;
+}
+
+// Relie une dépense annuelle à une catégorie du Budget (null : la délie) ; la limite des catégories concernées est recalculée
+export async function linkPlannedToCategory(id: string, category: string | null) {
+  const before = planned.find((p) => p.id === id)?.category ?? null;
+  const { error } = await supabase.from('planned_expenses').update({ category }).eq('id', id);
+  if (error) return error;
+  planned = planned.map((p) => (p.id === id ? { ...p, category } : p));
+  rebuildCategories();
+  for (const c of new Set([before, category].filter((c): c is string => !!c))) {
+    const err = await syncAnnualLimit(c);
+    if (err) return err;
+  }
+  return null;
+}
+
+// Limite mensuelle d'une catégorie reliée à des dépenses annuelles : leur somme divisée par douze (aucune : plus de limite)
+export const annualLimitOf = (category: string) => {
+  const sum = planned.filter((p) => p.category === category).reduce((s, p) => s + p.amount, 0);
+  return sum ? Math.round((sum / 12) * 100) / 100 : null;
+};
+async function syncAnnualLimit(category: string) {
+  return saveBudget(category, annualLimitOf(category));
+}
+
+// Mois de la première opération importée (AAAA-MM), ou null s'il n'y en a aucune
+export async function fetchFirstTransactionMonth() {
+  const { data, error } = await supabase.from('bank_transactions').select('date').order('date').limit(1);
+  return { month: (data as { date: string }[] | null)?.[0]?.date.slice(0, 7) ?? null, error };
 }
 
 // --- Analyses ---
@@ -807,6 +845,23 @@ export function spendingChanges(month: string, transactions: Transaction[]) {
   return changes.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
 }
 
+// Catégories reliées à un connecteur (Gestion > Créer des connecteurs, table balance_links) : leurs opérations vont
+// au bilan, elles ne comptent donc plus dans les produits et les charges, comme les virements entre mes comptes.
+// Table absente ou illisible : aucune.
+export async function connectedCategories() {
+  const ids = new Set<string>();
+  const { data, error } = await supabase.from('balance_links').select('targets, decreases');
+  if (error) return ids;
+  for (const row of (data as { targets: string[] | null; decreases?: string[] | null }[]) ?? []) {
+    for (const raw of [...(row.targets ?? []), ...(row.decreases ?? [])]) {
+      const target = raw.startsWith('=') ? raw.slice(1) : raw; // « = » : liaison par égalité
+      if (target.startsWith('groupe:')) CATEGORIES.filter((c) => c.group === target.slice(7)).forEach((c) => ids.add(c.id));
+      else ids.add(target);
+    }
+  }
+  return ids;
+}
+
 // Reporte les totaux du mois dans le compte de résultat (une ligne par catégorie, créée si besoin), à partir de toutes
 // les opérations connues du mois. Les lignes écrites sont marquées « calculées par l'import ».
 // - mode 'replace' (bouton « Reporter dans le compte de résultat ») : toutes les lignes des catégories sont remplacées
@@ -815,10 +870,12 @@ export function spendingChanges(month: string, transactions: Transaction[]) {
 // Renvoie le nombre de lignes écrites et de lignes saisies à la main laissées telles quelles.
 export async function reportToStatement(period: string, monthTx: Transaction[], mode: 'replace' | 'import' = 'replace') {
   const totals = new Map<string, { section: string; line: string; amount: number }>();
+  // Catégories reliées à un connecteur : au bilan seulement, comme les virements
+  const connected = await connectedCategories();
   // Seuls les comptes courants font le résultat du mois : les opérations des livrets (intérêts compris) n'y entrent pas
   for (const t of monthTx.filter((x) => !isSavingsAccount(x.account))) {
     const cat = categoryById(t.category);
-    if (!cat.section || !cat.line || cat.kind === 'transfer') continue;
+    if (!cat.section || !cat.line || cat.kind === 'transfer' || connected.has(cat.id)) continue;
     const key = `${cat.section}|${cat.line.toLowerCase()}`;
     const entry = totals.get(key) ?? { section: cat.section, line: cat.line, amount: 0 };
     // Produits : on additionne les entrées ; charges : les sorties (en positif), remboursements déduits

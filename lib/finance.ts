@@ -43,10 +43,10 @@ export const SECTIONS: Section[] = [
   { id: 'liquidites', statement: 'bilan', side: 'actif', title: 'Liquidités', template: ['Compte courant', 'Livret A', 'LDDS', 'Espèces'] },
   { id: 'placements', statement: 'bilan', side: 'actif', title: 'Placements', template: ['Assurance-vie', 'PEA', 'Épargne retraite (PER)', 'Compte-titres'] },
   { id: 'biens', statement: 'bilan', side: 'actif', title: 'Biens', template: ['Résidence principale', 'Véhicule', 'Autres biens de valeur'] },
-  { id: 'creances', statement: 'bilan', side: 'actif', title: 'Sommes à recevoir', template: ['Créances envers des proches', 'Remboursements attendus'] },
+  { id: 'creances', statement: 'bilan', side: 'actif', title: 'Sommes à recevoir', template: ['Créance', 'Remboursements attendus'] },
   // Bilan — passif (dettes ; le patrimoine net est calculé)
   { id: 'emprunts', statement: 'bilan', side: 'passif', title: 'Emprunts', template: ['Crédit immobilier', 'Crédit auto', 'Crédit à la consommation'] },
-  { id: 'dettes', statement: 'bilan', side: 'passif', title: 'Autres dettes', template: ['Découvert', 'Impôts à payer', 'Dettes envers des proches'] },
+  { id: 'dettes', statement: 'bilan', side: 'passif', title: 'Autres dettes', template: ['Découvert', 'Impôts à payer', 'Dette'] },
   // Compte de résultat — produits
   { id: 'revenus', statement: 'resultat', side: 'produits', title: "Revenus d'activité", template: ['Salaire net', 'Primes', 'Revenus complémentaires'] },
   { id: 'autres_revenus', statement: 'resultat', side: 'produits', title: 'Autres revenus', template: ['Aides et allocations', 'Revenus locatifs', 'Intérêts et dividendes'] },

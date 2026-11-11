@@ -3,16 +3,22 @@
 import { useMemo, useState } from 'react';
 import { orThrow, useCached } from '@/lib/cache';
 import { byPeriod, formatEuros, liquidAssets, monthLabel } from '@/lib/finance';
-import { useCategoryLimits, useFinanceLines, useMonthBudgets } from '@/lib/financeQueries';
+import { useCategoryLimits, useDebtCategories, useFinanceLines, useMonthBudgets } from '@/lib/financeQueries';
 import { debtHistory, debtStart, type DebtMonth } from '@/lib/selfDebt';
-import { annualPlans, fetchTransactions, lastDayOf } from '@/lib/transactions';
+import { annualPlans, fetchFirstTransactionMonth, fetchTransactions, lastDayOf } from '@/lib/transactions';
 import { FIN, Panel } from '@/components/finance/FinanceParts';
 
-// Page Gestion : dette à moi-même cumulée depuis la première dépense annuelle, ce qui la compose mois par mois,
-// et l'argent en compte une fois cette dette retirée. "ready" : catégories chargées (dont les dépenses annuelles).
+// Page Gestion : dette à moi-même cumulée depuis le premier relevé importé (ou la première dépense annuelle si elle est
+// plus ancienne) : les dettes collectées chaque mois (dépassements, parts annuelles non vues), moins les excédents
+// (dépenses sous les limites, remboursements). Puis ce qui la compose mois par mois, et l'argent en compte une fois
+// cette dette retirée. "ready" : catégories chargées (dont les dépenses annuelles).
 export function SelfDebtPanel({ currentMonth, ready }: { currentMonth: string | null; ready: boolean }) {
   const plans = ready ? annualPlans() : [];
-  const start = debtStart(plans);
+  const firstQuery = useCached(ready ? 'finances:premier-releve' : null, async () => {
+    const { month, error } = await fetchFirstTransactionMonth();
+    return orThrow(month, error);
+  });
+  const start = debtStart(plans, firstQuery.data ?? null);
   const [openMonth, setOpenMonth] = useState<string | null>(null);
   // Opérations depuis le début du suivi (toutes, pour cumuler la dette)
   const txQuery = useCached(ready && start && currentMonth ? `finances:dette-moi:${start}:${currentMonth}` : null, async () => {
@@ -21,6 +27,8 @@ export function SelfDebtPanel({ currentMonth, ready }: { currentMonth: string | 
   });
   const budgets = useCategoryLimits().data;
   const monthBudgets = useMonthBudgets().data;
+  // Sans les créances ni les dettes (prêts aux proches, emprunts et remboursements) : ni dépassement ni économie
+  const debtCategories = useDebtCategories();
   // Argent en compte : liquidités du dernier bilan rempli
   const lines = useFinanceLines(currentMonth, 13).data;
   const cash = useMemo(() => {
@@ -29,47 +37,71 @@ export function SelfDebtPanel({ currentMonth, ready }: { currentMonth: string | 
     return last ? { month: last[0], amount: liquidAssets(last[1]) } : null;
   }, [lines]);
   const history =
-    currentMonth && txQuery.data && budgets && monthBudgets ? debtHistory(currentMonth, txQuery.data, budgets, plans, monthBudgets) : null;
+    currentMonth && txQuery.data && budgets && monthBudgets
+      ? debtHistory(start, currentMonth, txQuery.data.filter((t) => !debtCategories.has(t.category)), budgets, plans, monthBudgets)
+      : null;
 
-  if (!ready) return null;
+  if (!ready || firstQuery.data === undefined) return null;
   if (!start)
     return (
-      <Panel title="Dette à moi-même" subtitle="Elle se suit à partir de ta première dépense annuelle : ajoute-en une plus bas.">
+      <Panel title="Dette à moi-même" subtitle="Elle se suit dès ton premier relevé importé : importe-en un plus bas.">
         {null}
       </Panel>
     );
 
-  // Dette totale, signée : positive, tu te dois cet argent ; négative, tu es en avance sur ton budget
-  const total = history?.total ?? 0;
+  // Dettes collectées chaque mois (ajouts) et excédents (retraits), mois en cours compris, sans les lignes « non comptées »
+  const allMonths = [...(history?.months ?? []), ...(history?.current ? [history.current] : [])];
+  const counted = allMonths.flatMap((m) => m.items.filter((i) => !i.ignored));
+  const collected = Math.round(counted.filter((i) => i.amount > 0).reduce((s, i) => s + i.amount, 0) * 100) / 100;
+  const surplus = Math.round(counted.filter((i) => i.amount < 0).reduce((s, i) => s - i.amount, 0) * 100) / 100;
+
+  // Dette totale, signée : positive, tu te dois cet argent ; négative, tu es en avance sur ton budget.
+  // Elle comprend le mois en cours, pour que chaque choix « Oui / Non » du Budget s'y voie tout de suite
+  const total = Math.round(((history?.total ?? 0) + (history?.current?.delta ?? 0)) * 100) / 100;
   const signed = (n: number) => `${n > 0 ? '+ ' : n < 0 ? '− ' : ''}${formatEuros(Math.abs(n))}`;
   // Une avance ne s'ajoute pas à l'argent en compte : elle y est déjà
   const mine = cash ? cash.amount - Math.max(0, total) : null;
+  // Les trois grands chiffres restent visibles même panneau replié
+  const figures = !history ? (
+    <span className="block text-[11px] italic" style={{ color: FIN.slate }}>
+      Calcul…
+    </span>
+  ) : (
+    <span className="grid grid-cols-3 gap-2 text-center">
+      {[
+        { label: cash ? `En compte (${monthLabel(cash.month)})` : 'En compte', value: cash ? formatEuros(cash.amount) : '—', color: FIN.navy },
+        { label: total < 0 ? 'Dette à moi-même · en avance' : 'Dette à moi-même', value: signed(total), color: total > 0 ? FIN.rose : FIN.sage },
+        { label: 'Vraiment à moi', value: mine !== null ? formatEuros(mine) : '—', color: mine !== null && mine < 0 ? FIN.rose : FIN.sage }
+      ].map((t) => (
+        <span key={t.label} className="block rounded-sm border px-1 py-2" style={{ borderColor: FIN.line }}>
+          <span className="block text-[8px] uppercase leading-tight tracking-[0.15em]" style={{ color: FIN.slate }}>
+            {t.label}
+          </span>
+          <span className="mt-1 block text-[13px] font-bold" style={{ color: t.color }}>
+            {t.value}
+          </span>
+        </span>
+      ))}
+    </span>
+  );
   return (
-    <Panel
-      title="Dette à moi-même"
-      subtitle={`Ce que tu te dois depuis ${monthLabel(start)} : parts des dépenses annuelles qu'on ne retrouve pas dans tes relevés et dépassements de budget, moins ce que tu as dépensé en dessous des limites. Négative, tu es en avance.`}
-    >
-      {!history ? (
-        <p className="text-[11px] italic" style={{ color: FIN.slate }}>
-          Calcul…
-        </p>
-      ) : (
+    <Panel collapsible title="Dette à moi-même" preview={figures}>
+      {history && (
         <>
-          <div className="grid grid-cols-3 gap-2 text-center">
-            {[
-              { label: cash ? `En compte (${monthLabel(cash.month)})` : 'En compte', value: cash ? formatEuros(cash.amount) : '—', color: FIN.navy },
-              { label: total < 0 ? 'Dette à moi-même · en avance' : 'Dette à moi-même', value: signed(total), color: total > 0 ? FIN.rose : FIN.sage },
-              { label: 'Vraiment à moi', value: mine !== null ? formatEuros(mine) : '—', color: mine !== null && mine < 0 ? FIN.rose : FIN.sage }
-            ].map((t) => (
-              <div key={t.label} className="rounded-sm border px-1 py-2" style={{ borderColor: FIN.line }}>
-                <p className="text-[8px] uppercase leading-tight tracking-[0.15em]" style={{ color: FIN.slate }}>
-                  {t.label}
-                </p>
-                <p className="mt-1 text-[13px] font-bold" style={{ color: t.color }}>
-                  {t.value}
-                </p>
-              </div>
-            ))}
+          {/* Dette totale : dettes collectées mois après mois, moins les excédents */}
+          <div className="mt-1 space-y-1 rounded-sm px-3 py-2 text-[12px]" style={{ backgroundColor: FIN.mist }}>
+            <p className="flex items-baseline justify-between gap-2">
+              <span>Dettes collectées chaque mois</span>
+              <b style={{ color: FIN.rose }}>+ {formatEuros(collected)}</b>
+            </p>
+            <p className="flex items-baseline justify-between gap-2">
+              <span>Excédents</span>
+              <b style={{ color: FIN.sage }}>− {formatEuros(surplus)}</b>
+            </p>
+            <p className="flex items-baseline justify-between gap-2 border-t pt-1 font-bold" style={{ borderColor: FIN.line }}>
+              <span>Dette à moi-même totale</span>
+              <span style={{ color: total > 0 ? FIN.rose : FIN.sage }}>{signed(total)}</span>
+            </p>
           </div>
           {!cash && (
             <p className="mt-1 text-[10px]" style={{ color: FIN.slate }}>
@@ -82,7 +114,7 @@ export function SelfDebtPanel({ currentMonth, ready }: { currentMonth: string | 
             {history.current && (
               <DebtMonthRow
                 debt={history.current}
-                note="en cours, pas encore compté"
+                note="en cours, compté au fil du mois"
                 open={openMonth === history.current.month}
                 onToggle={() => setOpenMonth(openMonth === history.current!.month ? null : history.current!.month)}
               />
