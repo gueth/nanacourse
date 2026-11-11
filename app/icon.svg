@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Icône de l'application : napperon de dentelle blanc sur le bleu du profil, monogramme « N&Co » bleu nuit, comme le tampon de la carte de connexion -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#97a6d4"/>
+      <stop offset="1" stop-color="#6f80b8"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- Napperon : bord festonné -->
+  <g fill="#ffffff">
+    <circle cx="256" cy="256" r="184"/>
+    <circle cx="256" cy="66" r="22"/><circle cx="303.6" cy="72.3" r="22"/><circle cx="348" cy="90.6" r="22"/><circle cx="386.4" cy="120" r="22"/>
+    <circle cx="415.8" cy="158.4" r="22"/><circle cx="434.1" cy="202.8" r="22"/><circle cx="440.4" cy="250.4" r="22"/><circle cx="434.1" cy="298" r="22"/>
+    <circle cx="415.8" cy="342.4" r="22"/><circle cx="386.4" cy="380.8" r="22"/><circle cx="348" cy="410.2" r="22"/><circle cx="303.6" cy="428.5" r="22"/>
+    <circle cx="256" cy="434.8" r="22"/><circle cx="208.4" cy="428.5" r="22"/><circle cx="164" cy="410.2" r="22"/><circle cx="125.6" cy="380.8" r="22"/>
+    <circle cx="96.2" cy="342.4" r="22"/><circle cx="77.9" cy="298" r="22"/><circle cx="71.6" cy="250.4" r="22"/><circle cx="77.9" cy="202.8" r="22"/>
+    <circle cx="96.2" cy="158.4" r="22"/><circle cx="125.6" cy="120" r="22"/><circle cx="164" cy="90.6" r="22"/><circle cx="208.4" cy="72.3" r="22"/>
+  </g>
+  <!-- Jours de la dentelle -->
+  <g fill="none" stroke="#9fb2d8">
+    <circle cx="256" cy="256" r="166" stroke-width="3" stroke-dasharray="4 7"/>
+    <circle cx="256" cy="256" r="134" stroke-width="2.5"/>
+  </g>
+  <!-- Octogone du tampon -->
+  <polygon points="374.9,305.2 305.2,374.9 206.8,374.9 137.1,305.2 137.1,206.8 206.8,137.1 305.2,137.1 374.9,206.8" fill="none" stroke="#1d2b4a" stroke-width="5"/>
+  <!-- Monogramme -->
+  <text x="242" y="262" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-style="italic" font-size="104" fill="#1d2b4a">N&amp;</text>
+  <text x="276" y="338" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-style="italic" font-size="84" fill="#1d2b4a">Co</text>
+</svg>

@@ -20,7 +20,15 @@ const dmSans = DM_Sans({ subsets: ['latin'], variable: '--font-cuisine', style: 
 
 export const metadata = {
   title: 'Courses',
-  description: 'Gère tes ingrédients, leurs prix par magasin, et ta liste de courses.'
+  description: 'Gère tes ingrédients, leurs prix par magasin, et ta liste de courses.',
+  // iPhone : ajoutée à l'écran d'accueil depuis Safari, l'application s'ouvre sans la barre d'adresse
+  // (icônes : app/icon.svg pour l'onglet, app/apple-icon.png pour l'écran d'accueil de l'iPhone)
+  appleWebApp: { capable: true, title: 'nana', statusBarStyle: 'default' }
+};
+
+// Couleur de la barre du téléphone (heure, batterie) quand l'application est installée : le bleu de fond
+export const viewport = {
+  themeColor: '#8494c6'
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
