@@ -3,6 +3,7 @@ import './globals.css';
 import { PageShell } from '@/components/PageShell';
 import { MobileSelectPicker } from '@/components/MobileSelectPicker';
 import { SystemBarsColor } from '@/components/SystemBarsColor';
+import { applySystemBarsColor } from '@/lib/barsColor';
 import { SoundEffects } from '@/components/SoundEffects';
 
 const caveat = Caveat({ subsets: ['latin'], variable: '--font-caveat', weight: ['600', '700'] });
@@ -42,9 +43,13 @@ export const viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="fr" className={`${caveat.variable} ${courierPrime.variable} ${greatVibes.variable} ${blackletter.variable} ${gothic.variable} ${playfair.variable} ${archivoNarrow.variable} ${reenie.variable} ${dmSans.variable}`}>
-      <body>
+    <html lang="fr" suppressHydrationWarning className={`${caveat.variable} ${courierPrime.variable} ${greatVibes.variable} ${blackletter.variable} ${gothic.variable} ${playfair.variable} ${archivoNarrow.variable} ${reenie.variable} ${dmSans.variable}`}>
+      {/* Le fond et la barre du haut sont colorés par un script avant l'arrivée de React : on ne les compare pas */}
+      <body suppressHydrationWarning>
         <PageShell>{children}</PageShell>
+        {/* Couleur des barres du téléphone et du fond appliquée dès que la page est lue, avant le premier affichage :
+            pas d'éclair bleu avant la bonne teinte (ensuite, components/SystemBarsColor prend le relais) */}
+        <script dangerouslySetInnerHTML={{ __html: `try{(${applySystemBarsColor.toString()})()}catch(e){}` }} />
         {/* Sur téléphone : listes déroulantes ouvertes dans un menu au style de l'application */}
         <MobileSelectPicker />
         {/* Barres du téléphone (haut et bas) à la couleur de la page affichée */}

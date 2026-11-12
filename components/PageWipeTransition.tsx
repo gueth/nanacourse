@@ -50,7 +50,7 @@ export function PageWipeTransition({ active, onCovered, onFinished }: Props) {
   if (!active) return null;
 
   return (
-    <div className="fixed inset-0 z-50 overflow-hidden pointer-events-none">
+    <div data-bars-ignore className="fixed inset-0 z-50 overflow-hidden pointer-events-none">
       <div
         className="absolute"
         style={{ top: '-5%', left: `${CONTAINER_LEFT * 100}%`, width: `${CONTAINER_WIDTH * 100}%`, height: '130%', transform: 'rotate(30deg)' }}

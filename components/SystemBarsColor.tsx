@@ -1,81 +1,61 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useLayoutEffect } from 'react';
+import { usePathname } from 'next/navigation';
+import { applySystemBarsColor } from '@/lib/barsColor';
 
 // Barres du téléphone (heure/batterie en haut, barre de navigation en bas) teintées de la couleur de la page affichée,
-// pour qu'elles se fondent dans le décor. La couleur est lue directement à l'écran (bord gauche, tout en haut et tout en bas),
-// donc chaque page est suivie sans rien déclarer, y compris ses changements de teinte (phase du cycle, ton des finances…).
-
-const COLOR_RE = /(rgba?\([^)]*\)|hsla?\([^)]*\)|oklch\([^)]*\)|oklab\([^)]*\)|lab\([^)]*\)|color\([^)]*\)|#[0-9a-f]{3,8}\b)/gi;
-
-// Opacité d'une couleur calculée par le navigateur (« rgba(0, 0, 0, 0) », « oklch(… / 0.5) »…)
-function alpha(color: string) {
-  if (!color || color === 'transparent') return 0;
-  const slash = color.match(/\/\s*([\d.]+)(%?)\s*\)$/);
-  if (slash) return slash[2] ? Number(slash[1]) / 100 : Number(slash[1]);
-  if (color.startsWith('rgba(') || color.startsWith('hsla(')) {
-    const parts = color.slice(5, -1).split(',');
-    if (parts.length === 4) return Number(parts[3]);
-  }
-  return 1;
-}
-
-// Première couleur pleine sous le point (x, y) : fond uni, ou couleur de début/fin d'un dégradé vertical
-function colorAt(x: number, y: number, edge: 'top' | 'bottom') {
-  for (const el of document.elementsFromPoint(x, y)) {
-    if (el.closest('[data-bars-ignore]')) continue;
-    const style = getComputedStyle(el);
-    if (style.visibility === 'hidden' || Number(style.opacity) < 0.9) continue;
-    const image = style.backgroundImage;
-    if (image && image !== 'none' && image.includes('gradient')) {
-      const stops = image.match(COLOR_RE)?.filter((c) => alpha(c) >= 0.9);
-      if (stops?.length) return edge === 'top' ? stops[0] : stops[stops.length - 1];
-    }
-    if (alpha(style.backgroundColor) >= 0.9) return style.backgroundColor;
-  }
-  return null;
-}
-
-function setThemeColor(color: string) {
-  let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
-  if (!meta) {
-    meta = document.createElement('meta');
-    meta.name = 'theme-color';
-    document.head.appendChild(meta);
-  }
-  if (meta.content !== color) meta.content = color;
-}
+// pour qu'elles se fondent dans le décor. La couleur est lue directement à l'écran (lib/barsColor), donc chaque page
+// est suivie sans rien déclarer, y compris ses changements de teinte (phase du cycle, ton des finances…).
+// Au chargement, un script en fin de page l'a déjà appliquée avant le premier affichage (app/layout.tsx) ; ensuite,
+// elle est relue dès que l'écran change (changement de page, contenu chargé, transition), à l'image suivante.
 
 export function SystemBarsColor() {
-  useEffect(() => {
-    const root = document.documentElement;
-    const update = () => {
-      // Pendant qu'on lit l'écran, le fond de la page elle-même ne doit pas répondre à sa place
-      const prevHtml = root.style.backgroundColor;
-      const prevBody = document.body.style.backgroundColor;
-      root.style.backgroundColor = 'transparent';
-      document.body.style.backgroundColor = 'transparent';
-      const top = colorAt(2, 2, 'top');
-      const bottom = colorAt(2, window.innerHeight - 2, 'bottom');
-      root.style.backgroundColor = prevHtml;
-      document.body.style.backgroundColor = prevBody;
+  const pathname = usePathname();
 
-      const fallback = getComputedStyle(root).getPropertyValue('--color-backdrop').trim() || '#8494c6';
-      // Barre du haut (et interface du navigateur)
-      setThemeColor(top ?? bottom ?? fallback);
-      // Fond derrière la page : visible sous la barre du bas, et quand on tire la page au-delà de ses bords
-      const under = bottom ?? top ?? fallback;
-      if (root.style.backgroundColor !== under) root.style.backgroundColor = under;
-      if (document.body.style.backgroundColor !== under) document.body.style.backgroundColor = under;
-    };
-
-    update();
-    // Relecture régulière et légère : changement de page, transitions, teintes qui évoluent
-    const timer = window.setInterval(update, 700);
-    window.addEventListener('resize', update);
+  // Changement de page : avant que la nouvelle page ne s'affiche, puis aux deux images suivantes (fin du rendu)
+  useLayoutEffect(() => {
+    applySystemBarsColor();
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      applySystemBarsColor();
+      second = requestAnimationFrame(applySystemBarsColor);
+    });
     return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+    };
+  }, [pathname]);
+
+  useEffect(() => {
+    // Une seule relecture par image, quel que soit le nombre de changements
+    let frame = 0;
+    const schedule = () => {
+      if (!frame)
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          applySystemBarsColor();
+        });
+    };
+    // L'écran change (éléments ajoutés ou retirés, classes et styles modifiés)…
+    // (sauf le fond de html et body, que la relecture modifie elle-même : sinon elle se relancerait sans fin)
+    const observer = new MutationObserver((mutations) => {
+      if (mutations.some((m) => m.type !== 'attributes' || (m.target !== document.body && m.target !== document.documentElement))) schedule();
+    });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
+    // …ou une animation se termine (fondu, glissement de page)
+    document.addEventListener('transitionend', schedule, true);
+    document.addEventListener('animationend', schedule, true);
+    window.addEventListener('resize', schedule);
+    // Filet de sécurité, peu fréquent : teintes qui évoluent sans changement de classe ni de style
+    const timer = window.setInterval(schedule, 2000);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+      document.removeEventListener('transitionend', schedule, true);
+      document.removeEventListener('animationend', schedule, true);
+      window.removeEventListener('resize', schedule);
       window.clearInterval(timer);
-      window.removeEventListener('resize', update);
     };
   }, []);
 
