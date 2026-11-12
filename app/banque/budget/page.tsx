@@ -20,6 +20,7 @@ import {
   monthOf,
   reclassifyOthers,
   saveRule,
+  saveTransactionNote,
   updateCategory,
   type Category,
   type CategoryGroup,
@@ -214,10 +215,13 @@ function ClassifyModal({
 }: {
   transaction: Transaction;
   busy: boolean;
-  onClassify: (category: string, scope: ClassifyScope) => void;
+  onClassify: (category: string, scope: ClassifyScope, note: string) => void;
   onClose: () => void;
 }) {
   const choices = groupedChoices(choicesFor(t.amount, t.category));
+  // Note de la transaction : propre à elle seule, quel que soit le bouton choisi
+  const [note, setNote] = useState(t.note ?? '');
+  const noteChanged = note.trim() !== (t.note ?? '').trim();
   const [group, setGroup] = useState<string>(categoryById(t.category).group ?? NO_GROUP);
   const [category, setCategory] = useState(t.category);
   const inGroup = choices.find((g) => (g.group?.id ?? NO_GROUP) === group)?.list ?? [];
@@ -273,15 +277,30 @@ function ClassifyModal({
         ))}
       </select>
 
+      {/* Note : affichée sous le libellé, dans la liste */}
+      <label className="mt-4 block">
+        <span className="mb-1 block text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+          Note
+        </span>
+        <textarea
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          rows={2}
+          maxLength={300}
+          placeholder="Ajouter une note (facultatif)"
+          className="w-full resize-none rounded-[2px] border border-[#c9d2df] bg-[#f8f7f4] px-2 py-1.5 text-[12px] text-[#2b3a55] outline-none focus:border-[var(--fin-accent,#5e5b57)]"
+        />
+      </label>
+
       <div className="mt-5 flex flex-col gap-2">
         {/* Cette transaction seule ; celles du même commerçant ce mois-ci ; ou sur tous les mois (et les prochains relevés) */}
-        <FinButton onClick={() => onClassify(category, 'one')} disabled={busy || !category || category === t.category}>
+        <FinButton onClick={() => onClassify(category, 'one', note)} disabled={busy || !category || (category === t.category && !noteChanged)}>
           Modifier cette transaction uniquement
         </FinButton>
-        <FinButton onClick={() => onClassify(category, 'month')} disabled={busy || !category}>
+        <FinButton onClick={() => onClassify(category, 'month', note)} disabled={busy || !category}>
           Modifier toutes les transactions de ce mois
         </FinButton>
-        <FinButton onClick={() => onClassify(category, 'all')} disabled={busy || !category}>
+        <FinButton onClick={() => onClassify(category, 'all', note)} disabled={busy || !category}>
           Modifier les transactions de tous les mois
         </FinButton>
         <FinButton outline onClick={onClose} disabled={busy}>
@@ -665,8 +684,17 @@ export default function BudgetPage() {
   // du même commerçant : celles du même mois seulement (scope 'month', sans règle : les autres mois et les prochains
   // relevés ne changent pas), ou celles de tous les mois, passés et futurs ('all' : la règle vaut aussi pour les
   // prochains relevés)
-  async function classifyTransaction(t: Transaction, category: string, scope: ClassifyScope) {
+  async function classifyTransaction(t: Transaction, category: string, scope: ClassifyScope, note: string) {
     setAlwaysBusy(true);
+    // Note : pour cette transaction seulement
+    if (note.trim() !== (t.note ?? '').trim()) {
+      const err = await saveTransactionNote(t.id, note);
+      if (err) {
+        setAlwaysBusy(false);
+        return report(err);
+      }
+      setTransactions((ts) => ts.map((x) => (x.id === t.id ? { ...x, note: note.trim() || null } : x)));
+    }
     if (category !== t.category) await recategorize(t, category);
     if (scope === 'one') setAlwaysBusy(false);
     else await alwaysLikeThis({ ...t, category }, scope);
@@ -822,7 +850,7 @@ export default function BudgetPage() {
 
           {/* Popin de classement, ouverte depuis l'icône d'une transaction */}
           {classifying && (
-            <ClassifyModal transaction={classifying} busy={alwaysBusy} onClassify={(c, scope) => classifyTransaction(classifying, c, scope)} onClose={() => setClassifying(null)} />
+            <ClassifyModal transaction={classifying} busy={alwaysBusy} onClassify={(c, scope, note) => classifyTransaction(classifying, c, scope, note)} onClose={() => setClassifying(null)} />
           )}
           {/* Popin « Ajouter une transaction » : hors de la carte, pour s'ouvrir même quand celle-ci est pliée */}
           {adding && (
@@ -924,15 +952,16 @@ export default function BudgetPage() {
               </label>
             </div>
             {/* Montant : égal, supérieur ou égal, ou inférieur ou égal à la somme saisie, appliqué avec « Valider » ;
-                « Reset » remet tous les filtres à zéro. Tout sur une ligne : champs courts, boutons à droite */}
+                « Reset » remet tous les filtres à zéro. Les deux champs se partagent la ligne, les boutons sont centrés en dessous */}
             <form
-              className="mb-2 flex items-end gap-1.5"
+              className="mb-2"
               onSubmit={(e) => {
                 e.preventDefault();
                 applyAmount();
               }}
             >
-              <label className="min-w-0 flex-[3]">
+              <div className="flex items-end gap-1.5">
+              <label className="min-w-0 flex-1">
                 <span className="mb-0.5 block text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
                   Montant
                 </span>
@@ -947,7 +976,7 @@ export default function BudgetPage() {
                   <option value="lte">Inférieur ou égal</option>
                 </select>
               </label>
-              <label className="min-w-0 flex-[2]">
+              <label className="min-w-0 flex-1">
                 <span className="mb-0.5 block text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
                   Somme en €
                 </span>
@@ -960,11 +989,12 @@ export default function BudgetPage() {
                   className="w-full min-w-0 rounded-[2px] border border-[#c9d2df] bg-[#f8f7f4] py-1 pl-2 pr-1 text-[12px] text-[#2b3a55] outline-none focus:border-[var(--fin-accent,#5e5b57)]"
                 />
               </label>
-              <span className="flex shrink-0 gap-1.5">
+              </div>
+              <div className="mt-2.5 flex justify-center gap-6">
                 <button
                   type="submit"
                   disabled={amountDraft === amountFilter && amountOpDraft === amountOp}
-                  className="rounded-full border px-2.5 py-1 text-[9px] uppercase tracking-[0.15em] text-white disabled:opacity-40"
+                  className="min-w-[88px] rounded-full border px-4 py-1 text-[9px] uppercase tracking-[0.15em] text-white disabled:opacity-40"
                   style={{ borderColor: FIN.accent, backgroundColor: FIN.accent }}
                 >
                   Valider
@@ -973,12 +1003,12 @@ export default function BudgetPage() {
                   type="button"
                   onClick={resetFilters}
                   title="Remettre tous les filtres à zéro"
-                  className="rounded-full border px-2.5 py-1 text-[9px] uppercase tracking-[0.15em]"
+                  className="min-w-[88px] rounded-full border px-4 py-1 text-[9px] uppercase tracking-[0.15em]"
                   style={{ borderColor: FIN.accent, color: FIN.accent }}
                 >
                   Reset
                 </button>
-              </span>
+              </div>
             </form>
             {/* Séparation entre les filtres et le début de la liste */}
             <hr className="mb-3 mt-2 h-[2px] rounded-full border-0" style={{ backgroundColor: FIN.accent, opacity: 0.55 }} />
@@ -992,23 +1022,25 @@ export default function BudgetPage() {
               {shownTx.map((t) => {
                 const cat = categoryById(t.category);
                 return (
-                  <li key={t.id} className="flex items-start gap-2.5 py-2">
-                    {/* Icône de la grande catégorie : la toucher ouvre la popin de classement */}
-                    {(() => {
-                      const group = groupOf(t.category);
-                      return (
-                        <button
-                          type="button"
-                          onClick={() => setClassifying(t)}
-                          aria-label={`Classer ${t.label}${group ? ` (${group.label})` : ''}`}
-                          title={group ? `${group.label} · changer la catégorie` : 'Changer la catégorie'}
-                          className="mt-0.5 shrink-0 rounded-full"
-                        >
-                          {/* Virement entre mes comptes : une barre dans un rond bleu */}
-                          {cat.kind === 'transfer' ? <TransferIcon size={34} /> : <GroupIcon group={group} size={34} />}
-                        </button>
-                      );
-                    })()}
+                  // Toute la ligne ouvre la popin « Modifier une transaction » (catégorie et note)
+                  <li
+                    key={t.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setClassifying(t)}
+                    onKeyDown={(e) => {
+                      if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                        e.preventDefault();
+                        setClassifying(t);
+                      }
+                    }}
+                    aria-label={`Modifier ${t.label}`}
+                    className="flex cursor-pointer items-start gap-2.5 py-2"
+                  >
+                    {/* Icône de la grande catégorie (virement entre mes comptes : une barre dans un rond bleu) */}
+                    <span className="mt-0.5 shrink-0 rounded-full" title={groupOf(t.category)?.label}>
+                      {cat.kind === 'transfer' ? <TransferIcon size={34} /> : <GroupIcon group={groupOf(t.category)} size={34} />}
+                    </span>
                     <div className="flex min-w-0 flex-1 items-start justify-between gap-2 text-[12px]">
                       <span className="min-w-0">
                         {/* Au-dessus du nom : date, catégorie (elle se change en touchant l'icône), compte */}
@@ -1023,6 +1055,12 @@ export default function BudgetPage() {
                           {isManual(t) && ' · ajoutée à la main'}
                         </span>
                         <span className="block break-words">{t.label}</span>
+                        {/* Note, sous le libellé : plus petite et en gris clair */}
+                        {t.note && (
+                          <span className="block break-words text-[10px] leading-snug" style={{ color: FIN.slate, opacity: 0.75 }}>
+                            {t.note}
+                          </span>
+                        )}
                       </span>
                       <span className="flex shrink-0 items-center gap-1.5">
                         <b style={{ color: cat.kind === 'transfer' ? FIN.slate : t.amount > 0 ? FIN.sage : FIN.navy }}>{formatEuros(t.amount)}</b>
@@ -1030,7 +1068,10 @@ export default function BudgetPage() {
                         {isManual(t) && (
                           <button
                             type="button"
-                            onClick={() => removeOperation(t)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeOperation(t);
+                            }}
                             aria-label={`Supprimer ${t.label}`}
                             title="Supprimer cette opération ajoutée à la main"
                             className="opacity-60 hover:opacity-100"

@@ -18,6 +18,8 @@ export type Transaction = {
   // Virement entre mes comptes : l'autre compte, précisé à la main quand le libellé ne le dit pas
   // ('' : un compte qui n'est pas suivi ici ; absent : pas précisé). Colonne ajoutée par supabase/transfer_accounts.sql
   transfer_account?: string | null;
+  // Note libre ajoutée à la main, affichée sous le libellé. Colonne ajoutée par supabase/transaction_notes.sql
+  note?: string | null;
 };
 
 export type Kind = 'income' | 'fixed' | 'variable' | 'transfer';
@@ -1342,6 +1344,14 @@ export async function saveEstimatedOperations(account: string, month: string, op
 // Revient à l'estimation automatique
 export async function resetEstimatedOperations(account: string, month: string) {
   const { error } = await supabase.from('estimated_operations').delete().ilike('account', account).eq('month', month);
+  return error;
+}
+
+// Note d'une transaction ('' ou espaces : retirée). Sans la colonne (script supabase/transaction_notes.sql pas encore
+// lancé), l'erreur le dit
+export async function saveTransactionNote(id: string, note: string) {
+  const { error } = await supabase.from('bank_transactions').update({ note: note.trim() || null }).eq('id', id);
+  if (error && /note/.test(error.message)) return { message: 'Pour ajouter des notes, lance une fois le script supabase/transaction_notes.sql dans l’éditeur SQL de Supabase.' };
   return error;
 }
 
