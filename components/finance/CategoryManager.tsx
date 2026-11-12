@@ -182,6 +182,17 @@ export function NewCategoryForm({
   return (
     <div className={framed ? 'mt-1 w-full rounded-sm border px-3 py-2' : ''} style={framed ? { borderColor: FIN.gold, backgroundColor: '#fff' } : undefined}>
       <ErrorNote message={error} />
+      {/* Le sens d'abord (entrée ou sortie), puis le nom */}
+      {!fixedKind && (
+        <SensePicker
+          value={kind === null ? null : kind === 'income' ? 'income' : 'expense'}
+          onChange={(k) => {
+            setKind(k === 'income' ? 'income' : 'variable');
+            setSection(k === 'income' ? 'autres_revenus' : 'vie_courante');
+            setGroup(null);
+          }}
+        />
+      )}
       <Field label="Nom">
         <input
           autoFocus
@@ -198,27 +209,21 @@ export function NewCategoryForm({
           {kind === 'income' ? 'Une catégorie d’entrées porte déjà ce nom.' : 'Une catégorie de sorties porte déjà ce nom.'}
         </p>
       )}
-      {!fixedKind && (
-        <SensePicker
-          value={kind === null ? null : kind === 'income' ? 'income' : 'expense'}
-          onChange={(k) => {
-            setKind(k === 'income' ? 'income' : 'variable');
-            setSection(k === 'income' ? 'autres_revenus' : 'vie_courante');
-            setGroup(null);
-          }}
-        />
-      )}
       {kind && (
         <>
-      <Field label="Rubrique du compte de résultat">
-        <select value={section} onChange={(e) => setSection(e.target.value)} className={selectClass}>
-          {sections.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.title}
-            </option>
-          ))}
-        </select>
-      </Field>
+      {/* Rubrique : seulement pour une entrée (revenus d'activité ou autres revenus). Une sortie va d'office dans
+          « Vie courante » : les charges du compte de résultat s'affichent par grande catégorie, la rubrique n'y change rien */}
+      {kind === 'income' && (
+        <Field label="Rubrique du compte de résultat">
+          <select value={section} onChange={(e) => setSection(e.target.value)} className={selectClass}>
+            {sections.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.title}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
       <GroupSelect kind={kind === 'income' ? 'income' : 'expense'} value={group} onChange={setGroup} />
         </>
       )}
@@ -298,6 +303,8 @@ function GroupForm({
   return (
     <>
       <ErrorNote message={error} />
+      {/* Le sens d'abord (entrée ou sortie), puis le nom */}
+      {!group && !fixedKind && <SensePicker value={kind} onChange={setKind} />}
       <Field label="Nom">
         <input
           autoFocus
@@ -314,7 +321,6 @@ function GroupForm({
           {kind === 'income' ? 'Une grande catégorie d’entrées porte déjà ce nom.' : 'Une grande catégorie de sorties porte déjà ce nom.'}
         </p>
       )}
-      {!group && !fixedKind && <SensePicker value={kind} onChange={setKind} />}
       {/* Icône : rond légèrement rouge (sortie) ou vert (entrée), à gauche des transactions de ses sous-catégories */}
       {kind && (
         <div className="mt-3">

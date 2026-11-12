@@ -1,7 +1,7 @@
 import { supabase } from '@/lib/supabase';
 import { monthKey, shiftMonth } from '@/lib/finance';
 import { saveIncomePlan, type IncomePart, type IncomePlan } from '@/lib/budget';
-import { ANNUAL_GROUP_ID, CATEGORIES, categoryGroups, groupMembers, SELF_DEBT_ID, summarize, type Transaction } from '@/lib/transactions';
+import { ANNUAL_GROUP_ID, CATEGORIES, categoryGroups, groupMembers, summarize, type Transaction } from '@/lib/transactions';
 
 // Répartition du revenu, mois par mois (Finances > Budget et Finances > Gestion).
 //  - La répartition par défaut (table income_plan) vaut pour le mois en cours et les suivants ; on la choisit dans Gestion.
@@ -9,7 +9,7 @@ import { ANNUAL_GROUP_ID, CATEGORIES, categoryGroups, groupMembers, SELF_DEBT_ID
 //    les mois passés qui n'en avaient pas encore reçoivent l'ancienne. On peut aussi la retoucher depuis Budget.
 //  - Chaque partie rassemble des grandes catégories ou catégories de dépenses ; la partie « épargne » est ce qui reste
 //    des revenus du mois. La comparaison avec ce que disent les relevés n'est qu'indicative : elle ne compte nulle part
-//    (ni dans la dette à moi-même, ni dans la santé financière).
+//    (ni dans le budget du mois, ni dans la santé financière).
 
 export type MonthPlan = { month: string; parts: IncomePart[] };
 
@@ -49,7 +49,7 @@ export async function saveDefaultRepartition(previous: IncomePart[], next: Incom
 // essential : dépense indispensable (rangée par défaut dans « Charges »), sinon dans « Investissement personnel »
 export type ExpenseTarget = { id: string; label: string; categories: string[]; essential: boolean };
 
-const isExpense = (c: (typeof CATEGORIES)[number]) => c.kind !== 'income' && c.kind !== 'transfer' && c.id !== SELF_DEBT_ID;
+const isExpense = (c: (typeof CATEGORIES)[number]) => c.kind !== 'income' && c.kind !== 'transfer';
 
 // À appeler une fois les catégories chargées (useCategories)
 export function expenseTargets(): ExpenseTarget[] {
@@ -96,18 +96,46 @@ export type RepartitionRow = { part: IncomePart; goal: number; actual: number; s
 // Revenus du mois, et pour chaque partie : la somme voulue (pourcentage des revenus), ce que disent les relevés et la part
 // des revenus que cela représente ; unassigned : dépenses des postes rangés dans aucune partie
 export function repartitionCheck(parts: IncomePart[], monthTx: Transaction[]) {
-  const { income, expenses, byCategory } = summarize(monthTx);
+  // Épargne : la règle de lib/savingsRule (entrées − entrées écartées, aides… − sorties)
+  const { income, savings, byCategory } = summarize(monthTx);
   const all = expenseTargets();
   const owner = assignTargets(parts, all);
   const spentOn = (t: ExpenseTarget) => t.categories.reduce((s, c) => s + (byCategory.get(c) ?? 0), 0);
   const rows: RepartitionRow[] = parts.map((part) => {
     const targets = all.filter((t) => owner.get(t.id) === part.id);
-    const actual = part.savings ? income - expenses : targets.reduce((s, t) => s + spentOn(t), 0);
+    const actual = part.savings ? savings : targets.reduce((s, t) => s + spentOn(t), 0);
     return { part, goal: (income * part.pct) / 100, actual, share: income > 0 ? actual / income : null, targets };
   });
   const unassignedTargets = all.filter((t) => !owner.has(t.id) && spentOn(t) > 0);
   const unassigned = unassignedTargets.reduce((s, t) => s + spentOn(t), 0);
   return { income, rows, unassigned, unassignedTargets };
+}
+
+// --- Limites par défaut d'un mois selon sa couleur (Paramètres > Finances) ---
+
+// Grandes catégories de chaque partie (hors épargne et dépenses annuelles, dont la limite vient de leur montant)
+export function groupsByPart(parts: IncomePart[]) {
+  const all = expenseTargets();
+  const owner = assignTargets(parts, all);
+  return parts
+    .filter((p) => !p.savings)
+    .map((part) => ({
+      part,
+      groups: all
+        .filter((t) => owner.get(t.id) === part.id && t.id.startsWith('groupe:') && t.id !== `groupe:${ANNUAL_GROUP_ID}`)
+        .map((t) => ({ id: t.id.slice('groupe:'.length), label: t.label }))
+    }))
+    .filter((x) => x.groups.length > 0);
+}
+
+// Limite de chaque grande catégorie (« groupe:<id> ») : revenus du mois × part de sa partie × son pourcentage de la partie.
+// Par exemple Charges à 40 % et Courses à 30 % des charges : 12 % des revenus. null : pas de budgets pour cette couleur
+export function colorLimits(parts: IncomePart[], pcts: Record<string, number> | undefined, income: number): Map<string, number> | null {
+  if (!pcts) return null;
+  const limits = new Map<string, number>();
+  for (const { part, groups } of groupsByPart(parts))
+    for (const g of groups) limits.set(`groupe:${g.id}`, Math.round((income * part.pct * Number(pcts[g.id] ?? 0)) / 100) / 100);
+  return limits;
 }
 
 // Range un poste (« groupe:<id> » ou catégorie) dans une partie de la répartition (null : dans aucune).

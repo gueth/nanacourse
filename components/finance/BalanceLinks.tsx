@@ -29,7 +29,6 @@ import {
   categoryGroups,
   groupKindOf,
   linkPlannedToCategory,
-  SELF_DEBT_ID,
   type GroupKind,
   type PlannedExpense
 } from '@/lib/transactions';
@@ -125,6 +124,11 @@ function ConnectForm({ links, initial, onSaved, onCancel }: { links: BalanceLink
   const [counter, setCounter] = useState(() => (initial?.counter ? lineValue(initial.counter.link) : ''));
   const [counterSection, setCounterSection] = useState('');
   const [counterLabel, setCounterLabel] = useState('');
+  // Équilibrage facultatif : sans lui, seule la ligne du connecteur est reliée (ex. un emprunt : l'argent reçu est déjà
+  // dans les liquidités, lues sur les relevés, l'actif n'a donc pas à être complété)
+  const [balanced, setBalanced] = useState(() => (initial ? !!initial.counter : true));
+  // Libellé de la connexion (facultatif), rangé sur la ligne du connecteur
+  const [name, setName] = useState(() => (initial ? (initial.line.names?.[initial.category] ?? '') : ''));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -136,7 +140,7 @@ function ConnectForm({ links, initial, onSaved, onCancel }: { links: BalanceLink
           .filter((g) => !g.virtual && g.kind === kind)
           .sort((a, b) => a.label.localeCompare(b.label, 'fr'))
       : [];
-  const categoriesOf = (kind: GroupKind) => CATEGORIES.filter((c) => groupKindOf(c) === kind && !c.annual && c.id !== SELF_DEBT_ID).sort(byLabel);
+  const categoriesOf = (kind: GroupKind) => CATEGORIES.filter((c) => groupKindOf(c) === kind && !c.annual).sort(byLabel);
   // Lignes d'un côté du bilan : celles du modèle, et celles déjà reliées
   const optionsOf = (of: 'actif' | 'passif') => {
     const secs = LINKABLE_SECTIONS.filter((s) => s.side === of);
@@ -161,9 +165,9 @@ function ConnectForm({ links, initial, onSaved, onCancel }: { links: BalanceLink
         ? { section: value.split('|')[0], label: value.split('|').slice(1).join('|') }
         : { section: '', label: '' };
   const chosen = parse(line, customSection, customLabel, sections);
-  const other = parse(counter, counterSection, counterLabel, counterSections);
+  const other = balanced ? parse(counter, counterSection, counterLabel, counterSections) : { section: '', label: '' };
   const plans = annualPlans();
-  const ready = !!category && (dest === 'annuel' ? !!plan : !!chosen.label && !!chosen.section && !!other.label && !!other.section);
+  const ready = !!category && (dest === 'annuel' ? !!plan : !!chosen.label && !!chosen.section && (!balanced || (!!other.label && !!other.section)));
 
   function pickDest(next: Dest) {
     setDest(next);
@@ -228,6 +232,11 @@ function ConnectForm({ links, initial, onSaved, onCancel }: { links: BalanceLink
     }
     // La ligne choisie vaut le montant de la catégorie (=) ; la ligne d'équilibrage, de l'autre côté du bilan, suit la nature choisie
     // Rôle de la ligne pour cette catégorie : ligne du connecteur (asCounter false) ou ligne d'équilibrage (true)
+    // Libellés de la ligne : celui de cette connexion sur la ligne du connecteur (retiré s'il est vide, et de l'ancienne catégorie)
+    const namesOf = (existing: BalanceLink | undefined, asCounter: boolean) => {
+      const kept = Object.fromEntries(Object.entries(existing?.names ?? {}).filter(([c]) => c !== category && c !== initial?.category));
+      return !asCounter && name.trim() ? { ...kept, [category]: name.trim() } : kept;
+    };
     const roles = (existing: BalanceLink | undefined, asCounter: boolean) => {
       const kept = (existing?.counters ?? []).filter((c) => c !== category);
       return asCounter ? [...kept, category] : kept;
@@ -240,6 +249,7 @@ function ConnectForm({ links, initial, onSaved, onCancel }: { links: BalanceLink
         label: existing?.label ?? target.label,
         ...withNature(existing ?? { targets: [], decreases: [] }, category, how),
         counters: roles(existing, asCounter),
+        names: namesOf(existing, asCounter),
         opening: existing?.opening ?? 0,
         opening_month: existing?.opening_month ?? null
       });
@@ -273,17 +283,23 @@ function ConnectForm({ links, initial, onSaved, onCancel }: { links: BalanceLink
         label: existing?.label ?? target.label,
         ...withNature(existing ?? { targets: [], decreases: [] }, category, how),
         counters: roles(existing, asCounter),
+        names: namesOf(existing, asCounter),
         opening: existing?.opening ?? 0,
         opening_month: existing?.opening_month ?? null
       });
     };
     const link = initial ? connectKept : connect;
-    err = err ?? (await link(chosen, lineNature, false)) ?? (await link(other, nature, true)) ?? (await refreshBalanceLinks());
+    err = err ?? (await link(chosen, lineNature, false)) ?? (balanced ? await link(other, nature, true) : null) ?? (await refreshBalanceLinks());
     setBusy(false);
+    if (err?.message === 'names') return setError('Connexion enregistrée sans son libellé : lance le script supabase/balance_links_names.sql dans l’éditeur SQL de Supabase.');
     if (err) return setError(describeDbError(err.message));
     const sign = NATURES.find((n) => n.id === nature)!.sign;
     const lineSign = LINE_NATURES.find((n) => n.id === lineNature)!.sign;
-    onSaved(`« ${chosen.label} » ${lineSign} ${targetLabel(category)}, « ${other.label} » ${sign} « ${chosen.label} » : le bilan est à jour et équilibré.`);
+    onSaved(
+      balanced
+        ? `« ${chosen.label} » ${lineSign} ${targetLabel(category)}, « ${other.label} » ${sign} « ${chosen.label} » : le bilan est à jour et équilibré.`
+        : `« ${chosen.label} » ${lineSign} ${targetLabel(category)}, sans équilibrage : le bilan est à jour.`
+    );
   }
 
   // Liste déroulante des catégories du sens choisi dans la première liste
@@ -362,6 +378,19 @@ function ConnectForm({ links, initial, onSaved, onCancel }: { links: BalanceLink
   return (
     <>
       <ErrorNote message={error} />
+      {/* LIBELLÉ de la connexion (facultatif) : son titre dans la liste, pour la reconnaître */}
+      {side && (
+        <Field label="Libellé (facultatif)">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Ex. Prêt de la voiture, Avance à Léa…"
+            maxLength={60}
+            className={inputClass}
+            style={{ borderColor: FIN.line, color: FIN.navy }}
+          />
+        </Field>
+      )}
       {/* 1. TYPE DE CONNECTEUR, et la ligne (ou la dépense annuelle) qu'il relie */}
       <Field label="Choisir le type de connecteur">
         <div className="flex flex-wrap gap-1.5">
@@ -438,7 +467,22 @@ function ConnectForm({ links, initial, onSaved, onCancel }: { links: BalanceLink
 
       {/* 3. ÉQUILIBRAGE DU BILAN : la ligne choisie, la nature, puis la ligne de l'autre côté du bilan */}
       {side && (
-        <Field label="Équilibrage du bilan">
+        <Field label="Équilibrage du bilan (facultatif)">
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            <Choice on={balanced} onClick={() => setBalanced(true)}>
+              Avec équilibrage
+            </Choice>
+            <Choice on={!balanced} onClick={() => setBalanced(false)}>
+              Sans équilibrage
+            </Choice>
+          </div>
+          {!balanced ? (
+            <p className="text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
+              Seule la ligne du connecteur est reliée. À choisir quand l&apos;autre côté du bilan se remplit déjà tout seul : pour un
+              emprunt, l&apos;argent reçu arrive sur tes comptes, et les liquidités de l&apos;actif viennent des relevés.
+            </p>
+          ) : (
+          <>
           {/* Nouvelle ligne (de l'autre côté du bilan), type de liaison, puis l'ancienne ligne (celle du connecteur) */}
           <span className="mb-0.5 block text-[10px]" style={{ color: FIN.slate }}>
             Nouvelle ligne
@@ -470,6 +514,8 @@ function ConnectForm({ links, initial, onSaved, onCancel }: { links: BalanceLink
             {NATURES.find((n) => n.id === nature)!.text(`« ${chosen.label || 'la ligne choisie'} »`, `« ${other.label || `La ligne ${sideName(opposite)}`} »`)} Le bilan reste
             équilibré.
           </p>
+          </>
+          )}
         </Field>
       )}
 
@@ -534,6 +580,9 @@ export function BalanceLinksPanel({ ready, onError, onChanged }: { ready: boolea
     </span>
   );
 
+  // Libellé d'une connexion (facultatif) : en titre de sa carte
+  const nameOf = (line: BalanceLink, category: string) => line.names?.[category]?.trim() || undefined;
+
   // Case d'une ligne du bilan dans une rangée
   const lineBox = (link: BalanceLink) => ({ tag: `${sideOf(link.section) === 'actif' ? 'Ligne de l’actif' : 'Ligne du passif'} · ${sectionTitle(link.section)}`, label: link.label });
 
@@ -583,16 +632,31 @@ export function BalanceLinksPanel({ ready, onError, onChanged }: { ready: boolea
       }))
     )
       return;
-    for (const l of lines) {
+    // Chaque ligne sans cette catégorie ; null : la ligne n'a plus rien de relié, elle est retirée
+    const updated = lines.map((l) => {
       const targets = l.targets.filter((t) => plainTarget(t) !== category);
       const decreases = l.decreases.filter((t) => t !== category);
       const counters = l.counters.filter((t) => t !== category);
-      const err = targets.length + decreases.length === 0 && !l.opening ? await removeBalanceLink(l.id) : await saveBalanceLink({ ...l, targets, decreases, counters });
-      if (err) return onError(describeDbError(err.message));
+      return { before: l, after: targets.length + decreases.length === 0 && !l.opening ? null : { ...l, targets, decreases, counters } };
+    });
+    // Le connecteur disparaît tout de suite de la liste, sans attendre l'enregistrement ni le recalcul du bilan
+    query.setData((list) =>
+      list.flatMap((l) => {
+        const u = updated.find((x) => x.before.id === l.id);
+        return !u ? [l] : u.after ? [u.after] : [];
+      })
+    );
+    for (const { before, after } of updated) {
+      const err = after ? await saveBalanceLink(after) : await removeBalanceLink(before.id);
+      if (err) {
+        // Échec : la liste reprend ce qui est vraiment enregistré
+        query.reload();
+        return onError(describeDbError(err.message));
+      }
     }
     const err = await refreshBalanceLinks();
-    if (err) return onError(describeDbError(err.message));
     query.reload();
+    if (err) return onError(describeDbError(err.message));
     onChanged(`« ${name} » n'est plus reliée à ${lines.map((l) => `« ${l.label} »`).join(' ni à ')}.`);
   }
 
@@ -624,6 +688,7 @@ export function BalanceLinksPanel({ ready, onError, onChanged }: { ready: boolea
           {pairs.map(({ category, line, counters }) => (
             <ConnectionCard
               key={`${line.id}|${category}`}
+              title={nameOf(line, category)}
               actions={actions(categoryInfo(category).label, () => setEditing({ category, line, counter: counters[0] }), () => unlink(category, [line, ...counters.map((c) => c.link)]))}
             >
               {/* Ligne du connecteur et sa catégorie, avec le type de liaison choisi (+=, −= ou ==) */}
@@ -647,9 +712,11 @@ export function BalanceLinksPanel({ ready, onError, onChanged }: { ready: boolea
             categories.map((c) => (
               <ConnectionCard
                 key={`${link.id}|${c}`}
+                title={nameOf(link, c)}
                 actions={actions(categoryInfo(c).label, () => setEditing({ category: c, line: link }), () => unlink(c, [link]))}
               >
-                <ConnectionRow from={lineBox(link)} nature="=" to={categoryInfo(c)} />
+                {/* Type de liaison réel (+=, −= ou ==) : une connexion sans équilibrage peut être en + ou en − */}
+                <ConnectionRow from={lineBox(link)} nature={natureOf(link, c) ?? '='} symbol={BALANCE_SYMBOL[natureOf(link, c) ?? '=']} to={categoryInfo(c)} />
               </ConnectionCard>
             ))
           )}

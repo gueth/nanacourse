@@ -5,9 +5,10 @@ import { useIncomePlan } from '@/lib/coursesQueries';
 import { useCategoryLimits, useMonthBudgets, useMonthPlans } from '@/lib/financeQueries';
 import { partsFor, repartitionCheck } from '@/lib/repartition';
 import { useFinanceTone } from '@/lib/health';
-import { HEALTH_STATES, stateParts, useHealthSettings } from '@/lib/healthSettings';
-import { debtOfMonth } from '@/lib/selfDebt';
-import { annualPlans, monthOf, SELF_DEBT_ID, type Transaction } from '@/lib/transactions';
+import { useColorLimits } from '@/lib/colorBudgets';
+import { stateParts, useHealthSettings } from '@/lib/healthSettings';
+import { budgetOfMonth } from '@/lib/monthBudget';
+import { annualPlans, monthOf, type Transaction } from '@/lib/transactions';
 import { FIN, Panel } from '@/components/finance/FinanceParts';
 
 const signed = (n: number) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${formatEuros(Math.abs(n))}`;
@@ -32,7 +33,7 @@ function Figure({ label, value, note, color = FIN.navy }: { label: string; value
 }
 
 // « En bref » du Budget, pour le mois affiché :
-//  - la dette à moi-même ajoutée (ou remboursée) et la part du budget utilisée ;
+//  - le total des charges (partie « Charges » de la répartition) et la part du budget utilisée ;
 //  - le nombre d'opérations des catégories rangées dans les charges (Répartition du revenu) ;
 //  - la répartition effective : comment l'argent du mois a été utilisé, partagé entre les parties de la répartition
 //    (charges, investissement personnel, épargne) qui font 100 % à elles trois. L'épargne est ce qui reste des revenus
@@ -48,17 +49,19 @@ export function KeyFigures({ period, transactions }: { period: string; transacti
   const healthSettings = useHealthSettings().data;
   const monthTx = transactions.filter((t) => monthOf(t.date) === period);
 
-  const debt = budgets && monthBudgets ? debtOfMonth(period, monthTx, budgets, annualPlans(), monthBudgets) : null;
+  // Limites du mois : les siennes, sinon celles de sa couleur (Paramètres > Finances), sinon les limites générales
+  const colorLimits = useColorLimits(period, monthTx);
+  const budget = budgets && monthBudgets ? budgetOfMonth(period, monthTx, budgets, annualPlans(), monthBudgets, colorLimits) : null;
 
   // Répartition effective du mois, et opérations des charges (sorties des catégories de la partie « charges »).
-  // Hors calcul : les virements entre mes comptes (écartés par summarize), les catégories reliées au bilan (déjà
-  // retirées de "transactions" par la page) et la dette à moi-même (une écriture de suivi, pas une dépense)
-  const repartitionTx = monthTx.filter((t) => t.category !== SELF_DEBT_ID);
+  // Hors calcul : les virements entre mes comptes (écartés par summarize) et les catégories reliées au bilan (déjà
+  // retirées de "transactions" par la page)
+  const repartitionTx = monthTx;
   // Répartition voulue : celle de la couleur du mois (Paramètres > Finances), sinon celle du mois, sinon celle par défaut
   const ownOfState = plan ? stateParts(plan.parts, healthSettings, state) : null;
   const check = plan && monthPlans ? repartitionCheck(ownOfState ?? partsFor(period, plan, monthPlans), repartitionTx) : null;
-  const stateInfo = ownOfState && state ? HEALTH_STATES.find((h) => h.id === state) : null;
-  const chargeCategories = new Set(check?.rows.find((r) => r.part.id === 'charges')?.targets.flatMap((t) => t.categories) ?? []);
+  const chargesRow = check?.rows.find((r) => r.part.id === 'charges') ?? null;
+  const chargeCategories = new Set(chargesRow?.targets.flatMap((t) => t.categories) ?? []);
   const chargeOps = monthTx.filter((t) => t.amount < 0 && chargeCategories.has(t.category)).length;
 
   // Montant de chaque partie (l'épargne à 0 si les sorties dépassent les revenus), et sa part du total, en pourcentages
@@ -77,18 +80,15 @@ export function KeyFigures({ period, transactions }: { period: string; transacti
   return (
     <Panel title="En bref">
       <div className="grid grid-cols-3 gap-1.5">
-        <Figure
-          label="Dette à moi"
-          value={!debt || debt.allowed === 0 ? '—' : signed(debt.delta)}
-          note={!debt || debt.allowed === 0 ? 'aucune limite' : debt.delta > 0 ? 'ajoutée ce mois' : debt.delta < 0 ? 'remboursée' : 'inchangée'}
-          color={!debt || debt.delta === 0 ? FIN.slate : debt.delta > 0 ? FIN.rose : FIN.sage}
-        />
+        {/* Total des charges : les sorties des catégories rangées dans la partie « Charges » (comme les opérations à droite) */}
+        <Figure label="Total des charges" value={chargesRow ? formatEuros(chargesRow.actual) : '—'} note="ce mois-ci" />
+
         <Figure
           label="Budget utilisé"
           // + ce qui dépasse le budget, − ce qu'il en reste ; en dessous, juste « dépassement » ou « excédent »
-          value={!debt || debt.allowed === 0 ? '—' : signed(debt.spent - debt.allowed)}
-          note={!debt || debt.allowed === 0 || debt.spent === debt.allowed ? undefined : debt.spent > debt.allowed ? 'dépassement' : 'excédent'}
-          color={!debt || debt.allowed === 0 ? FIN.slate : debt.spent > debt.allowed ? FIN.rose : debt.spent >= debt.allowed * 0.8 ? FIN.gold : FIN.sage}
+          value={!budget || budget.allowed === 0 ? '—' : signed(budget.spent - budget.allowed)}
+          note={!budget || budget.allowed === 0 || budget.spent === budget.allowed ? undefined : budget.spent > budget.allowed ? 'dépassement' : 'excédent'}
+          color={!budget || budget.allowed === 0 ? FIN.slate : budget.spent > budget.allowed ? FIN.rose : budget.spent >= budget.allowed * 0.8 ? FIN.gold : FIN.sage}
         />
         <Figure label="Opérations" value={check ? String(chargeOps) : '—'} note="en charges" />
       </div>
@@ -97,22 +97,22 @@ export function KeyFigures({ period, transactions }: { period: string; transacti
       {check && (
         <>
           <p className="mb-1 mt-3 text-center text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
-            Répartition effective
+            Distribution effective des possessions
           </p>
-          {stateInfo && (
-            <p className="-mt-0.5 mb-1 text-center text-[9px]" style={{ color: FIN.slate }}>
-              {`voulue : celle d'un mois ${stateInfo.color.toLowerCase()} (${stateInfo.name})`}
-            </p>
-          )}
+          {/* Aucune opération ce mois-ci : les mêmes cartes, avec un tiret à la place du pourcentage */}
           {total <= 0 ? (
-            <p className="text-[11px]" style={{ color: FIN.slate }}>
-              Aucune opération relevée ce mois-ci.
-            </p>
+            <div className="grid grid-cols-3 gap-1.5">
+              {used.map(({ part }) => (
+                <Figure key={part.id} label={part.label} value="—" note={`${part.pct} % voulu`} color={FIN.slate} />
+              ))}
+            </div>
           ) : (
             <div className="grid grid-cols-3 gap-1.5">
               {used.map(({ part }, i) => {
                 const pct = pcts[i];
-                const color = part.savings ? (pct >= part.pct ? FIN.sage : pct > 0 ? FIN.gold : FIN.rose) : pct > part.pct ? FIN.rose : FIN.sage;
+                // Épargne : verte si elle atteint au moins la part voulue ; les autres parties : vertes si elles n'en dépassent pas la part
+                const ok = part.savings ? pct >= part.pct : pct <= part.pct;
+                const color = ok ? FIN.sage : FIN.rose;
                 return <Figure key={part.id} label={part.label} value={`${pct} %`} note={`${part.pct} % voulu`} color={color} />;
               })}
             </div>

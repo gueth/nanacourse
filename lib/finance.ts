@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase';
+import { isExcludedIncomeLine } from '@/lib/savingsRule';
 
 // Finances personnelles : un bilan (ce que l'on possède et ce que l'on doit, en fin de mois)
 // et un compte de résultat (ce qui est entré et sorti pendant le mois), mois par mois.
@@ -91,14 +92,20 @@ export function sum(lines: FinanceLine[]) {
   return lines.reduce((s, l) => s + Number(l.amount), 0);
 }
 
-// Totaux d'un mois : bilan (actif, dettes, patrimoine net) et résultat (produits, charges, épargne)
+// Totaux d'un mois : bilan (actif, dettes, patrimoine net), résultat (produits − charges) et épargne.
+// Épargne (règle de lib/savingsRule) : produits − entrées écartées (aides…) − charges ; taux d'épargne : l'épargne sur
+// les produits retenus (sans les entrées écartées)
 export function totals(lines: FinanceLine[]) {
-  const bySide = (side: Side) => sum(lines.filter((l) => SECTIONS.find((s) => s.id === l.section)?.side === side));
+  const sideOf = (l: FinanceLine) => SECTIONS.find((s) => s.id === l.section)?.side;
+  const bySide = (side: Side) => sum(lines.filter((l) => sideOf(l) === side));
   const actif = bySide('actif');
   const dettes = bySide('passif');
   const produits = bySide('produits');
   const charges = bySide('charges');
   const resultat = produits - charges;
+  const exclus = sum(lines.filter((l) => sideOf(l) === 'produits' && isExcludedIncomeLine(l.label)));
+  const revenusRetenus = produits - exclus;
+  const epargne = revenusRetenus - charges;
   return {
     actif,
     dettes,
@@ -106,7 +113,9 @@ export function totals(lines: FinanceLine[]) {
     produits,
     charges,
     resultat,
-    tauxEpargne: produits > 0 ? resultat / produits : null
+    revenusRetenus,
+    epargne,
+    tauxEpargne: revenusRetenus > 0 ? epargne / revenusRetenus : null
   };
 }
 
@@ -264,7 +273,7 @@ export function monthIndicators(lines: FinanceLine[], month: string) {
   return {
     patrimoine: t.patrimoine,
     reserve: medianSpent > 0 ? liquidAssets(L) / medianSpent : null,
-    savings: t.resultat,
+    savings: t.epargne,
     savingsRate: t.tauxEpargne,
     dividends: sum(L.filter((l) => l.section === 'autres_revenus' && /dividende|int[ée]r[êe]t|coupon/i.test(l.label)))
   };
@@ -287,7 +296,7 @@ export function snapshot(lines: FinanceLine[], currentMonth: string) {
     income: avg((ls) => totals(ls).produits, t.produits),
     charges: avg((ls) => totals(ls).charges, t.charges),
     essentials: avg(essentialCharges, essentialCharges(last)),
-    savings: avg((ls) => totals(ls).resultat, t.resultat),
+    savings: avg((ls) => totals(ls).epargne, t.epargne),
     credit: creditPayments(last),
     liquid: liquidAssets(last),
     patrimoine: t.patrimoine

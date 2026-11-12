@@ -45,9 +45,9 @@ export function MonthCashSummary({ period }: { period: string }) {
   return (
     <div>
       <div className="grid grid-cols-3 gap-2">
-        <SummaryTile label="Entrées" value={euros(summary?.income ?? 0)} color={has ? FIN.sage : FIN.slate} />
-        <SummaryTile label="Sorties" value={euros(summary?.expenses ?? 0)} color={has ? FIN.rose : FIN.slate} />
-        <SummaryTile label="Reste" value={euros(rest)} color={!has ? FIN.slate : rest >= 0 ? FIN.navy : FIN.rose} />
+        <SummaryTile label="Entrées" note="revenus" value={euros(summary?.income ?? 0)} color={has ? FIN.sage : FIN.slate} />
+        <SummaryTile label="Sorties" note="dépenses" value={euros(summary?.expenses ?? 0)} color={has ? FIN.rose : FIN.slate} />
+        <SummaryTile label="Reste" note="résultat" value={euros(rest)} color={!has ? FIN.slate : rest >= 0 ? FIN.navy : FIN.rose} />
       </div>
     </div>
   );

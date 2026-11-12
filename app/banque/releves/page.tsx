@@ -36,7 +36,6 @@ import { syncFinances } from '@/lib/financeSync';
 import { checkGroceries, type UnmatchedGrocery } from '@/lib/groceryCheck';
 import { BalanceLinksPanel } from '@/components/finance/BalanceLinks';
 import { CategoriesPanel } from '@/components/finance/CategoryManager';
-import { SelfDebtPanel } from '@/components/finance/SelfDebt';
 import { DefaultRepartitionPanel } from '@/components/finance/Repartition';
 import { ErrorNote, FIN, FinanceHeader, FinancePage, FinButton, FinModal, NumberField, Panel, useFinConfirm } from '@/components/finance/FinanceParts';
 
@@ -99,7 +98,7 @@ function SubscriptionsPanel({ transactions }: { transactions: Transaction[] }) {
 
 // Dépenses annuelles à étaler sur l'année : liste, ajout et suppression
 // Chacune devient une sous-catégorie de « Dépenses annuelles » (limite : un douzième de son montant) ; onChanged
-// prévient la page pour mettre à jour la dette à moi-même
+// prévient la page pour mettre à jour le budget
 function PlannedPanel({ onError, onChanged }: { onError: (message: string) => void; onChanged: () => void }) {
   const [confirm, confirmDialog] = useFinConfirm();
   const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
@@ -187,7 +186,7 @@ function PlannedPanel({ onError, onChanged }: { onError: (message: string) => vo
                       if (
                         !(await confirm(
                           'Supprimer la dépense prévue',
-                          `Supprimer « ${p.label} » (${formatEuros(p.amount)}) ? Ses opérations iront dans « Autres dépenses », et ses parts ne compteront plus dans la dette à moi-même.`
+                          `Supprimer « ${p.label} » (${formatEuros(p.amount)}) ? Ses opérations iront dans « Autres dépenses », et sa part ne comptera plus dans le budget du mois.`
                         ))
                       )
                         return;
@@ -912,7 +911,6 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
 
 // Page Gestion : import des relevés, dépenses récurrentes et annuelles, catégories
 export default function GestionPage() {
-  const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
   const [notice, setNotice] = useState<{ message: string; month?: string; groceries?: UnmatchedGrocery[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Opérations des 12 derniers mois : comptes déjà alimentés par un relevé (proposés dans « Compte concerné ») et dépenses récurrentes
@@ -967,7 +965,6 @@ export default function GestionPage() {
           </p>
         </div>
       )}
-      <SelfDebtPanel currentMonth={currentMonth} ready={categoriesQuery.data !== undefined} />
       <Panel title="Importer un relevé">
         <ImportForm
           accounts={accounts}

@@ -4,6 +4,8 @@ import { useMemo } from 'react';
 import { byPeriod, formatEuros, liquidAssets, median, monthLabel, passiveIncome, shiftMonth, totals, type FinanceLine } from '@/lib/finance';
 import { useCategories, useCategoryLimits, useFinanceLines, useMonthTransactions } from '@/lib/financeQueries';
 import { categoryById, summarize } from '@/lib/transactions';
+import { useHealthSettings } from '@/lib/healthSettings';
+import { useSavingsRuleVersion } from '@/lib/savingsRule';
 
 // Parcours vers l'autonomie financière : six étapes validées à partir des chiffres.
 // Affiché à l'accueil.
@@ -34,10 +36,11 @@ export function computeParcours(
   // Moyennes sur les mois terminés de la période (plus fiables qu'un seul mois)
   const recent = (done.length ? done : [ref]).map((p) => periods.get(p)!).filter((ls) => totals(ls).produits > 0);
   const avg = (f: (ls: FinanceLine[]) => number) => (recent.length ? recent.reduce((s, ls) => s + f(ls), 0) / recent.length : 0);
-  const savings = recent.length ? avg((ls) => totals(ls).resultat) : t.resultat;
-  const income = recent.length ? avg((ls) => totals(ls).produits) : t.produits;
+  // Épargne : règle de lib/savingsRule (sans les entrées écartées, aides…), taux sur les revenus retenus
+  const savings = recent.length ? avg((ls) => totals(ls).epargne) : t.epargne;
+  const keptIncome = recent.length ? avg((ls) => totals(ls).revenusRetenus) : t.revenusRetenus;
   const charges = avg((ls) => totals(ls).charges) || t.charges;
-  const savingsRate = income > 0 ? savings / income : null;
+  const savingsRate = keptIncome > 0 ? savings / keptIncome : null;
   const coverage = charges > 0 ? passiveIncome(L) / charges : 0;
   const fiTarget = charges * 12 * 25;
   const placements = L.filter((l) => l.section === 'placements').reduce((s, l) => s + l.amount, 0);
@@ -111,8 +114,12 @@ export function useParcours(currentMonth: string | null, span: number) {
   // Libellés des catégories personnalisées, pour nommer celles qui dépassent leur limite
   useCategories();
   const lastMonthTx = useMonthTransactions(currentMonth && shiftMonth(currentMonth, -1)).data;
+  // Règle de l'épargne (Paramètres > Finances) : chargée, et le parcours se refait quand elle change
+  useHealthSettings();
+  const savingsRule = useSavingsRuleVersion();
   return useMemo(
     () => (currentMonth && lines ? computeParcours(lines, currentMonth, span, limits ?? [], lastMonthTx) : null),
-    [lines, currentMonth, span, limits, lastMonthTx]
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- savingsRule : l'épargne de totals() suit la règle
+    [lines, currentMonth, span, limits, lastMonthTx, savingsRule]
   );
 }

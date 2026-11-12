@@ -13,7 +13,7 @@ import { FIN, FinButton, FinModal, Meter, Panel, parseAmount } from '@/component
 // Répartition du revenu dans les Finances (lib/repartition) :
 //  - Gestion : la répartition par défaut, pour le mois en cours et les suivants (les mois passés gardent la leur) ;
 //  - Budget : pour le mois affiché, ce que disent les relevés face à la répartition choisie, comme pour les limites des
-//    catégories, mais à titre indicatif seulement (rien ne compte dans la dette à moi-même).
+//    catégories, mais à titre indicatif seulement (rien ne compte dans le budget du mois).
 
 const pct = (n: number) => `${Math.round(n * 100)} %`;
 
@@ -48,10 +48,30 @@ export function DefaultRepartitionPanel({ ready, onError }: { ready: boolean; on
       title="Ma répartition"
       subtitle="Comment tes revenus se partagent, par défaut pour le mois en cours et les suivants (les mois passés gardent la leur). Chaque mois, la page Budget la compare à tes relevés, à titre indicatif."
     >
-      {planQuery.data === undefined ? (
+      {planQuery.error ? (
         <p className="text-[11px]" style={{ color: FIN.slate }}>
-          {planQuery.error ?? 'Chargement…'}
+          {planQuery.error}
         </p>
+      ) : planQuery.data === undefined ? (
+        // En attendant : les mêmes lignes et le bouton, vides, pour que rien n'apparaisse d'un coup ensuite
+        <>
+          <ul className="space-y-2">
+            {DEFAULT_PLAN.parts.map((p) => (
+              <li key={p.id} className="border-b pb-2 last:border-b-0" style={{ borderColor: FIN.line }}>
+                <p className="flex items-baseline justify-between gap-2 text-[12px] font-bold" style={{ color: FIN.slate }}>
+                  <span>—</span>
+                  <span>— %</span>
+                </p>
+                <p className="text-[10px] leading-relaxed">&nbsp;</p>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-3">
+            <FinButton outline disabled>
+              Modifier
+            </FinButton>
+          </div>
+        </>
       ) : (
         <>
           <ul className="space-y-2">

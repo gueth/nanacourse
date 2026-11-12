@@ -12,6 +12,8 @@ type Props = {
   caption?: string;
   // Intitulés en grand, dans la police calligraphiée des titres (sinon petites capitales)
   scriptLabels?: boolean;
+  // false : pas de points en bas de l'écran (on change de page par les intitulés ou en glissant)
+  dots?: boolean;
   // Page affichée, si le parent la pilote (sinon gérée ici)
   page?: number;
   onPageChange?: (page: number) => void;
@@ -22,7 +24,7 @@ type Props = {
 // partie qu'on quitte et celle qui arrive bougent ensemble : on reste sur la même page.
 // Toutes les pages restent montées (leur état est gardé). Pas de transform permanent : seulement pendant la glissade,
 // pour que les fenêtres en position fixe qu'elles contiennent restent calées sur l'écran.
-export function SwipePages({ pages, labels, color, tabs, caption, scriptLabels, page: controlled, onPageChange }: Props) {
+export function SwipePages({ pages, labels, color, tabs, caption, scriptLabels, dots = true, page: controlled, onPageChange }: Props) {
   const [own, setOwn] = useState(0);
   const page = controlled ?? own;
   // Glissade en cours : la page qu'on quitte et le sens (null : au repos)
@@ -119,6 +121,7 @@ export function SwipePages({ pages, labels, color, tabs, caption, scriptLabels, 
       </div>
 
       {/* INDICATEUR DE PAGE, FIXÉ EN BAS DE L'ÉCRAN, au-dessus du menu du bas (60 px) */}
+      {dots && (
       <div className="fixed bottom-[calc(60px+0.5rem+env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 flex justify-center gap-2 z-20">
         {pages.map((_, i) => (
           <button
@@ -131,6 +134,7 @@ export function SwipePages({ pages, labels, color, tabs, caption, scriptLabels, 
           />
         ))}
       </div>
+      )}
     </div>
   );
 }

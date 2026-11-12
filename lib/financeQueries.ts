@@ -79,7 +79,7 @@ export function useCategoryLimits() {
   });
 }
 
-// Budgets propres aux mois passés, et ce qui compte (ou non) dans la dette à moi-même, tous mois confondus
+// Budgets propres aux mois passés, tous mois confondus
 export function useMonthBudgets() {
   return useCached('finances:budgets-des-mois', async () => {
     const { monthBudgets, error } = await fetchMonthBudgets();

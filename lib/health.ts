@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { byPeriod, monthKey, shiftMonth, totals, type FinanceLine } from '@/lib/finance';
-import { useCategories, useCoverage, useDebtCategories, useFinanceLines, useMonthTransactions } from '@/lib/financeQueries';
-import { categoryById, categoryGroups, groupKindOf, isTransfer } from '@/lib/transactions';
+import { useCategories, useCategoryLimits, useCoverage, useDebtCategories, useFinanceLines, useMonthBudgets, useMonthTransactions } from '@/lib/financeQueries';
+import { annualPlans, categoryById, categoryGroups, groupKindOf, isTransfer, summarize } from '@/lib/transactions';
+import { budgetLinesOf, budgetOfMonth } from '@/lib/monthBudget';
 import { knownLines } from '@/lib/coverage';
-import { CHECK_ORDER, compare, DEFAULT_RULES, measureOf, needsCategoryTotals, savingsTargetPct, useHealthSettings, type HealthCondition, type HealthRules } from '@/lib/healthSettings';
+import { CHECK_ORDER, compare, DEFAULT_RULES, measureOf, needsBudget, needsCategoryTotals, savingsTargetPct, useHealthSettings, type HealthCondition, type HealthRules } from '@/lib/healthSettings';
+import { useSavingsRuleVersion } from '@/lib/savingsRule';
 
 // Santé financière : l'état (hémorragie, maladie, fatigue, santé, olympique, ou neutre) et la teinte qu'il donne à la partie Finances.
 
@@ -18,15 +20,15 @@ export const INFLATION = 0.02;
 // Teinte de chaque état : "dark" pour l'en-tête et les accents, "pale" pour le fond des pages Finances
 export const HEALTH_TONES: Record<HealthState, { dark: string; pale: string }> = {
   hemorragie: { dark: '#aa333c', pale: '#f4e3e4' },
-  // Orange franc (tirant sur le rouge) et jaune moutarde (tirant sur le vert) : deux teintes bien écartées pour ne
-  // pas les confondre ; fonds pêche et citron.
+  // Maladie en jaune doré adouci (moins vif, sans pointe de vert pour ne pas le confondre avec le vert), fatigue en
+  // orange franc (tirant sur le rouge) ; fonds crème et pêche.
   // Toutes les teintes "dark" ont la même luminosité : aucune ne paraît plus foncée que les autres, et le texte clair
   // de l'en-tête reste lisible partout (contraste d'environ 6,4 pour 1)
-  maladie: { dark: '#9c4500', pale: '#fbe3d0' },
-  fatigue: { dark: '#686000', pale: '#f7f2c4' },
+  maladie: { dark: '#765c22', pale: '#f9f2dc' },
+  fatigue: { dark: '#9c4500', pale: '#fbe3d0' },
   sante: { dark: '#416089', pale: '#e6edf5' },
   // Vert vif (#0ed145) assombri pour l'en-tête et les accents, fond du même vert éclairci
-  olympique: { dark: '#096d2d', pale: '#d4f0dc' },
+  olympique: { dark: '#006f2e', pale: '#d4f2dc' },
   // Gris : le mois ne respecte aucune des règles
   neutre: { dark: '#5d636b', pale: '#eceef0' }
 };
@@ -93,6 +95,8 @@ export const SAVINGS_TARGET = savingsTargetPct(DEFAULT_RULES) / 100;
 // Montant du mois de chaque catégorie et grande catégorie (« groupe:<id> ») : entrées reçues ou sorties payées, avec
 // son nom ; pour les conditions de type « Catégorie » (null : pas chargés, ces conditions sont alors fausses)
 export type CategoryTotals = Map<string, { label: string; total: number }>;
+// Budget du mois, global et par catégorie ou grande catégorie limitée (clé : identifiant, ou « groupe:<id> »)
+export type MonthBudgetCheck = { allowed: number; spent: number; lines: Map<string, { label: string; allowed: number; spent: number }> };
 const NOTHING_UNKNOWN = { bilan: new Set<string>(), result: new Set<string>() };
 export function assessHealth(
   lines: FinanceLine[],
@@ -101,7 +105,10 @@ export function assessHealth(
   plan: HemorrhagePlan = EMPTY_PLAN,
   unknown: { bilan: Set<string>; result: Set<string> } = NOTHING_UNKNOWN,
   rules: HealthRules = DEFAULT_RULES,
-  categoryTotals: CategoryTotals | null = null
+  categoryTotals: CategoryTotals | null = null,
+  // Budget du mois : total des limites et dépenses de ces catégories, et le budget de chaque catégorie ou grande
+  // catégorie limitée (null : pas chargé, ces conditions sont fausses)
+  budget: MonthBudgetCheck | null = null
 ) {
   const periods = byPeriod(lines.filter((l) => l.amount !== 0));
   // Mois analysables : ceux qui ont des revenus ou des dépenses au compte de résultat, et dont le résultat est connu
@@ -121,12 +128,16 @@ export function assessHealth(
   const L = periods.get(ref) ?? [];
   const t = totals(L);
   const recent = (done.length ? done : [ref]).map((p) => periods.get(p)!).filter((ls) => totals(ls).produits > 0);
-  const savings = recent.length ? recent.reduce((s, ls) => s + totals(ls).resultat, 0) / recent.length : t.resultat;
+  const avgOf = (f: (tt: ReturnType<typeof totals>) => number) => (recent.length ? recent.reduce((s, ls) => s + f(totals(ls)), 0) / recent.length : f(t));
+  // Résultat (produits − charges) et épargne (sans les entrées écartées : aides…, règle de lib/savingsRule), en moyenne
+  const resultat = avgOf((tt) => tt.resultat);
+  const savings = avgOf((tt) => tt.epargne);
   const periodLines = (done.length ? done : [ref]).map((p) => periods.get(p) ?? []);
   const workIncome = periodLines.reduce((s, ls) => s + workIncomeOf(ls), 0) / (periodLines.length || 1);
-  // Part des revenus mise de côté en moyenne : 20 % ou plus, c'est la part « Épargne » de la répartition tenue
-  const income = recent.length ? recent.reduce((s, ls) => s + totals(ls).produits, 0) / recent.length : t.produits;
-  const savingsRate = income > 0 ? savings / income : 0;
+  // Part des revenus retenus (sans les entrées écartées) mise de côté en moyenne
+  const income = avgOf((tt) => tt.produits);
+  const keptIncome = avgOf((tt) => tt.revenusRetenus);
+  const savingsRate = keptIncome > 0 ? savings / keptIncome : 0;
   // Progression du patrimoine sur la période
   // (seulement entre deux bilans connus : un relevé manquant laisserait un solde inconnu)
   const startMonth = shiftMonth(done.length ? done[0] : ref, -1);
@@ -143,7 +154,7 @@ export function assessHealth(
       case 'categorie':
         return categoryTotals && c.target ? (categoryTotals.get(c.target)?.total ?? 0) : null;
       case 'resultat':
-        return { resultat: savings, produits: income, charges: income - savings, revenus_activite: workIncome }[c.measure] ?? null;
+        return { resultat, produits: income, charges: income - resultat, revenus_activite: workIncome }[c.measure] ?? null;
       case 'bilan':
         if (unknown.bilan.has(ref)) return null;
         return (
@@ -156,7 +167,15 @@ export function assessHealth(
           }[c.measure] ?? null
         );
       case 'epargne':
-        return c.measure === 'taux' ? (income > 0 ? savingsRate * 100 : null) : savings;
+        return c.measure === 'taux' ? (keptIncome > 0 ? savingsRate * 100 : null) : savings;
+      case 'budget':
+        // Dépassement : dépenses − limites (en € ou en % des limites) ; négatif tant qu'on reste dans le budget
+        // Budget d'une catégorie : seulement si elle a une limite ce mois-ci (sinon la condition est fausse)
+        {
+          const b = c.target ? (budget?.lines.get(c.target) ?? null) : budget;
+          if (!b || b.allowed <= 0) return null;
+          return c.measure === 'depassement' ? b.spent - b.allowed : ((b.spent - b.allowed) / b.allowed) * 100;
+        }
       case 'patrimoine':
         if (c.measure === 'progression') return wealthGrowth;
         // Progression ramenée à un an, en % du patrimoine de départ
@@ -193,7 +212,12 @@ export function assessHealth(
   else if (hit) {
     const m = measureOf(hit);
     const v = valueOf(hit) ?? 0;
-    const name = hit.kind === 'categorie' ? `« ${categoryTotals?.get(hit.target ?? '')?.label ?? 'Catégorie'} »` : (m?.label ?? '');
+    const name =
+      hit.kind === 'categorie'
+        ? `« ${categoryTotals?.get(hit.target ?? '')?.label ?? 'Catégorie'} »`
+        : hit.kind === 'budget' && hit.target
+          ? `${m?.label ?? ''} « ${budget?.lines.get(hit.target)?.label ?? 'Catégorie'} »`
+          : (m?.label ?? '');
     const shown = (n: number) => (m?.unit === '€' ? euros(n) : `${Math.round(n * 10) / 10} ${m?.unit ?? ''}`);
     reason = `${name} : ${shown(v)} (règle : ${hit.op} ${shown(hit.value)}).`;
   } else if (state === 'neutre') reason = 'Ce mois ne respecte aucune des règles des couleurs (Paramètres > Finances).';
@@ -206,15 +230,33 @@ export function assessHealth(
 // Mois affiché par la page Finances ouverte (Bilan, Budget : flèches du mois) ; null = le mois en cours
 let viewedMonth: string | null = null;
 const viewedListeners = new Set<() => void>();
-// Dernier mois affiché, gardé en changeant de page : Bilan et Budget s'ouvrent sur le mois qu'on regardait
-let rememberedMonth: string | null = null;
-export const rememberedFinanceMonth = () => rememberedMonth;
-// En retournant à l'accueil, les Finances se rouvriront sur le mois précédent (le dernier terminé)
-export const forgetFinanceMonth = () => {
-  rememberedMonth = null;
+// Dernier mois affiché, gardé en changeant de page et en actualisant la page (stockage de l'onglet) : Bilan et Budget
+// s'ouvrent sur le mois qu'on regardait
+const FINANCE_MONTH_KEY = 'nanacourses.finance-month';
+let rememberedMonth: string | null | undefined;
+export const rememberedFinanceMonth = (): string | null => {
+  if (rememberedMonth === undefined) {
+    try {
+      rememberedMonth = window.sessionStorage.getItem(FINANCE_MONTH_KEY)?.match(/^\d{4}-\d{2}$/)?.[0] ?? null;
+    } catch {
+      rememberedMonth = null;
+    }
+  }
+  return rememberedMonth;
 };
+function storeFinanceMonth(month: string | null) {
+  rememberedMonth = month;
+  try {
+    if (month) window.sessionStorage.setItem(FINANCE_MONTH_KEY, month);
+    else window.sessionStorage.removeItem(FINANCE_MONTH_KEY);
+  } catch {
+    // pas de stockage : le mois n'est gardé que jusqu'à l'actualisation
+  }
+}
+// En retournant à l'accueil, les Finances se rouvriront sur le mois précédent (le dernier terminé)
+export const forgetFinanceMonth = () => storeFinanceMonth(null);
 function setViewedMonth(month: string | null) {
-  if (month) rememberedMonth = month;
+  if (month) storeFinanceMonth(month);
   if (viewedMonth === month) return;
   viewedMonth = month;
   viewedListeners.forEach((l) => l());
@@ -281,10 +323,16 @@ export function useFinanceTone(): { state: HealthState | null; dark: string | nu
   const coverage = useCoverage().data;
   const plan = useHemorrhagePlan();
   const rules = useHealthSettings().data?.rules;
+  // Règle de l'épargne : la couleur se recalcule quand elle change
+  const savingsRule = useSavingsRuleVersion();
   // Montants des grandes catégories du mois : chargés seulement si une règle s'en sert
   const needGroups = needsCategoryTotals(rules);
   const categoriesLoaded = useCategories().data !== undefined;
-  const monthTx = useMonthTransactions(needGroups ? month : null).data;
+  // Budget du mois (limites et dépenses) : chargé seulement si une règle s'en sert
+  const needBudgetData = needsBudget(rules);
+  const limits = useCategoryLimits().data;
+  const monthBudgets = useMonthBudgets().data;
+  const monthTx = useMonthTransactions(needGroups || needBudgetData ? month : null).data;
   const isDebtTx = useDebtCategories();
   const groupTotals = useMemo(() => {
     if (!needGroups || !categoriesLoaded || !monthTx) return null;
@@ -303,15 +351,26 @@ export function useFinanceTone(): { state: HealthState | null; dark: string | nu
     }
     return map;
   }, [needGroups, categoriesLoaded, monthTx, isDebtTx]);
+  const budget = useMemo(() => {
+    if (!needBudgetData || !month || !categoriesLoaded || !monthTx || !limits || !monthBudgets) return null;
+    // Comme le Budget : sans les opérations qui vont au bilan
+    const tx = monthTx.filter((t) => !isDebtTx(t));
+    const total = budgetOfMonth(month, tx, limits, annualPlans(), monthBudgets);
+    const lines = new Map(
+      budgetLinesOf(month, summarize(tx).byCategory, limits, monthBudgets).map((l) => [l.target, { label: l.label, allowed: l.limit, spent: l.spent }])
+    );
+    return { allowed: total.allowed, spent: total.spent, lines } satisfies MonthBudgetCheck;
+  }, [needBudgetData, month, categoriesLoaded, monthTx, limits, monthBudgets, isDebtTx]);
   const state = useMemo(() => {
     // Mêmes règles que le Bilan : soldes des relevés manquants écartés, mois incomplets laissés de côté
     const known = lines ? knownLines(lines, coverage) : null;
     const health =
       month && known && rules
-        ? assessHealth(known.lines, month, 'now', plan, { bilan: known.unknownBilan, result: known.unknownResult }, rules, groupTotals)
+        ? assessHealth(known.lines, month, 'now', plan, { bilan: known.unknownBilan, result: known.unknownResult }, rules, groupTotals, budget)
         : null;
     return health?.state ?? null;
-  }, [month, lines, coverage, plan, rules, groupTotals]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- savingsRule : l'épargne de totals() suit la règle
+  }, [month, lines, coverage, plan, rules, groupTotals, budget, savingsRule]);
   // État connu : sa teinte est retenue pour les prochains chargements
   useEffect(() => {
     if (state) rememberTone(HEALTH_TONES[state]);

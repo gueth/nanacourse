@@ -4,6 +4,8 @@ import { supabase } from '@/lib/supabase';
 import { orThrow, useCached } from '@/lib/cache';
 import type { IncomePart } from '@/lib/budget';
 import type { HealthState } from '@/lib/health';
+import { CATEGORIES } from '@/lib/transactions';
+import { DEFAULT_SAVINGS_EXCLUDED, setSavingsRule } from '@/lib/savingsRule';
 
 // Réglages des couleurs des Finances (Paramètres > Finances) :
 //  - les règles qui donnent sa couleur à un mois (lib/health, assessHealth) : pour chaque couleur (sauf le gris, qui
@@ -18,8 +20,9 @@ import type { HealthState } from '@/lib/health';
 export type RuleOp = '==' | '!=' | '<' | '<=' | '>' | '>=';
 export const RULE_OPS: RuleOp[] = ['==', '!=', '<', '<=', '>', '>='];
 
-export type ConditionKind = 'categorie' | 'resultat' | 'bilan' | 'epargne' | 'patrimoine';
-// flow et target : seulement pour une catégorie (sens, puis catégorie ou grande catégorie « groupe:<id> »)
+export type ConditionKind = 'categorie' | 'resultat' | 'bilan' | 'epargne' | 'patrimoine' | 'budget';
+// flow et target : pour une catégorie (sens, puis catégorie ou grande catégorie « groupe:<id> ») ; target seul pour un
+// budget (vide : le budget global du mois, sinon celui d'une catégorie ou d'une grande catégorie « groupe:<id> »)
 export type HealthCondition = { kind: ConditionKind; measure: string; flow?: 'income' | 'expense'; target?: string; op: RuleOp; value: number };
 export type ColorRule = { match: 'any' | 'all'; conditions: HealthCondition[] };
 export type RuledState = Exclude<HealthState, 'neutre'>;
@@ -56,6 +59,16 @@ export const CONDITION_KINDS: { id: ConditionKind; label: string; measures: Meas
     measures: [
       { id: 'taux', label: 'Part des revenus épargnée', unit: '%' },
       { id: 'montant', label: 'Montant épargné', unit: '€' }
+    ]
+  },
+  {
+    // Budget du mois (limites des catégories, Finances > Budget), global ou d'une catégorie : de combien il est dépassé
+    // (négatif : ce qu'il en reste)
+    id: 'budget',
+    label: 'Budget',
+    measures: [
+      { id: 'depassement_pct', label: 'Dépassement du budget', unit: '%' },
+      { id: 'depassement', label: 'Dépassement du budget', unit: '€' }
     ]
   },
   {
@@ -161,32 +174,66 @@ function normalize(raw: unknown): HealthRules {
 
 // Répartition propre à une couleur : pourcentage par identifiant de partie
 export type StateRepartition = Record<string, number>;
-export type HealthSettings = { rules: HealthRules; repartitions: Partial<Record<HealthState, StateRepartition>> };
-export const DEFAULT_HEALTH_SETTINGS: HealthSettings = { rules: DEFAULT_RULES, repartitions: {} };
+// savingsExcluded : catégories d'entrée écartées de l'épargne (règle de lib/savingsRule : épargne = entrées − ces
+// entrées − charges), par défaut les aides et allocations
+// budgets : limites par défaut des mois de chaque couleur, en pourcentage de sa partie de la répartition, par grande
+// catégorie (identifiant du groupe) ; les grandes catégories d'une même partie font 100 % (lib/repartition, colorLimits)
+export type StateBudgets = Record<string, number>;
+export type HealthSettings = {
+  rules: HealthRules;
+  repartitions: Partial<Record<HealthState, StateRepartition>>;
+  savingsExcluded: string[];
+  budgets: Partial<Record<HealthState, StateBudgets>>;
+};
+export const DEFAULT_HEALTH_SETTINGS: HealthSettings = { rules: DEFAULT_RULES, repartitions: {}, savingsExcluded: DEFAULT_SAVINGS_EXCLUDED, budgets: {} };
+// Les budgets par couleur sont rangés dans la colonne « repartitions », sous cette clé (pas de script SQL à relancer)
+const BUDGETS_KEY = '_budgets';
+
+// Pose la règle de l'épargne pour toute l'application (lignes du compte de résultat : celles des catégories écartées)
+export function applySavingsRule(excluded: string[]) {
+  setSavingsRule(excluded, (ids) => CATEGORIES.filter((c) => ids.includes(c.id) && c.line).map((c) => c.line!));
+}
 
 // Les couleurs, de la plus grave à la meilleure, avec leur nom
 export const HEALTH_STATES: { id: HealthState; color: string; name: string }[] = [
   { id: 'hemorragie', color: 'Rouge', name: 'Hémorragie' },
-  { id: 'maladie', color: 'Orange', name: 'Maladie' },
-  { id: 'fatigue', color: 'Jaune', name: 'Fatigue' },
+  { id: 'maladie', color: 'Jaune', name: 'Maladie' },
+  { id: 'fatigue', color: 'Orange', name: 'Fatigue' },
   { id: 'sante', color: 'Bleu', name: 'Santé' },
   { id: 'olympique', color: 'Vert', name: 'Olympique' },
   { id: 'neutre', color: 'Gris', name: 'Neutre' }
 ];
 
 const missingTable = (error: { code?: string } | null) => !!error && (error.code === '42P01' || error.code === 'PGRST205');
+// Colonne « savings » absente (script supabase/finance_health.sql pas encore relancé)
+const missingSavingsColumn = (error: { code?: string; message?: string } | null) =>
+  !!error && (error.code === '42703' || error.code === 'PGRST204' || /savings/i.test(error.message ?? ''));
+let savingsColumnMissing = false;
 
 export async function fetchHealthSettings(): Promise<{ settings: HealthSettings; error: { message: string } | null; missing: boolean }> {
-  const { data, error } = await supabase.from('finance_health').select('rules, repartitions').eq('id', 1).maybeSingle();
+  let { data, error } = await supabase.from('finance_health').select(savingsColumnMissing ? 'rules, repartitions' : 'rules, repartitions, savings').eq('id', 1).maybeSingle();
+  if (!savingsColumnMissing && missingSavingsColumn(error)) {
+    savingsColumnMissing = true;
+    ({ data, error } = await supabase.from('finance_health').select('rules, repartitions').eq('id', 1).maybeSingle());
+  }
   if (missingTable(error)) return { settings: DEFAULT_HEALTH_SETTINGS, error: null, missing: true };
-  const row = data as { rules?: unknown; repartitions?: HealthSettings['repartitions'] | null } | null;
-  return { settings: { rules: normalize(row?.rules), repartitions: row?.repartitions ?? {} }, error, missing: false };
+  const row = data as { rules?: unknown; repartitions?: HealthSettings['repartitions'] | null; savings?: { exclure?: unknown } | null } | null;
+  const exclure = row?.savings?.exclure;
+  const savingsExcluded = Array.isArray(exclure) ? exclure.filter((x): x is string => typeof x === 'string') : DEFAULT_SAVINGS_EXCLUDED;
+  const { [BUDGETS_KEY]: budgets, ...repartitions } = (row?.repartitions ?? {}) as HealthSettings['repartitions'] & { [BUDGETS_KEY]?: HealthSettings['budgets'] };
+  return { settings: { rules: normalize(row?.rules), repartitions, savingsExcluded, budgets: budgets ?? {} }, error, missing: false };
 }
 
-export async function saveHealthSettings(settings: HealthSettings) {
-  const { error } = await supabase
-    .from('finance_health')
-    .upsert({ id: 1, rules: settings.rules, repartitions: settings.repartitions, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+// "savingsMissing" : la règle de l'épargne n'a pas pu être enregistrée (colonne absente), le reste l'a été
+export async function saveHealthSettings(settings: HealthSettings): Promise<{ message: string } | null> {
+  const repartitions = { ...settings.repartitions, [BUDGETS_KEY]: settings.budgets };
+  const base = { id: 1, rules: settings.rules, repartitions, updated_at: new Date().toISOString() };
+  const { error } = await supabase.from('finance_health').upsert({ ...base, savings: { exclure: settings.savingsExcluded } }, { onConflict: 'id' });
+  if (missingSavingsColumn(error)) {
+    savingsColumnMissing = true;
+    const retry = await supabase.from('finance_health').upsert(base, { onConflict: 'id' });
+    return retry.error ?? { message: 'savings' };
+  }
   return error;
 }
 
@@ -194,9 +241,15 @@ export const HEALTH_SETTINGS_KEY = 'finances:couleurs-reglages';
 export function useHealthSettings() {
   return useCached(HEALTH_SETTINGS_KEY, async () => {
     const { settings, error, missing } = await fetchHealthSettings();
+    // La règle de l'épargne vaut tout de suite pour tous les calculs (avant que les pages ne se redessinent)
+    if (!error) applySavingsRule(settings.savingsExcluded);
     return orThrow({ ...settings, missing }, error);
   });
 }
+
+// Une règle porte-t-elle sur le budget du mois ?
+export const needsBudget = (rules: HealthRules | undefined) =>
+  !!rules && Object.values(rules).some((r) => r.conditions.some((c) => c.kind === 'budget'));
 
 // Une règle demande-t-elle les montants du mois par catégorie ?
 export const needsCategoryTotals = (rules: HealthRules | undefined) =>

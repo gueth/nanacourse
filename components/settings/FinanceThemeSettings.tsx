@@ -5,7 +5,7 @@ import { Plus, X } from 'lucide-react';
 import { useIncomePlan } from '@/lib/coursesQueries';
 import { useCategories } from '@/lib/financeQueries';
 import { CATEGORIES, categoryGroups, groupKindOf } from '@/lib/transactions';
-import { HEALTH_TONES, type HealthState } from '@/lib/health';
+import { HEALTH_TONES, useFinanceTone, type HealthState } from '@/lib/health';
 import {
   CHECK_ORDER,
   CONDITION_KINDS,
@@ -13,6 +13,7 @@ import {
   HEALTH_STATES,
   measureOf,
   RULE_OPS,
+  applySavingsRule,
   saveHealthSettings,
   useHealthSettings,
   type ColorRule,
@@ -23,6 +24,8 @@ import {
   type RuledState
 } from '@/lib/healthSettings';
 import { DEFAULT_PLAN } from '@/lib/budget';
+import { groupsByPart } from '@/lib/repartition';
+import { DEFAULT_SAVINGS_EXCLUDED } from '@/lib/savingsRule';
 
 // Onglet « Finances » des paramètres : les couleurs que prennent les pages Finances selon la situation du mois.
 // Pour chaque couleur : sa règle, une liste de conditions toutes de la même forme (type, ce qu'on mesure, comparaison,
@@ -69,8 +72,28 @@ function ConditionRow({ condition: c, onChange, onRemove }: { condition: HealthC
 
   function setKind(next: ConditionKind) {
     const first = CONDITION_KINDS.find((k) => k.id === next)!.measures[0];
-    onChange({ kind: next, measure: first.id, op: c.op, value: c.value, ...(next === 'categorie' ? { flow: 'expense' as const, target: '' } : {}) });
+    onChange({
+      kind: next,
+      measure: first.id,
+      op: c.op,
+      value: c.value,
+      ...(next === 'categorie' ? { flow: 'expense' as const, target: '' } : next === 'budget' ? { target: '' } : {})
+    });
   }
+  // Budgets qu'on peut vérifier : grandes catégories et catégories de sorties (une limite doit leur être fixée, Finances > Budget)
+  const budgetGroups = categoryGroups()
+    .filter((g) => g.kind === 'expense' && !g.virtual)
+    .sort((a, b) => a.label.localeCompare(b.label, 'fr'));
+  const budgetCategories = CATEGORIES.filter((x) => groupKindOf(x) === 'expense' && !x.annual).sort((a, b) => a.label.localeCompare(b.label, 'fr'));
+  const measureSelect = (
+    <select value={c.measure} onChange={(e) => onChange({ ...c, measure: e.target.value })} className={selectClass}>
+      {kind.measures.map((m) => (
+        <option key={m.id} value={m.id}>
+          {m.label} ({m.unit})
+        </option>
+      ))}
+    </select>
+  );
 
   return (
     <div className="space-y-2 rounded-[16px] bg-[#f3edf7] p-3">
@@ -121,16 +144,40 @@ function ConditionRow({ condition: c, onChange, onRemove }: { condition: HealthC
             </select>
           </Field>
         </div>
+      ) : c.kind === 'budget' ? (
+        <>
+          <div className="grid grid-cols-[3fr_2fr] gap-2">
+            <Field label="Budget">
+              <select value={c.target ?? ''} onChange={(e) => onChange({ ...c, target: e.target.value })} className={selectClass}>
+                <option value="">Budget global du mois</option>
+                {budgetGroups.length > 0 && (
+                  <optgroup label="Grandes catégories">
+                    {budgetGroups.map((g) => (
+                      <option key={g.id} value={`groupe:${g.id}`}>
+                        {g.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                <optgroup label="Catégories">
+                  {budgetCategories.map((x) => (
+                    <option key={x.id} value={x.id}>
+                      {x.label}
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
+            </Field>
+            <Field label="Mesure">{measureSelect}</Field>
+          </div>
+          {c.target && (
+            <p className="text-[11px] leading-snug opacity-60">
+              La condition ne compte que les mois où ce budget a une limite (une catégorie comprise dans une grande catégorie limitée suit la limite de celle-ci).
+            </p>
+          )}
+        </>
       ) : (
-        <Field label="Mesure">
-          <select value={c.measure} onChange={(e) => onChange({ ...c, measure: e.target.value })} className={selectClass}>
-            {kind.measures.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label} ({m.unit})
-              </option>
-            ))}
-          </select>
-        </Field>
+        <Field label="Mesure">{measureSelect}</Field>
       )}
 
       <div className="grid grid-cols-[3fr_2fr] gap-2">
@@ -160,9 +207,12 @@ function ConditionRow({ condition: c, onChange, onRemove }: { condition: HealthC
 
 export default function FinanceThemeSettings() {
   const settingsQuery = useHealthSettings();
+  // Teinte des Finances calculée ici aussi : dès l'enregistrement, elle suit les nouvelles règles et est retenue
+  // pour les pages Finances (pas de retour de l'ancienne couleur en y allant)
+  useFinanceTone();
   const parts = (useIncomePlan().data ?? DEFAULT_PLAN).parts;
-  // Catégories chargées (listes des conditions de type « Catégorie »)
-  useCategories();
+  // Catégories chargées (listes des conditions de type « Catégorie », grandes catégories des budgets par défaut)
+  const categoriesLoaded = useCategories().data !== undefined;
   // Brouillon : les modifications ne comptent qu'une fois enregistrées
   const [draft, setDraft] = useState<HealthSettings | null>(null);
   const [busy, setBusy] = useState(false);
@@ -171,8 +221,14 @@ export default function FinanceThemeSettings() {
   if (settingsQuery.error) return <p className="text-sm text-[#b3261e]">Les réglages des couleurs n&apos;ont pas pu être chargés.</p>;
   if (!settingsQuery.data) return <p className="text-sm opacity-70">Chargement…</p>;
   const saved = settingsQuery.data;
-  const current: HealthSettings = draft ?? { rules: saved.rules, repartitions: saved.repartitions };
-  const dirty = !!draft && JSON.stringify(draft) !== JSON.stringify({ rules: saved.rules, repartitions: saved.repartitions });
+  const savedSettings: HealthSettings = { rules: saved.rules, repartitions: saved.repartitions, savingsExcluded: saved.savingsExcluded, budgets: saved.budgets };
+  const current: HealthSettings = draft ?? savedSettings;
+  const dirty = !!draft && JSON.stringify(draft) !== JSON.stringify(savedSettings);
+  // Catégories d'entrée (règle de l'épargne), par ordre alphabétique
+  const incomeCategories = CATEGORIES.filter((c) => c.kind === 'income').sort((a, b) => a.label.localeCompare(b.label, 'fr'));
+  const toggleExcluded = (id: string, on: boolean) =>
+    edit({ ...current, savingsExcluded: on ? [...current.savingsExcluded.filter((x) => x !== id), id] : current.savingsExcluded.filter((x) => x !== id) });
+  const excludedLabels = current.savingsExcluded.map((id) => incomeCategories.find((c) => c.id === id)?.label).filter(Boolean);
 
   const edit = (next: HealthSettings) => {
     setMessage(null);
@@ -186,20 +242,59 @@ export default function FinanceThemeSettings() {
     edit({ ...current, repartitions });
   };
 
+  // Budgets par défaut d'une couleur : les parties de sa répartition (la sienne, sinon celle par défaut), chacune avec ses
+  // grandes catégories de dépenses
+  const groupsOfState = (state: HealthState) => {
+    if (!categoriesLoaded) return [];
+    const own = current.repartitions[state];
+    return groupsByPart(own ? parts.map((p) => ({ ...p, pct: Number(own[p.id] ?? 0) })) : parts);
+  };
+  const setBudgets = (state: HealthState, value: Record<string, number> | null) => {
+    const budgets = { ...current.budgets };
+    if (value) budgets[state] = value;
+    else delete budgets[state];
+    edit({ ...current, budgets });
+  };
+  // Premiers pourcentages : la partie partagée à parts égales entre ses grandes catégories (100 % en tout)
+  const evenBudgets = (state: HealthState) =>
+    Object.fromEntries(
+      groupsOfState(state).flatMap(({ groups }) => groups.map((g, i) => [g.id, Math.floor(100 / groups.length) + (i < 100 % groups.length ? 1 : 0)]))
+    );
+  const partTotal = (pcts: Record<string, number>, groups: { id: string }[]) => groups.reduce((s, g) => s + Number(pcts[g.id] ?? 0), 0);
+  // Couleurs dont une partie ne fait pas 100 % : l'enregistrement attend qu'elles soient corrigées
+  const badBudgets = CHECK_ORDER.filter((state) => {
+    const pcts = current.budgets[state];
+    return !!pcts && groupsOfState(state).some(({ groups }) => partTotal(pcts, groups) !== 100);
+  });
+
   async function save() {
+    if (badBudgets.length) return;
     setBusy(true);
     const err = await saveHealthSettings(current);
     setBusy(false);
-    if (err) {
+    if (err && err.message !== 'savings') {
       const missing = /finance_health/.test(err.message) || /relation|schema cache/i.test(err.message);
       return setMessage({
         ok: false,
         text: missing ? 'Lance d’abord le script supabase/finance_health.sql dans l’éditeur SQL de Supabase.' : `Non enregistré : ${err.message}`
       });
     }
+    // Colonne de la règle de l'épargne absente : les couleurs sont enregistrées, pas l'épargne
+    if (err) {
+      settingsQuery.setData((prev) => ({ ...prev, rules: current.rules, repartitions: current.repartitions, budgets: current.budgets }));
+      settingsQuery.reload();
+      setDraft(null);
+      return setMessage({
+        ok: false,
+        text: 'Couleurs enregistrées, mais pas la règle de l’épargne : relance le script supabase/finance_health.sql dans l’éditeur SQL de Supabase.'
+      });
+    }
+    // Les nouvelles règles valent tout de suite pour toutes les pages (épargne et teinte se recalculent), puis on relit la base
+    applySavingsRule(current.savingsExcluded);
+    settingsQuery.setData((prev) => ({ ...prev, ...current }));
     settingsQuery.reload();
     setDraft(null);
-    setMessage({ ok: true, text: 'Enregistré : les pages Finances suivent ces règles et ces répartitions.' });
+    setMessage({ ok: true, text: 'Enregistré : toute l’application suit ces règles et ces répartitions.' });
   }
 
   // Règle d'une couleur : « si l'une / toutes les conditions », la liste, puis l'ajout
@@ -260,6 +355,35 @@ export default function FinanceThemeSettings() {
           </p>
         )}
       </div>
+
+      {/* RÈGLE DE L'ÉPARGNE : la même partout (accueil, Bilan, Budget, couleurs du mois) */}
+      <section className="rounded-[24px] bg-white/70 p-5">
+        <h3 className="text-[17px] font-medium leading-tight">Ce qui compte comme épargne</h3>
+        <p className="mt-1 text-[13px] leading-relaxed opacity-75">
+          Partout dans l&apos;application, l&apos;épargne du mois se calcule ainsi. Les charges ne comptent ni les virements entre tes comptes ni les catégories reliées
+          au bilan. Le taux d&apos;épargne est l&apos;épargne divisée par les entrées retenues.
+        </p>
+        <p className="mt-3 rounded-[16px] bg-[#f3edf7] px-4 py-3 text-center text-[14px] leading-relaxed">
+          Épargne = entrées
+          {excludedLabels.length > 0 && <> − {excludedLabels.join(' − ')}</>} − charges
+        </p>
+        <p className="field-label mt-4">Entrées à ne pas compter dans l&apos;épargne</p>
+        <ul className="space-y-1.5">
+          {incomeCategories.map((c) => (
+            <li key={c.id}>
+              <label className="flex items-center gap-2 text-[14px]">
+                <input
+                  type="checkbox"
+                  checked={current.savingsExcluded.includes(c.id)}
+                  onChange={(e) => toggleExcluded(c.id, e.target.checked)}
+                  className="size-4 accent-[#65558f]"
+                />
+                {c.label}
+              </label>
+            </li>
+          ))}
+        </ul>
+      </section>
 
       {CHECK_ORDER.map((state, i) => {
         const info = HEALTH_STATES.find((h) => h.id === state)!;
@@ -333,13 +457,86 @@ export default function FinanceThemeSettings() {
                   </p>
                 )}
               </div>
+
+              {/* BUDGETS PAR DÉFAUT : la limite de chaque grande catégorie, en pourcentage de sa partie de la répartition */}
+              <div>
+                <p className="field-label">Budgets par défaut dans cette situation</p>
+                <label className="flex items-center gap-2 text-[14px]">
+                  <input
+                    type="checkbox"
+                    checked={!!current.budgets[state]}
+                    onChange={(e) => setBudgets(state, e.target.checked ? evenBudgets(state) : null)}
+                    className="size-4 accent-[#65558f]"
+                  />
+                  Des limites par défaut pour les mois de cette couleur
+                </label>
+                {current.budgets[state] ? (
+                  (() => {
+                    const pcts = current.budgets[state]!;
+                    const byPart = groupsOfState(state);
+                    return (
+                      <>
+                        <p className="mt-1 text-[12px] leading-snug opacity-60">
+                          Chaque grande catégorie reçoit une part de sa partie de la répartition ; sa limite du mois est cette part des revenus du mois. Par exemple,
+                          Charges à 40 % et Courses à 30 % des charges : Courses ne doit pas dépasser 12 % des revenus. Les grandes catégories d&apos;une partie font
+                          100 % à elles toutes.
+                        </p>
+                        {byPart.length === 0 && (
+                          <p className="mt-2 text-[12px] opacity-60">Aucune grande catégorie de dépenses n&apos;est rangée dans les parties de la répartition.</p>
+                        )}
+                        {byPart.map(({ part, groups }) => {
+                          const sum = partTotal(pcts, groups);
+                          return (
+                            <div key={part.id} className="mt-3 rounded-[16px] bg-[#f3edf7] p-3">
+                              <p className="text-[13px] font-medium">
+                                {part.label} <span className="font-normal opacity-60">· {part.pct} % des revenus</span>
+                              </p>
+                              <ul className="mt-1.5 space-y-1.5">
+                                {groups.map((g) => {
+                                  const pct = Number(pcts[g.id] ?? 0);
+                                  return (
+                                    <li key={g.id} className="flex items-center justify-between gap-3 text-[14px]">
+                                      <span className="min-w-0">
+                                        {g.label}
+                                        <span className="block text-[11px] opacity-60">
+                                          soit {Math.round(part.pct * pct) / 100} % des revenus
+                                        </span>
+                                      </span>
+                                      <span className="inline-flex items-baseline gap-1">
+                                        <input
+                                          type="number"
+                                          inputMode="decimal"
+                                          value={pct}
+                                          onChange={(e) => setBudgets(state, { ...pcts, [g.id]: Math.min(100, Math.max(0, Number(e.target.value) || 0)) })}
+                                          aria-label={`${g.label} : pourcentage de ${part.label}`}
+                                          className="input-hand w-[5.5rem] py-1 text-right tabular-nums"
+                                        />
+                                        %
+                                      </span>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                              <p className={`mt-2 text-[12px] ${sum === 100 ? 'opacity-60' : 'font-medium text-[#b3261e]'}`}>
+                                Total {part.label.toLowerCase()} : {sum} %{sum !== 100 && ' — il doit faire 100 %'}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </>
+                    );
+                  })()
+                ) : (
+                  <p className="mt-1 text-[12px] opacity-60">Les limites générales (Finances › Budget) s&apos;appliquent.</p>
+                )}
+              </div>
             </div>
           </section>
         );
       })}
 
       <div className="flex flex-wrap items-center gap-3">
-        <button type="button" onClick={save} disabled={busy || !dirty} className="btn-hand disabled:opacity-40">
+        <button type="button" onClick={save} disabled={busy || !dirty || badBudgets.length > 0} className="btn-hand disabled:opacity-40">
           {busy ? 'Enregistrement…' : 'Enregistrer'}
         </button>
         {dirty && (
@@ -354,10 +551,15 @@ export default function FinanceThemeSettings() {
             Annuler
           </button>
         )}
-        <button type="button" onClick={() => edit({ ...current, rules: DEFAULT_RULES })} className="btn-ghost">
+        <button type="button" onClick={() => edit({ ...current, rules: DEFAULT_RULES, savingsExcluded: DEFAULT_SAVINGS_EXCLUDED })} className="btn-ghost">
           Règles par défaut
         </button>
       </div>
+      {badBudgets.length > 0 && (
+        <p className="text-[13px] text-[#b3261e]">
+          Budgets par défaut à corriger ({badBudgets.map((s) => HEALTH_STATES.find((h) => h.id === s)!.color).join(', ')}) : chaque partie doit faire 100 %.
+        </p>
+      )}
       {message && <p className={`text-[13px] ${message.ok ? 'text-[#1d6b3a]' : 'text-[#b3261e]'}`}>{message.text}</p>}
     </div>
   );

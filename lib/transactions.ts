@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import { addLine, fetchAllLines, fetchOrSeedLines, formatEuros, importMayWrite, monthKey, SECTIONS, setLineAmount, shiftMonth, updateLine } from '@/lib/finance';
+import { isExcludedIncomeCategory } from '@/lib/savingsRule';
 import type { ParsedTransaction, StatementSummary } from '@/lib/bankImport';
 import type { Coverage, ManualNote, SavingsEstimate, TrackedAccount, TransferCheck, TransferMismatch, TransferQuestion } from '@/lib/coverage';
 
@@ -67,9 +68,6 @@ export const CATEGORIES: Category[] = [
   { id: 'fonctionnel', label: 'Fonctionnel (applis, démarches)', kind: 'fixed', essential: true, sign: -1, section: 'engagements', line: 'Fonctionnel', keywords: ['CANVA', 'GOOGLE', 'APPLE.COM', 'ICLOUD', 'MICROSOFT', 'ADOBE', 'OPENAI', 'CHATGPT', 'ANTHROPIC', 'CLAUDE.AI', 'NOTION', 'DROPBOX', 'ACADEMIA', 'LA POSTE', 'LAPOSTE', 'ANTS', 'TIMBRE*', 'PHOTOMATON', 'IMPRESSION', 'PREFECTURE', 'MAIRIE', 'TOEIC', 'SCOLARITE', 'INSCRIPTION', 'CONCOURS'] },
   // Remboursement d'une dette envers une personne (prêt d'un proche, avance...) : les crédits bancaires vont dans « Crédits »
   { id: 'dette', label: 'Dettes', kind: 'fixed', sign: -1, section: 'engagements', line: 'Remboursements de dettes', keywords: ['DETTE', 'DETTES'] },
-  // Ce que l'on se doit à soi-même (lib/selfDebt) : une opération classée ici (ex. virement vers un livret) la rembourse.
-  // Ne se supprime pas.
-  { id: 'dette_moi', label: 'Dette à moi-même', kind: 'fixed', sign: -1, section: 'engagements', line: 'Dette à moi-même', keywords: [] },
   { id: 'credit', label: 'Crédits', kind: 'fixed', essential: true, sign: -1, section: 'engagements', line: 'Remboursements de crédit', keywords: ['ECHEANCE', 'ECH PRET', 'PRET', 'CREDIT', 'COFIDIS', 'CETELEM', 'SOFINCO', 'FLOA', 'ONEY', 'FRANFINANCE', 'YOUNITED'] },
   { id: 'impots', label: 'Impôts', kind: 'fixed', essential: true, sign: -1, section: 'engagements', line: 'Impôts', keywords: ['DGFIP', 'IMPOT', 'TRESOR PUBLIC', 'FINANCES PUBLIQUES', 'TAXE'] },
   { id: 'voyages', label: 'Voyages', kind: 'variable', sign: -1, section: 'loisirs', line: 'Voyages', keywords: ['AIRBNB', 'BOOKING', 'HOTEL', 'AIR FRANCE', 'EASYJET', 'RYANAIR', 'TRANSAVIA', 'VOLOTEA', 'VUELING', 'EXPEDIA', 'FLIXBUS'] },
@@ -88,16 +86,15 @@ export const categoryById = (id: string) => CATEGORIES.find((c) => c.id === id) 
 export const byLabel = (a: Category, b: Category) => a.label.localeCompare(b.label, 'fr', { sensitivity: 'base' });
 
 // --- Gestion des catégories ---
-// Toute catégorie peut être supprimée, sauf les deux « Autres » (les opérations d'une catégorie supprimée y retournent),
-// « Dette à moi-même » et les sous-catégories des dépenses annuelles (elles suivent la liste des dépenses annuelles).
+// Toute catégorie peut être supprimée, sauf les deux « Autres » (les opérations d'une catégorie supprimée y retournent)
+// et les sous-catégories des dépenses annuelles (elles suivent la liste des dépenses annuelles).
 // - catégories personnelles (table custom_categories) : ajoutées à la fin de CATEGORIES, sans mots-clés
 //   (ce sont les choix « retenus », table category_rules, qui y classent les opérations suivantes)
 // - catégories de base supprimées (table removed_categories) : retirées de CATEGORIES et ignorées par le classement automatique
 
 export const DEFAULT_CATEGORY_IDS = ['autre_depense', 'autre_revenu'];
-export const SELF_DEBT_ID = 'dette_moi';
 // Catégories qui ne se suppriment pas (ni ne se renomment ou se déplacent, pour les dépenses annuelles)
-export const isLockedCategory = (c: Category) => DEFAULT_CATEGORY_IDS.includes(c.id) || c.id === SELF_DEBT_ID || !!c.annual;
+export const isLockedCategory = (c: Category) => DEFAULT_CATEGORY_IDS.includes(c.id) || !!c.annual;
 
 export type CustomCategory = { id: string; label: string; kind: 'income' | 'variable'; section: string };
 
@@ -458,12 +455,19 @@ export async function linkTransfers(fromDate?: string, toDate?: string) {
 }
 
 // Remet à jour le compte de résultat des mois donnés avec toutes leurs opérations
+// (les connecteurs sont lus une seule fois, et les opérations de tous les mois en même temps)
 export async function refreshStatements(months: string[]) {
   const filled: string[] = [];
-  for (const month of [...new Set(months)].sort()) {
-    const { transactions, error } = await fetchTransactions(`${month}-01`, lastDayOf(month));
+  const list = [...new Set(months)].sort();
+  if (!list.length) return { filled, error: null };
+  const [connected, ...fetched] = await Promise.all([
+    connectedCategories(),
+    ...list.map((month) => fetchTransactions(`${month}-01`, lastDayOf(month)))
+  ]);
+  for (const [i, month] of list.entries()) {
+    const { transactions, error } = fetched[i];
     if (error) return { filled, error };
-    const r = await reportToStatement(month, transactions, 'replace');
+    const r = await reportToStatement(month, transactions, 'replace', connected);
     if (r.error) return { filled, error: r.error };
     if (r.filled) filled.push(month);
   }
@@ -622,8 +626,8 @@ export async function saveBudget(category: string, limit: number | null) {
 }
 
 // Budget propre à un mois passé (table month_budgets, supabase/month_budgets.sql), pour une catégorie ou une grande
-// catégorie (« groupe:<id> ») : sa limite ce mois-là si custom_limit (null : pas de limite), et si son dépassement
-// (ou son économie) compte dans la dette à moi-même. Sans ligne, le mois suit la limite générale et compte.
+// catégorie (« groupe:<id> ») : sa limite ce mois-là si custom_limit (null : pas de limite). Sans ligne, le mois suit
+// la limite générale. ("counted" : colonne de l'ancienne dette à moi-même, plus utilisée)
 export type MonthBudget = { month: string; target: string; custom_limit: boolean; monthly_limit: number | null; counted: boolean };
 export const groupTarget = (id: string) => `groupe:${id}`;
 
@@ -649,7 +653,7 @@ async function keepPastLimit(target: string, previous: number | null) {
   const { data } = await supabase.from('bank_transactions').select('date').order('date').limit(1);
   const first = (data as { date: string }[] | null)?.[0]?.date.slice(0, 7);
   if (!first || first >= current) return;
-  // Mois où seul le choix de compter (ou non) dans la dette était retenu
+  // Lignes du mois sans limite propre : elles reçoivent la limite d'avant
   await supabase.from('month_budgets').update({ custom_limit: true, monthly_limit: previous }).eq('target', target).eq('custom_limit', false).lt('month', current);
   const rows = [];
   for (let month = first; month < current; month = shiftMonth(month, 1)) rows.push({ month, target, custom_limit: true, monthly_limit: previous });
@@ -661,10 +665,6 @@ export function limitIn(month: string, target: string, general: number | null, m
   const own = monthBudgets.find((b) => b.month === month && b.target === target);
   return own?.custom_limit ? own.monthly_limit : general;
 }
-
-// Son dépassement (ou son économie) compte-t-il dans la dette à moi-même ce mois-là ?
-export const countedIn = (month: string, target: string, monthBudgets: MonthBudget[]) =>
-  monthBudgets.find((b) => b.month === month && b.target === target)?.counted ?? true;
 
 // Dépenses annuelles à anticiper (assurance, impôts, vacances...) : mises de côté chaque mois.
 // Chacune devient une sous-catégorie de « Dépenses annuelles » (voir annualCategoryId).
@@ -748,17 +748,22 @@ const round = (n: number) => Math.round(n * 100) / 100;
 export const isTransfer = (t: Transaction) => categoryById(t.category).kind === 'transfer';
 
 // Entrées, sorties et dépenses par catégorie d'un ensemble d'opérations (virements internes exclus)
+// Entrées, sorties et épargne d'une liste d'opérations (sans les virements entre mes comptes). Épargne : la règle de
+// lib/savingsRule, entrées − entrées écartées (aides…) − sorties ; "excluded" : le total des entrées écartées
 export function summarize(transactions: Transaction[]) {
   const byCategory = new Map<string, number>();
   let income = 0;
   let expenses = 0;
+  let excluded = 0;
   for (const t of transactions) {
     if (isTransfer(t)) continue;
-    if (t.amount > 0) income += t.amount;
-    else expenses -= t.amount;
+    if (t.amount > 0) {
+      income += t.amount;
+      if (isExcludedIncomeCategory(t.category)) excluded += t.amount;
+    } else expenses -= t.amount;
     byCategory.set(t.category, (byCategory.get(t.category) ?? 0) - t.amount);
   }
-  return { income: round(income), expenses: round(expenses), byCategory };
+  return { income: round(income), expenses: round(expenses), excluded: round(excluded), savings: round(income - excluded - expenses), byCategory };
 }
 
 // Dépenses par type : fixes (loyer, abonnements...), variables (courses, sorties...), occasionnelles (dépenses inhabituelles)
@@ -882,10 +887,16 @@ export async function connectedCategories() {
 // - mode 'import' : une ligne saisie à la main est gardée ; une ligne vide, absente ou déjà calculée par un import est
 //   (re)calculée, ce qui complète correctement un mois réparti sur plusieurs relevés
 // Renvoie le nombre de lignes écrites et de lignes saisies à la main laissées telles quelles.
-export async function reportToStatement(period: string, monthTx: Transaction[], mode: 'replace' | 'import' = 'replace') {
+export async function reportToStatement(
+  period: string,
+  monthTx: Transaction[],
+  mode: 'replace' | 'import' = 'replace',
+  // Catégories reliées à un connecteur (lues ici si elles ne sont pas données)
+  knownConnected?: ConnectedCategories
+) {
   const totals = new Map<string, { section: string; line: string; amount: number }>();
   // Catégories reliées à un connecteur : au bilan seulement, comme les virements
-  const connected = await connectedCategories();
+  const connected = knownConnected ?? (await connectedCategories());
   // Seuls les comptes courants font le résultat du mois : les opérations des livrets (intérêts compris) n'y entrent pas
   for (const t of monthTx.filter((x) => !isSavingsAccount(x.account))) {
     const cat = categoryById(t.category);
@@ -901,6 +912,8 @@ export async function reportToStatement(period: string, monthTx: Transaction[], 
   if (error) return { ...result, error };
   const find = (sectionId: string, label: string) => lines.find((l) => l.section === sectionId && l.label.toLowerCase() === label.toLowerCase());
 
+  // Écritures lancées toutes ensemble (et non plus l'une après l'autre)
+  const writes: Promise<{ message: string } | null>[] = [];
   for (const { section: sectionId, line: label, amount } of totals.values()) {
     const value = round(Math.max(0, amount));
     const existing = find(sectionId, label);
@@ -910,23 +923,25 @@ export async function reportToStatement(period: string, monthTx: Transaction[], 
     }
     if (existing) {
       if (existing.amount === value && existing.auto) continue;
-      const err = await updateLine(existing.id, { amount: value, auto: true });
-      if (err) return { ...result, error: err };
+      writes.push(updateLine(existing.id, { amount: value, auto: true }));
     } else {
       if (value === 0) continue;
-      const { line, error: err } = await addLine(period, SECTIONS.find((s) => s.id === sectionId)!, label, 100);
-      if (err) return { ...result, error: err };
-      if (line) await updateLine(line.id, { amount: value, auto: true });
+      writes.push(
+        addLine(period, SECTIONS.find((s) => s.id === sectionId)!, label, 100).then(({ line, error: err }) =>
+          err ? err : line ? updateLine(line.id, { amount: value, auto: true }) : null
+        )
+      );
     }
     result.filled++;
   }
   // Lignes calculées par un import dont la catégorie n'a plus d'opération ce mois-ci (opération reclassée ou supprimée) : remises à zéro
   for (const l of lines) {
     if (!l.auto || l.statement !== 'resultat' || l.amount === 0 || totals.has(`${l.section}|${l.label.toLowerCase()}`)) continue;
-    const err = await updateLine(l.id, { amount: 0 });
-    if (err) return { ...result, error: err };
+    writes.push(updateLine(l.id, { amount: 0 }));
     result.filled++;
   }
+  const err = (await Promise.all(writes)).find(Boolean);
+  if (err) return { ...result, error: err };
   return result;
 }
 

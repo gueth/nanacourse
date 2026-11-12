@@ -65,9 +65,22 @@ const shortDate = (date: string) => new Date(date).toLocaleDateString('fr-FR', {
 const WEEK_DAYS = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
 // Intervalle de dates (AAAA-MM-JJ) : from '' = toutes les dates ; to '' = jusqu'à la fin du mois
 type DateRange = { from: string; to: string };
-// « Du 13 oct. au 20 oct. », « Le 13 oct. » ou « À partir du 13 oct. »
+// « du 1 au 12 oct », « le 13 oct » ou « à partir du 01 oct » (les jours sont toujours dans le mois affiché)
+const capitalized = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+const monthShort = (date: string) => shortDate(date).split(' ').slice(1).join(' ').replace('.', '');
 const rangeLabel = ({ from, to }: DateRange) =>
-  !to ? `À partir du ${shortDate(from)}` : to === from ? `Le ${shortDate(from)}` : `Du ${shortDate(from)} au ${shortDate(to)}`;
+  !to
+    ? `à partir du ${from.slice(8, 10)} ${monthShort(from)}`
+    : to === from
+      ? `le ${Number(from.slice(8, 10))} ${monthShort(from)}`
+      : `du ${Number(from.slice(8, 10))} au ${Number(to.slice(8, 10))} ${monthShort(to)}`;
+// Dates choisies, sous l'icône calendrier : « 12/11/2026 » pour un seul jour, sinon le début et, juste en dessous, la
+// fin (sans fin choisie : le dernier jour du mois, on ne sort jamais du mois affiché)
+const frDate = (date: string) => `${date.slice(8, 10)}/${date.slice(5, 7)}/${date.slice(0, 4)}`;
+const endOfMonth = (date: string) => {
+  const [y, m] = date.split('-').map(Number);
+  return `${date.slice(0, 7)}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
+};
 function DateFilter({ value, period, marked, onChange }: { value: DateRange; period: string; marked: Set<string>; onChange: (range: DateRange) => void }) {
   const [open, setOpen] = useState(false);
   // Choix en cours dans la popin (appliqué au second jour touché, ou avec « Valider »)
@@ -145,8 +158,8 @@ function DateFilter({ value, period, marked, onChange }: { value: DateRange; per
             {!draft.from
               ? 'Touche le premier jour, puis le dernier. Un point marque les jours qui ont des transactions.'
               : !draft.to
-                ? `${rangeLabel(draft)} : touche le dernier jour, ou valide pour garder tous les jours suivants.`
-                : `${rangeLabel(draft)}. Touche un jour pour recommencer.`}
+                ? `${capitalized(rangeLabel(draft))} : touche le dernier jour, ou valide pour garder tous les jours suivants.`
+                : `${capitalized(rangeLabel(draft))}. Touche un jour pour recommencer.`}
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             {draft.from && <FinButton onClick={() => apply(draft)}>Valider</FinButton>}
@@ -190,7 +203,8 @@ const groupOf = (categoryId: string) => {
 // Popin « Modifier une transaction », ouverte en touchant l'icône d'une transaction : son libellé, sa date et son compte,
 // puis sa catégorie en deux listes (la grande catégorie, puis la catégorie de celle-ci). Le choix vaut toujours pour ce
 // commerçant (et les prochains relevés) : à partir du mois de la transaction, ou sur tous les mois, même passés.
-type ClassifyScope = 'one' | 'from' | 'all';
+// 'month' : ce commerçant dans le mois de la transaction seulement ; 'all' : tous les mois, passés et à venir
+type ClassifyScope = 'one' | 'month' | 'all';
 const NO_GROUP = 'sans';
 function ClassifyModal({
   transaction: t,
@@ -207,7 +221,6 @@ function ClassifyModal({
   const [group, setGroup] = useState<string>(categoryById(t.category).group ?? NO_GROUP);
   const [category, setCategory] = useState(t.category);
   const inGroup = choices.find((g) => (g.group?.id ?? NO_GROUP) === group)?.list ?? [];
-  const month = monthLabel(monthOf(t.date));
   // Une ligne d'information : l'intitulé puis la valeur, à la suite dans le même texte (une valeur longue revient à la
   // ligne sous l'intitulé, pas dans une colonne à part)
   const info = (label: string, value: React.ReactNode) => (
@@ -222,6 +235,8 @@ function ClassifyModal({
     <FinModal title="Modifier une transaction" onClose={() => !busy && onClose()}>
       <div className="mt-1">
         {info('Libellé de la transaction', t.label)}
+        {/* Montant : vert pour une entrée, rouge pour une sortie */}
+        {info('Montant', <span style={{ color: t.amount > 0 ? FIN.sage : FIN.rose }}>{formatEuros(t.amount)}</span>)}
         {info('Date', shortDate(t.date))}
         {info('Type de compte', t.account)}
       </div>
@@ -259,21 +274,25 @@ function ClassifyModal({
       </select>
 
       <div className="mt-5 flex flex-col gap-2">
-        <FinButton onClick={() => onClassify(category, 'from')} disabled={busy || !category}>
-          {`Enregistrer pour ${month} et les mois suivants`}
+        {/* Cette transaction seule ; celles du même commerçant ce mois-ci ; ou sur tous les mois (et les prochains relevés) */}
+        <FinButton onClick={() => onClassify(category, 'one')} disabled={busy || !category || category === t.category}>
+          Modifier cette transaction uniquement
+        </FinButton>
+        <FinButton onClick={() => onClassify(category, 'month')} disabled={busy || !category}>
+          Modifier toutes les transactions de ce mois
         </FinButton>
         <FinButton onClick={() => onClassify(category, 'all')} disabled={busy || !category}>
-          Enregistrer pour tous les mois
+          Modifier les transactions de tous les mois
         </FinButton>
         <FinButton outline onClick={onClose} disabled={busy}>
           Annuler
         </FinButton>
       </div>
-      <p className="mt-3 text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
-        {busy
-          ? 'Enregistrement en cours…'
-          : `Toutes les transactions « ${merchantKey(t.label)} » suivent ce choix, ainsi que les prochains relevés. Avec « ${month} et les mois suivants », les mois d'avant gardent leur classement.`}
-      </p>
+      {busy && (
+        <p className="mt-3 text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
+          Enregistrement en cours…
+        </p>
+      )}
     </FinModal>
   );
 }
@@ -495,17 +514,38 @@ function AddOperationForm({
   );
 }
 
+// Filtres de la liste de transactions, gardés tant que l'appli reste ouverte : changer de mois, aller au Bilan ou
+// ailleurs dans les Finances puis revenir ne les efface pas
+type AmountOp = 'eq' | 'gte' | 'lte';
+type TxFilters = { account: string; range: DateRange; flow: '' | 'in' | 'out'; category: string; amountOp: AmountOp; amount: string };
+const KEPT_FILTERS: TxFilters = { account: '', range: { from: '', to: '' }, flow: '', category: '', amountOp: 'eq', amount: '' };
+function useKeptFilter<K extends keyof TxFilters>(key: K) {
+  const [value, setValue] = useState<TxFilters[K]>(KEPT_FILTERS[key]);
+  const set = (next: TxFilters[K]) => {
+    KEPT_FILTERS[key] = next;
+    setValue(next);
+  };
+  return [value, set] as const;
+}
+
 export default function BudgetPage() {
   const [confirm, confirmDialog] = useFinConfirm();
   const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
-  const [offset, setOffset] = useState(0);
+  // Mois choisi avec les flèches
+  const [chosen, setChosen] = useState<string | null>(null);
   const askedMonth = useSyncExternalStore(noSubscribe, readAskedMonth, () => null);
   // Sinon, le mois qu'on regardait sur le Bilan (ou lors de la dernière visite du Budget), sinon le mois précédent
-  const [remembered] = useState(rememberedFinanceMonth);
-  const startMonth = askedMonth ?? remembered ?? (currentMonth && shiftMonth(currentMonth, -1));
-  const period = startMonth ? shiftMonth(startMonth, offset) : null;
+  // (aussi après avoir actualisé la page)
+  const remembered = useSyncExternalStore(noSubscribe, rememberedFinanceMonth, () => null);
+  const period = chosen ?? askedMonth ?? remembered ?? (currentMonth && shiftMonth(currentMonth, -1));
   // La teinte de la partie Finances suit l'état de santé du mois affiché
   useViewedMonth(period);
+  // Changement de mois avec les flèches : le mois demandé dans l'adresse (?mois=) est retiré, pour qu'en actualisant la
+  // page on revienne au mois qu'on regardait
+  function pickMonth(month: string) {
+    setChosen(month);
+    if (askedMonth) window.history.replaceState(window.history.state, '', window.location.pathname);
+  }
 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -515,11 +555,33 @@ export default function BudgetPage() {
   const [classifying, setClassifying] = useState<Transaction | null>(null);
   // Reclassement en cours depuis la popin de classement
   const [alwaysBusy, setAlwaysBusy] = useState(false);
-  const [accountFilter, setAccountFilter] = useState(''); // '' : tous les comptes
+  // Filtres de la liste : gardés en mémoire (KEPT_FILTERS) quand on change de mois ou qu'on va ailleurs dans les Finances
+  const [accountFilter, setAccountFilter] = useKeptFilter('account'); // '' : tous les comptes
   // Dates gardées par la liste : un intervalle, ou un jour et les suivants (from '' : toutes)
-  const [dateRange, setDateRange] = useState<DateRange>({ from: '', to: '' });
-  const [flowFilter, setFlowFilter] = useState<'' | 'in' | 'out'>(''); // '' : entrées et sorties
-  const [categoryFilter, setCategoryFilter] = useState(''); // '' : toutes ; sinon une grande catégorie, 'sans' ou 'virements'
+  const [dateRange, setDateRange] = useKeptFilter('range');
+  const [flowFilter, setFlowFilter] = useKeptFilter('flow'); // '' : entrées et sorties
+  const [categoryFilter, setCategoryFilter] = useKeptFilter('category'); // '' : toutes ; sinon une grande catégorie, 'sans' ou 'virements'
+  // Filtre par montant : égal, supérieur ou égal, ou inférieur ou égal à ce montant (sans signe ; le sens se
+  // choisit à part). '' : aucun. Appliqué avec « Valider » (ou Entrée) : la saisie en cours reste à part
+  const [amountOp, setAmountOp] = useKeptFilter('amountOp');
+  const [amountFilter, setAmountFilter] = useKeptFilter('amount');
+  const [amountDraft, setAmountDraft] = useState(amountFilter);
+  const [amountOpDraft, setAmountOpDraft] = useState(amountOp);
+  const applyAmount = () => {
+    setAmountFilter(amountDraft);
+    setAmountOp(amountOpDraft);
+  };
+  // Reset : tous les filtres de la liste reviennent à zéro
+  const resetFilters = () => {
+    setAccountFilter('');
+    setDateRange({ from: '', to: '' });
+    setFlowFilter('');
+    setCategoryFilter('');
+    setAmountFilter('');
+    setAmountOp('eq');
+    setAmountDraft('');
+    setAmountOpDraft('eq');
+  };
 
   // Données gardées en mémoire entre deux visites (lib/cache) : affichées tout de suite, puis rechargées en arrière-plan.
   // Opérations : une fenêtre de 13 mois (le mois affiché et les 12 d'avant) par mois affiché.
@@ -560,9 +622,10 @@ export default function BudgetPage() {
   }
 
   // Après chaque changement d'opérations, le compte de résultat des mois touchés et les lignes du bilan reliées
-  // à des catégories se mettent à jour d'eux-mêmes (lib/financeSync)
-  async function sync(touched: Transaction[]) {
-    report(await syncFinances([...new Set(touched.map((t) => monthOf(t.date)))]));
+  // à des catégories se mettent à jour d'eux-mêmes (lib/financeSync), en arrière-plan : la liste est déjà à jour à
+  // l'écran, on n'attend pas la fin du recalcul pour rendre la main
+  function sync(touched: Transaction[]) {
+    void syncFinances([...new Set(touched.map((t) => monthOf(t.date)))]).then(report);
   }
 
   // Un changement qui touche aux virements entre mes comptes (ou à un livret) : le Bilan redemande de les vérifier
@@ -576,7 +639,7 @@ export default function BudgetPage() {
     setTransactions((ts) => ts.map((x) => (x.id === t.id ? { ...x, category } : x)));
     const err = await updateCategory([t.id], category);
     if (err) return report(err);
-    await sync([t]);
+    sync([t]);
   }
 
   // Classement depuis « À classer » ; si le choix est retenu, il s'applique à toutes les opérations « Autres »
@@ -593,17 +656,15 @@ export default function BudgetPage() {
     if (err) return report(err);
     // Opérations plus anciennes (hors des 12 derniers mois chargés) : reclassées avec la règle qui vient d'être retenue
     const { changed } = await reclassifyOthers();
-    await sync(touched);
+    sync(touched);
     const n = ids.length + changed;
     setNotice(`« ${key} » classé en ${categoryById(category).label} (${n} opération${n > 1 ? 's' : ''}), et retenu pour les prochains imports.`);
   }
 
-  // Mémorise la correction et l'applique à toutes les opérations du même commerçant
-  // Toujours classer ce commerçant ainsi : la règle vaut pour les prochains relevés ; les transactions déjà enregistrées
-  // sont reclassées à partir du mois de la transaction (scope 'from') ou sur tous les mois, même passés ('all')
-  // Choix fait dans la popin de classement : la transaction passe dans la catégorie choisie ; « toujours », le
-  // commerçant y est aussi rangé pour les prochains relevés, et ses autres transactions sont reclassées à partir du
-  // mois de celle-ci (scope 'from') ou sur tous les mois, même passés ('all')
+  // Choix fait dans la popin de classement : la transaction passe dans la catégorie choisie, avec les autres transactions
+  // du même commerçant : celles du même mois seulement (scope 'month', sans règle : les autres mois et les prochains
+  // relevés ne changent pas), ou celles de tous les mois, passés et futurs ('all' : la règle vaut aussi pour les
+  // prochains relevés)
   async function classifyTransaction(t: Transaction, category: string, scope: ClassifyScope) {
     setAlwaysBusy(true);
     if (category !== t.category) await recategorize(t, category);
@@ -612,10 +673,13 @@ export default function BudgetPage() {
     setClassifying(null);
   }
 
-  async function alwaysLikeThis(t: Transaction, scope: 'from' | 'all') {
+  async function alwaysLikeThis(t: Transaction, scope: 'month' | 'all') {
     setAlwaysBusy(true);
     const key = merchantKey(t.label);
-    const { transactions: stored, error: fetchErr } = await fetchTransactions(scope === 'all' ? '0001-01-01' : `${monthOf(t.date)}-01`, '9999-12-31');
+    const { transactions: stored, error: fetchErr } = await fetchTransactions(
+      scope === 'all' ? '0001-01-01' : `${monthOf(t.date)}-01`,
+      scope === 'all' ? '9999-12-31' : lastDay(monthOf(t.date))
+    );
     if (fetchErr) {
       setAlwaysBusy(false);
       return report(fetchErr);
@@ -624,13 +688,15 @@ export default function BudgetPage() {
     const ids = new Set(same.map((x) => x.id));
     flagTransfers(same, t.category);
     setTransactions((ts) => ts.map((x) => (ids.has(x.id) ? { ...x, category: t.category } : x)));
-    report(await saveRule(key, t.category));
+    if (scope === 'all') report(await saveRule(key, t.category));
     if (same.length) report(await updateCategory([...ids], t.category));
-    await sync(same);
+    sync(same);
     setAlwaysBusy(false);
-    const since = scope === 'all' ? 'sur tous les mois' : `depuis ${monthLabel(monthOf(t.date))}`;
+    const others = `${same.length} autre${same.length > 1 ? 's' : ''} transaction${same.length > 1 ? 's' : ''} reclassée${same.length > 1 ? 's' : ''}`;
     setNotice(
-      `« ${key} » sera toujours classé en ${categoryById(t.category).label} : ${same.length} autre${same.length > 1 ? 's' : ''} transaction${same.length > 1 ? 's' : ''} reclassée${same.length > 1 ? 's' : ''} ${since}.`
+      scope === 'all'
+        ? `« ${key} » sera toujours classé en ${categoryById(t.category).label} : ${others} sur tous les mois.`
+        : `« ${key} » classé en ${categoryById(t.category).label} pour ${monthLabel(monthOf(t.date))} : ${others} ce mois-ci.`
     );
   }
 
@@ -646,8 +712,8 @@ export default function BudgetPage() {
     setCachedAll<TxWindow>(TX_PREFIX, (w) =>
       w.from <= month && month <= w.to ? { ...w, list: [transaction, ...w.list].sort((a, b) => b.date.localeCompare(a.date)) } : w
     );
-    await sync([transaction]);
-    setNotice(`« ${transaction.label} » ajoutée : le compte de résultat de ${monthLabel(month)} est à jour.`);
+    sync([transaction]);
+    setNotice(`« ${transaction.label} » ajoutée : le compte de résultat de ${monthLabel(month)} se met à jour.`);
     return true;
   }
 
@@ -659,23 +725,27 @@ export default function BudgetPage() {
     setTransactions((ts) => ts.filter((x) => x.id !== t.id));
     const err = await deleteManualTransaction(t.id);
     if (err) return report(err);
-    await sync([t]);
+    sync([t]);
   }
 
   // Liste des opérations : filtrable par compte et par dates (un intervalle, ou un jour et les suivants)
   const shownAccount = accounts.includes(accountFilter) ? accountFilter : '';
-  // Des dates choisies dans un autre mois ne comptent plus quand on change de mois
-  const shownRange: DateRange = period && dateRange.from && monthOf(dateRange.from) === period ? dateRange : { from: '', to: '' };
+  // Changer de mois garde les mêmes jours (du 1 au 12), reportés dans le mois affiché (le 31 devient le dernier jour du mois)
+  const inPeriod = (date: string) => {
+    if (!period || monthOf(date) === period) return date;
+    const last = endOfMonth(`${period}-01`);
+    return `${period}-${String(Math.min(Number(date.slice(8, 10)), Number(last.slice(8, 10)))).padStart(2, '0')}`;
+  };
+  const shownRange: DateRange = period && dateRange.from ? { from: inPeriod(dateRange.from), to: dateRange.to && inPeriod(dateRange.to) } : { from: '', to: '' };
   const shownFrom = shownRange.from;
   const inRange = (t: Transaction) => !shownFrom || (t.date >= shownFrom && (!shownRange.to || t.date <= shownRange.to));
   // Sens : entrée (montant positif) ou sortie (négatif)
   const flowOk = (t: Transaction) => !flowFilter || (flowFilter === 'in' ? t.amount > 0 : t.amount < 0);
-  // Filtre par grande catégorie : celles des transactions du mois, dans le sens choisi ; les virements entre mes comptes
-  // et les catégories sans grande catégorie ont chacun leur choix, en fin de liste
+  // Filtre par grande catégorie : toutes, même sans transaction ce mois-ci (dans le sens choisi s'il y en a un) ; les
+  // virements entre mes comptes et les catégories sans grande catégorie ont chacun leur choix, en fin de liste
   const filterKeyOf = (t: Transaction) => (categoryById(t.category).kind === 'transfer' ? 'virements' : (groupOf(t.category)?.id ?? 'sans'));
-  const usedKeys = new Set(monthTx.filter(flowOk).map(filterKeyOf));
   const usedGroups = categoryGroups()
-    .filter((g) => usedKeys.has(g.id))
+    .filter((g) => !flowFilter || (flowFilter === 'in') === (g.kind === 'income'))
     .sort((a, b) => a.label.localeCompare(b.label, 'fr'));
   const filterGroups = [
     // Même nom en sorties et en entrées : le sens est précisé
@@ -683,12 +753,20 @@ export default function BudgetPage() {
       id: g.id,
       label: usedGroups.some((o) => o.id !== g.id && o.label === g.label) ? `${g.label} (${g.kind === 'income' ? 'entrées' : 'sorties'})` : g.label
     })),
-    ...(usedKeys.has('sans') ? [{ id: 'sans', label: 'Sans grande catégorie' }] : []),
-    ...(usedKeys.has('virements') ? [{ id: 'virements', label: 'Virements entre mes comptes' }] : [])
+    { id: 'sans', label: 'Sans grande catégorie' },
+    { id: 'virements', label: 'Virements entre mes comptes' }
   ];
   const shownCategory = filterGroups.some((g) => g.id === categoryFilter) ? categoryFilter : '';
+  // Montant saisi (virgule ou point) : comparé au montant de l'opération sans son signe, au centime près
+  const amountValue = amountFilter.trim() === '' ? null : Number(amountFilter.replace(/s/g, '').replace(',', '.'));
+  const shownAmount = amountValue !== null && Number.isFinite(amountValue) ? Math.round(Math.abs(amountValue) * 100) : null;
+  const amountOk = (t: Transaction) => {
+    if (shownAmount === null) return true;
+    const cents = Math.round(Math.abs(t.amount) * 100);
+    return amountOp === 'gte' ? cents >= shownAmount : amountOp === 'lte' ? cents <= shownAmount : cents === shownAmount;
+  };
   const filteredTx = monthTx.filter(
-    (t) => (!shownAccount || t.account === shownAccount) && inRange(t) && flowOk(t) && (!shownCategory || filterKeyOf(t) === shownCategory)
+    (t) => (!shownAccount || t.account === shownAccount) && inRange(t) && flowOk(t) && (!shownCategory || filterKeyOf(t) === shownCategory) && amountOk(t)
   );
   // Dates choisies : la liste commence par les transactions du premier jour, puis va vers les suivants
   const listTx = shownFrom ? [...filteredTx].sort((a, b) => a.date.localeCompare(b.date)) : filteredTx;
@@ -709,8 +787,8 @@ export default function BudgetPage() {
         <FinanceHeader
           subtitle="budget · opérations"
           month={period ? monthLabel(period) : ''}
-          onPrev={() => setOffset((o) => o - 1)}
-          onNext={() => period && currentMonth && period < currentMonth && setOffset((o) => o + 1)}
+          onPrev={() => period && pickMonth(shiftMonth(period, -1))}
+          onNext={() => period && currentMonth && period < currentMonth && pickMonth(shiftMonth(period, 1))}
           canNext={!!period && !!currentMonth && period < currentMonth}
         />
       }
@@ -726,17 +804,15 @@ export default function BudgetPage() {
         </p>
       )}
 
-      {!loaded ? (
-        <p className="mt-10 text-center text-[11px] uppercase tracking-[0.3em]" style={{ color: FIN.slate }}>
-          Chargement…
-        </p>
-      ) : monthTx.length === 0 && period !== currentMonth ? (
+      {/* Pendant le chargement, la page est déjà là, vide (sans opérations), et se remplit ensuite : les cartes et les
+          boutons n'apparaissent pas d'un coup */}
+      {!period ? null : loaded && monthTx.length === 0 && period !== currentMonth ? (
         // Mois passé sans relevé importé : les Finances retranscrivent le passé, on importe donc son relevé
-        <NewMonthCard period={period!} />
+        <NewMonthCard period={period} />
       ) : (
         <>
           {/* Mois en cours sans relevé : seulement le bouton d'import, la page suit sans données */}
-          {monthTx.length === 0 && <ImportStatementButton period={period!} />}
+          {loaded && monthTx.length === 0 && <ImportStatementButton period={period} />}
           {/* Entrées, sorties, reste et dépenses fixes / variables / occasionnelles : sur le Bilan, onglet Compte de résultat */}
           <OthersPanel items={monthTx.filter((t) => OTHER_IDS.includes(t.category))} onClassify={classifyOther} />
           <KeyFigures period={period!} transactions={figureTransactions} />
@@ -782,13 +858,17 @@ export default function BudgetPage() {
               ) : undefined
             }
           >
-            {/* Filtres, dans l'ordre : calendrier, les dates choisies juste à sa droite, puis le type de compte (qui se
-                rétrécit pour laisser la place aux dates, sur la même ligne) */}
-            <div className="mb-2 flex items-end gap-2">
+            {/* Filtres, dans l'ordre : calendrier, les dates choisies juste à sa droite, puis le type de compte. La place des
+                dates est toujours réservée : le type de compte ne bouge pas quand on en choisit ou en retire */}
+            <div className="mb-2 flex items-end gap-1.5">
               <DateFilter value={shownRange} period={period!} marked={new Set(monthTx.map((t) => t.date))} onChange={setDateRange} />
+              <span className="flex h-[30px] w-[74px] shrink-0 items-center gap-1 text-[10px] leading-tight tabular-nums" style={{ color: FIN.slate }}>
               {shownFrom && (
-                <span className="flex h-[30px] max-w-[45%] shrink-0 items-center gap-1 text-[10px] leading-tight" style={{ color: FIN.slate }}>
-                  <span className="min-w-0">{rangeLabel(shownRange)}</span>
+                <>
+                  <span className="flex min-w-0 flex-col">
+                    <span>{frDate(shownFrom)}</span>
+                    {(shownRange.to || endOfMonth(shownFrom)) !== shownFrom && <span>{frDate(shownRange.to || endOfMonth(shownFrom))}</span>}
+                  </span>
                   <button
                     type="button"
                     onClick={() => setDateRange({ from: '', to: '' })}
@@ -798,8 +878,11 @@ export default function BudgetPage() {
                   >
                     <X size={13} />
                   </button>
-                </span>
+                </>
               )}
+              {/* Aucune date choisie : le format attendu, en pâle */}
+              {!shownFrom && <span style={{ opacity: 0.5 }}>jj/mm/aaaa</span>}
+              </span>
               <label className="min-w-0 flex-1">
                 <span className="mb-0.5 block text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
                   Type de compte
@@ -840,12 +923,69 @@ export default function BudgetPage() {
                 </select>
               </label>
             </div>
+            {/* Montant : égal, supérieur ou égal, ou inférieur ou égal à la somme saisie, appliqué avec « Valider » ;
+                « Reset » remet tous les filtres à zéro. Tout sur une ligne : champs courts, boutons à droite */}
+            <form
+              className="mb-2 flex items-end gap-1.5"
+              onSubmit={(e) => {
+                e.preventDefault();
+                applyAmount();
+              }}
+            >
+              <label className="min-w-0 flex-[3]">
+                <span className="mb-0.5 block text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+                  Montant
+                </span>
+                <select
+                  value={amountOpDraft}
+                  onChange={(e) => setAmountOpDraft(e.target.value as AmountOp)}
+                  aria-label="Comparaison du montant"
+                  className="fin-select w-full py-1 pl-2 text-[12px]"
+                >
+                  <option value="eq">Égal</option>
+                  <option value="gte">Supérieur ou égal</option>
+                  <option value="lte">Inférieur ou égal</option>
+                </select>
+              </label>
+              <label className="min-w-0 flex-[2]">
+                <span className="mb-0.5 block text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+                  Somme en €
+                </span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={amountDraft}
+                  onChange={(e) => setAmountDraft(e.target.value)}
+                  placeholder="Tous"
+                  className="w-full min-w-0 rounded-[2px] border border-[#c9d2df] bg-[#f8f7f4] py-1 pl-2 pr-1 text-[12px] text-[#2b3a55] outline-none focus:border-[var(--fin-accent,#5e5b57)]"
+                />
+              </label>
+              <span className="flex shrink-0 gap-1.5">
+                <button
+                  type="submit"
+                  disabled={amountDraft === amountFilter && amountOpDraft === amountOp}
+                  className="rounded-full border px-2.5 py-1 text-[9px] uppercase tracking-[0.15em] text-white disabled:opacity-40"
+                  style={{ borderColor: FIN.accent, backgroundColor: FIN.accent }}
+                >
+                  Valider
+                </button>
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  title="Remettre tous les filtres à zéro"
+                  className="rounded-full border px-2.5 py-1 text-[9px] uppercase tracking-[0.15em]"
+                  style={{ borderColor: FIN.accent, color: FIN.accent }}
+                >
+                  Reset
+                </button>
+              </span>
+            </form>
             {/* Séparation entre les filtres et le début de la liste */}
             <hr className="mb-3 mt-2 h-[2px] rounded-full border-0" style={{ backgroundColor: FIN.accent, opacity: 0.55 }} />
             {estimated && <EstimatedOperations account={shownAccount} period={period!} accounts={accounts} onSaved={coverageQuery.reload} />}
-            {listTx.length === 0 && !estimated && (
+            {loaded && listTx.length === 0 && !estimated && (
               <p className="py-2 text-[11px]" style={{ color: FIN.slate }}>
-                {shownFrom || flowFilter || shownCategory ? 'Aucune transaction avec ces filtres.' : 'Aucune transaction sur ce compte ce mois-ci.'}
+                {shownFrom || flowFilter || shownCategory || shownAmount !== null ? 'Aucune transaction ne correspond à la recherche.' : 'Aucune transaction sur ce compte ce mois-ci.'}
               </p>
             )}
             <ul className="divide-y" style={{ borderColor: FIN.line }}>

@@ -27,7 +27,7 @@ export const FIN = {
 
 // Précisions des lignes du bilan, par « rubrique|nom de la ligne en minuscules »
 const LINE_NOTES: Record<string, string> = {
-  'dettes|dette': 'ce que les autres me doivent'
+  'dettes|dette': 'ce que je dois'
 };
 
 const script = { fontFamily: 'var(--font-script), cursive' };
@@ -121,7 +121,7 @@ export function FinanceHeader({
   return (
     // En-tête compact : titre, sous-titre juste dessous (le retour se fait par le menu du bas)
     <header className="relative px-4 pb-5 pt-2 text-center" style={{ backgroundColor: FIN.accent, color: FIN.paper }}>
-      <h1 className="pt-2 text-[32px] leading-none" style={script}>
+      <h1 className="pt-6 text-[32px] leading-none" style={script}>
         Finances
       </h1>
       <p className="text-[9px] uppercase tracking-[0.3em] opacity-70">{subtitle}</p>
@@ -151,11 +151,13 @@ export function FinanceHeader({
 }
 
 // Tuile de synthèse : intitulé, montant, et une précision facultative
-export function SummaryTile({ label, value, color, note }: { label: string; value: string; color: string; note?: string }) {
+// "corner" : petit bouton posé sur le coin haut droit de la case (alerte…)
+export function SummaryTile({ label, value, color, note, corner }: { label: string; value: string; color: string; note?: string; corner?: React.ReactNode }) {
   return (
     // Hauteur fixe, ligne de précision toujours réservée : deux synthèses (bilan, compte de résultat) ont la même taille,
     // avec ou sans précision, et rien ne bouge en passant de l'une à l'autre
-    <div className="flex h-[84px] min-w-0 flex-col justify-center rounded-sm border px-2 text-center" style={{ backgroundColor: FIN.paper, borderColor: FIN.line }}>
+    <div className="relative flex h-[84px] min-w-0 flex-col justify-center rounded-sm border px-2 text-center" style={{ backgroundColor: FIN.paper, borderColor: FIN.line }}>
+      {corner && <div className="absolute -right-2 -top-2 z-[1]">{corner}</div>}
       <p className="truncate text-[9px] uppercase tracking-[0.25em]" style={{ color: FIN.slate }}>
         {label}
       </p>
@@ -217,8 +219,17 @@ export function Ledger({
   total,
   color,
   totalLabel,
+  open = true,
+  onToggle,
+  alert = false,
   children
 }: {
+  // Bilan déséquilibré (connecteurs, lib/balanceLinks checkBalance) : la ligne du total passe en rouge
+  alert?: boolean;
+  // Repliable ("onToggle") : toucher la ligne du total déplie (ou replie) les lignes du tableau ; c'est la page qui
+  // choisit quelles lignes se replient (open : état affiché par la flèche)
+  open?: boolean;
+  onToggle?: () => void;
   // Sans titre : celui-ci est déjà donné au-dessus (intitulés soulignés des pages du Bilan, « Actif · Passif »)
   title?: string;
   total: number | null;
@@ -248,12 +259,32 @@ export function Ledger({
         </thead>
         {children}
         <tfoot>
-          <tr style={{ backgroundColor: FIN.navy, color: FIN.paper }}>
+          <tr
+            style={{ backgroundColor: alert ? FIN.rose : FIN.navy, color: FIN.paper }}
+            className={onToggle ? 'cursor-pointer select-none' : undefined}
+            onClick={onToggle}
+            role={onToggle ? 'button' : undefined}
+            tabIndex={onToggle ? 0 : undefined}
+            aria-expanded={onToggle ? open : undefined}
+            aria-label={onToggle ? `${totalLabel} : ${open ? 'replier' : 'déplier'} le tableau` : undefined}
+            onKeyDown={
+              onToggle
+                ? (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onToggle();
+                    }
+                  }
+                : undefined
+            }
+          >
             <td className="px-2 py-2 text-[10px] uppercase tracking-[0.2em]">{totalLabel}</td>
-            <td className="px-2 py-2 text-right text-[14px] font-bold" style={{ color }}>
+            <td className="px-2 py-2 text-right text-[14px] font-bold" style={{ color: alert ? FIN.paper : color }}>
               <Amount value={total} />
             </td>
-            <td />
+            <td className="pr-1.5 text-center">
+              {onToggle && <ChevronDown size={14} aria-hidden className={`inline transition-transform ${open ? 'rotate-180' : ''}`} />}
+            </td>
           </tr>
         </tfoot>
       </table>
@@ -306,15 +337,22 @@ function LedgerGroupRow({
 // Rubrique calculée : ex. capitaux propres au passif, dont le résultat du mois
 export function LedgerComputed({
   title,
-  rows
+  rows,
+  folded = false,
+  open = false,
+  onToggle
 }: {
   title: string;
   rows: { label: string; value: number | null; note?: string; color?: string }[];
+  // Repliée comme les autres rubriques : seuls le titre et le sous-total restent, « +N » montre les lignes
+  folded?: boolean;
+  open?: boolean;
+  onToggle?: () => void;
 }) {
   return (
     <tbody>
-      <LedgerGroupRow title={title} subtotal={sumKnown(rows.map((r) => r.value))} />
-      {rows.map((r) => (
+      <LedgerGroupRow title={title} subtotal={sumKnown(rows.map((r) => r.value))} folded={folded ? rows.length : 0} open={open} onToggle={onToggle} />
+      {(!folded || open ? rows : []).map((r) => (
         <tr key={r.label} className={`${ROW} border-b`} style={{ borderColor: FIN.line }}>
           <td className="border-r px-1 py-0" style={{ borderColor: FIN.line }} title={r.note ? `${r.label} : ${r.note}` : r.label}>
             <RowLabel label={r.label} note={r.note} />
@@ -389,15 +427,17 @@ export function SectionBlock({
 }
 
 // Lignes vides en bas d'un tableau, de la même hauteur qu'une ligne : pour qu'il ait autant de lignes que celui d'à côté
-export function LedgerFiller({ count }: { count: number }) {
+// "group" : habillée comme un titre de rubrique (même fond, sans trait au milieu), sous des rubriques repliées
+export function LedgerFiller({ count, variant = 'line' }: { count: number; variant?: 'line' | 'group' }) {
   if (count <= 0) return null;
+  const group = variant === 'group';
   return (
     <tbody aria-hidden>
       {Array.from({ length: count }, (_, i) => (
-        <tr key={i} className={`${ROW} border-b`} style={{ borderColor: FIN.line }}>
-          <td className="border-r" style={{ borderColor: FIN.line }} />
-          <td />
-          <td />
+        <tr key={i} className={ROW} style={{ backgroundColor: group ? FIN.mist : undefined }}>
+          <td className={group ? 'border-b' : 'border-b border-r'} style={{ borderColor: FIN.line }} />
+          <td className="border-b" style={{ borderColor: FIN.line }} />
+          <td className="border-b" style={{ borderColor: FIN.line }} />
         </tr>
       ))}
     </tbody>

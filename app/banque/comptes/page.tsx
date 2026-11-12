@@ -30,7 +30,7 @@ import {
   type Transaction
 } from '@/lib/transactions';
 import { orThrow, useCached } from '@/lib/cache';
-import { refreshBalanceLinksOnce } from '@/lib/balanceLinks';
+import { balanceLinksSettled, checkBalance, refreshBalanceLinksOnce } from '@/lib/balanceLinks';
 import { formatEuros, monthEndLabel, monthKey, monthLabel, SECTIONS, shiftMonth, totals, type FinanceLine, type Section, type Side, type Statement } from '@/lib/finance';
 import {
   useFinanceToneVars,
@@ -58,6 +58,8 @@ const TABS: { id: Statement; label: string }[] = [
 
 // Pages des deux documents, que l'on fait glisser : un tableau par page
 const BILAN_PAGES = ['Actif', 'Passif'];
+// Rubrique calculée des capitaux propres (passif), repliable comme les autres
+const CAPITAUX = 'capitaux-propres';
 const RESULT_PAGES = ['Produits', 'Charges'];
 
 // Tableau des charges par grande catégorie : une rubrique par grande catégorie de sorties (ordre alphabétique), avec
@@ -108,14 +110,16 @@ export default function FinancePage() {
   // Teinte de la partie Finances selon l'état de santé
   const toneVars = useFinanceToneVars();
   const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
-  const [offset, setOffset] = useState(0);
-  // Le Bilan s'ouvre sur le mois qu'on regardait sur le Budget, sinon sur le mois précédent (le dernier terminé)
-  const [remembered] = useState(rememberedFinanceMonth);
-  const startMonth = remembered ?? (currentMonth && shiftMonth(currentMonth, -1));
-  const period = startMonth ? shiftMonth(startMonth, offset) : null;
+  // Mois choisi avec les flèches ; sinon le Bilan s'ouvre sur le mois qu'on regardait (sur le Budget, ou avant
+  // d'actualiser la page), sinon sur le mois précédent (le dernier terminé)
+  const [chosen, setChosen] = useState<string | null>(null);
+  const remembered = useSyncExternalStore(noSubscribe, rememberedFinanceMonth, () => null);
+  const period = chosen ?? remembered ?? (currentMonth && shiftMonth(currentMonth, -1));
   // La teinte de la partie Finances suit l'état de santé du mois affiché
   useViewedMonth(period);
   const [tab, setTab] = useState<Statement>('bilan');
+  // Messages des relevés manquants, ouverts par le triangle sur la case du patrimoine
+  const [showMissing, setShowMissing] = useState(false);
 
   // Lignes du mois affiché, gardées en mémoire entre deux visites (lib/financeQueries) : affichées tout de suite, puis rafraîchies
   const currentQuery = useMonthLines(period);
@@ -123,6 +127,8 @@ export default function FinancePage() {
   const filledQuery = useFilledLines();
   const filled = useMemo(() => (filledQuery.data ? new Set(filledQuery.data) : null), [filledQuery.data]);
   // Rubriques dont les lignes repliées (jamais remplies) sont dépliées
+  // Tableaux repliés à l'ouverture (seule la ligne des totaux) ; toucher un total déplie ou replie les deux tableaux ensemble
+  const [tablesOpen, setTablesOpen] = useState(false);
   const [openSections, setOpenSections] = useState<Set<string>>(() => new Set());
   // Transactions du mois (même mémoire que le Budget) et catégories chargées : tableau des charges par grande catégorie
   const txQuery = useCached<TxWindow>(period && `${TX_PREFIX}${period}`, () => fetchTxWindow(period!));
@@ -130,11 +136,38 @@ export default function FinancePage() {
   const isDebtTx = useDebtCategories();
   // Les lignes reliées (créances, emprunts, dettes) sont recalculées une fois à l'ouverture, puis le mois est rechargé
   const reloadLines = currentQuery.reload;
+  // Équilibre du bilan contrôlé à chaque affichage du mois, une fois les recalculs finis (après un import, un reclassement
+  // ou un connecteur modifié) : la liste des problèmes, vide si tout est juste
+  const balanceQuery = useCached(period && `bilan:controle:${period}`, async () => {
+    await refreshBalanceLinksOnce();
+    await balanceLinksSettled();
+    return checkBalance(period!);
+  });
+  const reloadBalance = balanceQuery.reload;
   useEffect(() => {
     refreshBalanceLinksOnce().then((done) => {
-      if (done) reloadLines();
+      if (done) {
+        reloadLines();
+        reloadBalance();
+      }
     });
-  }, [reloadLines]);
+  }, [reloadLines, reloadBalance]);
+  const balanceProblems = balanceQuery.data ?? [];
+  const unbalanced = balanceProblems.length > 0;
+  const [showUnbalanced, setShowUnbalanced] = useState(false);
+  // Triangle d'alerte sur le coin des cartes Dette et Créance : affiche ou masque les problèmes trouvés
+  const unbalancedButton = (
+    <button
+      type="button"
+      onClick={() => setShowUnbalanced((v) => !v)}
+      aria-expanded={showUnbalanced}
+      aria-label="Bilan déséquilibré : voir pourquoi"
+      className="flex h-7 w-7 items-center justify-center rounded-full border shadow-sm"
+      style={{ borderColor: FIN.rose, backgroundColor: showUnbalanced ? FIN.rose : FIN.paper, color: showUnbalanced ? FIN.paper : FIN.rose }}
+    >
+      <AlertTriangle size={15} aria-hidden />
+    </button>
+  );
   // Le mois en cours reste un « nouveau mois » tant que son relevé n'est pas importé
   const operations = useMonthOperations(period).data;
   // Relevés présents ou manquants (règles dans lib/coverage, les mêmes que pour l'accueil et l'état de santé)
@@ -169,30 +202,39 @@ export default function FinancePage() {
   const error = currentQuery.error && describeError(currentQuery.error);
 
   const loading = !period || (currentQuery.data === undefined && !currentQuery.error);
-  const isNew = !!period && (stored.length === 0 || (period === currentMonth && operations === 0));
+  const isNew = !loading && !!period && (stored.length === 0 || (period === currentMonth && operations === 0));
   // Mois en cours sans relevé : le bouton d'import, puis la page telle qu'elle sera, sans données (lignes du modèle,
   // une barre à la place de chaque montant). Un mois passé sans relevé garde la carte « Nouveau mois ».
   const blank = isNew && period === currentMonth;
-  const shownLines: FinanceLine[] = blank
+  // Pendant le chargement : la même page vide (lignes du modèle, une barre à la place des montants), qui se remplit
+  // ensuite sans que les cartes ni les boutons n'apparaissent d'un coup
+  const empty = blank || loading;
+  const shownLines: FinanceLine[] = empty
     ? SECTIONS.flatMap((s) =>
         s.template.map((label, position) => ({ id: `vide-${s.id}-${position}`, period: period!, statement: s.statement, section: s.id, label, amount: 0, position }))
       )
     : lines;
-  const lineMissing = blank ? () => true : isMissing;
+  const lineMissing = empty ? () => true : isMissing;
   const t = totals(shownLines.filter((l) => !lineMissing(l)));
   // Un solde n'est pas connu : le patrimoine et les totaux du bilan non plus (null : affichés avec une barre)
-  const incomplete = blank || unknownAccounts.length > 0;
+  const incomplete = empty || unknownAccounts.length > 0;
   // Des soldes sont estimés : les totaux le sont aussi
   const estimatedBilan = !incomplete && estimatedAccounts.length > 0;
   const known = (n: number) => (incomplete ? null : n);
   // Le compte de résultat (revenus, dépenses, épargne du mois) ne dépend que des comptes courants : un relevé de livret
   // manquant ne le rend pas incomplet
-  const resultIncomplete = blank || (!!period && !!coverage && !monthStatus(coverage, period).resultKnown);
+  const resultIncomplete = empty || (!!period && !!coverage && !monthStatus(coverage, period).resultKnown);
   const knownResult = (n: number) => (resultIncomplete ? null : n);
+  // Lignes « Dette » (ce que je dois) et « Créance » (ce que les autres me doivent) du bilan, affichées dans la synthèse
+  // à côté du patrimoine
+  const lineTotal = (section: string, label: string) =>
+    shownLines.filter((l) => l.section === section && l.label.trim().toLowerCase() === label).reduce((s, l) => s + l.amount, 0);
+  const iOwe = lineTotal('dettes', 'dette');
+  const owedToMe = lineTotal('creances', 'créance');
 
   // Charges : par grande catégorie, d'après les transactions du mois (le total reste celui du compte de résultat)
   const txReady = !!txQuery.data && categoriesQuery.data !== undefined && !!period;
-  const monthTx = txReady && !blank ? txQuery.data!.list.filter((tx) => tx.date.startsWith(period!)) : [];
+  const monthTx = txReady && !empty ? txQuery.data!.list.filter((tx) => tx.date.startsWith(period!)) : [];
   const chargeView = chargesByGroup(period ?? '', monthTx, isDebtTx, txReady && !resultIncomplete ? t.charges : null);
   // Rubriques et lignes de chaque côté : les charges par grande catégorie, les autres côtés tels qu'enregistrés
   const sectionsOf = (side: Side) => (side === 'charges' ? chargeView.sections : SECTIONS.filter((s) => s.side === side));
@@ -208,15 +250,23 @@ export default function FinancePage() {
   // Tant que la liste des lignes déjà remplies n'est pas chargée, rien n'est replié (les lignes vides égalisent seules).
   const linesOf = (side: Side) => sectionsOf(side).flatMap((s) => sideLines(side).filter((l) => l.section === s.id));
   // Lignes d'un tableau : un intitulé par rubrique, ses lignes ; au passif, en plus, les capitaux propres (intitulé et 2 lignes)
-  const rowCount = (side: Side) => sectionsOf(side).length + linesOf(side).length + (side === 'passif' ? 3 : 0);
+  // Capitaux propres repliés avec les autres rubriques quand les tableaux le sont (sauf si on les a ouverts)
+  const capitauxFolded = !tablesOpen && !openSections.has(CAPITAUX);
+  const rowCount = (side: Side) => sectionsOf(side).length + linesOf(side).length + (side === 'passif' ? (capitauxFolded ? 1 : 3) : 0);
   const folded = new Set<string>();
   const fillers: Partial<Record<Side, number>> = {};
   for (const [a, b] of [['actif', 'passif'], ['produits', 'charges']] as [Side, Side][]) {
     const extra = rowCount(a) - rowCount(b);
-    if (filled && extra !== 0) {
+    // Lignes repliées dans une rubrique fermée, pas affichées
+    const hiddenCount = (side: Side) => linesOf(side).filter((l) => folded.has(l.id) && !openSections.has(l.section)).length;
+    if (!tablesOpen) {
+      // Tableaux repliés (à l'ouverture de la page) : chaque rubrique est repliée avec toutes ses lignes, qu'elles aient un
+      // montant ou non (« Placements +4 » et son sous-total) ; des lignes vides équilibrent les deux côtés
+      for (const side of [a, b]) linesOf(side).forEach((l) => folded.add(l.id));
+    } else if (filled && extra !== 0) {
       const longer = extra > 0 ? a : b;
       linesOf(longer)
-        .filter((l) => l.amount === 0 && !filled.has(lineKey(l.section, l.label)) && (blank || !isMissing(l)) && !isEstimated(l))
+        .filter((l) => l.amount === 0 && !filled.has(lineKey(l.section, l.label)) && (empty || !isMissing(l)) && !isEstimated(l))
         .reverse()
         .slice(0, Math.abs(extra))
         .forEach((l) => folded.add(l.id));
@@ -224,7 +274,7 @@ export default function FinancePage() {
     // Charges plus longues que les produits : les catégories de grandes catégories entières se replient (le titre et son
     // sous-total restent), les plus fournies d'abord, sans dépasser ce qu'il faut ; si aucune combinaison ne tombe juste,
     // une grande catégorie de plus se replie et des lignes vides complètent
-    const chargesExtra = rowCount('charges') - linesOf('charges').filter((l) => folded.has(l.id)).length - rowCount('produits');
+    const chargesExtra = rowCount('charges') - hiddenCount('charges') - (rowCount('produits') - hiddenCount('produits'));
     if (b === 'charges' && chargesExtra > 0) {
       const groups = sectionsOf('charges')
         .map((s) => ({ id: s.id, lines: linesOf('charges').filter((l) => l.section === s.id && !folded.has(l.id)) }))
@@ -242,7 +292,7 @@ export default function FinancePage() {
       }
     }
     // Lignes affichées : sans celles repliées dans une rubrique fermée
-    const shownCount = (side: Side) => rowCount(side) - linesOf(side).filter((l) => folded.has(l.id) && !openSections.has(l.section)).length;
+    const shownCount = (side: Side) => rowCount(side) - hiddenCount(side);
     const gap = shownCount(a) - shownCount(b);
     fillers[gap > 0 ? b : a] = Math.abs(gap);
   }
@@ -253,6 +303,14 @@ export default function FinancePage() {
       return next;
     });
 
+  // Dernière ligne d'un tableau (avant les lignes ajoutées) : le titre de sa dernière rubrique, si celle-ci n'a aucune ligne affichée
+  const lastRowIsGroup = (side: Side) => {
+    const last = sectionsOf(side).at(-1);
+    if (!last) return side === 'passif' && capitauxFolded;
+    const lines = linesOf(side).filter((l) => l.section === last.id);
+    return lines.every((l) => folded.has(l.id)) && !openSections.has(last.id);
+  };
+
   function renderSide(side: Side) {
     return [
       ...sectionsOf(side).map((section) => (
@@ -261,13 +319,14 @@ export default function FinancePage() {
           section={section}
           lines={sideLines(side).filter((l) => l.section === section.id)}
           missing={lineMissing}
-          estimated={blank ? undefined : isEstimated}
+          estimated={empty ? undefined : isEstimated}
           folded={folded}
           open={openSections.has(section.id)}
           onToggle={() => toggleSection(section.id)}
         />
       )),
-      <LedgerFiller key="lignes-vides" count={fillers[side] ?? 0} />
+      // Lignes ajoutées habillées comme celle juste au-dessus : un titre de rubrique si la dernière rubrique est repliée
+      <LedgerFiller key="lignes-vides" count={fillers[side] ?? 0} variant={lastRowIsGroup(side) ? 'group' : 'line'} />
     ];
   }
 
@@ -276,12 +335,22 @@ export default function FinancePage() {
       {/* Pas de mois futur : les Finances retranscrivent ce qui a déjà été fait */}
       <FinanceHeader
         month={period ? monthLabel(period) : ''}
-        onPrev={() => setOffset((o) => o - 1)}
-        onNext={() => period && currentMonth && period < currentMonth && setOffset((o) => o + 1)}
+        onPrev={() => period && setChosen(shiftMonth(period, -1))}
+        onNext={() => period && currentMonth && period < currentMonth && setChosen(shiftMonth(period, 1))}
         canNext={!!period && !!currentMonth && period < currentMonth}
       />
 
       <main className="mx-auto max-w-md px-4">
+        {/* Bilan ou compte de résultat : en haut, juste sous le choix du mois */}
+        {!(isNew && !blank) && (
+          <div className="mt-4">
+            <StatementTabs tabs={TABS} value={tab} onChange={setTab} />
+            {/* Date du document affiché : le bilan est une photo à la fin du mois, le compte de résultat couvre tout le mois */}
+            <p className="mt-3 text-center text-[10px] uppercase tracking-[0.25em]" style={{ color: FIN.slate }}>
+              {!period ? ' ' : tab === 'bilan' ? `Au ${monthEndLabel(period)}` : `Du 1er au ${monthEndLabel(period)}`}
+            </p>
+          </div>
+        )}
         {error && (
           <p
             className="mt-4 rounded-sm border px-3 py-2 text-[11px]"
@@ -295,33 +364,13 @@ export default function FinancePage() {
           </p>
         )}
 
-        {loading ? (
-          <p className="mt-10 text-center text-[11px] uppercase tracking-[0.3em]" style={{ color: FIN.slate }}>
-            Chargement…
-          </p>
-        ) : isNew && !blank ? (
+        {isNew && !blank ? (
           // Mois passé vide : on importe son relevé
           <NewMonthCard period={period} />
         ) : (
           <>
             {/* Mois en cours sans relevé : seulement le bouton d'import, la page suit sans données */}
             {blank && <ImportStatementButton period={period} />}
-            {/* Relevés manquants du mois affiché : un court message par compte, qui mène à l'import (toujours affiché,
-                même quand le solde d'un livret est estimé) */}
-            {!blank && missingAccounts.length > 0 && (
-              <Link
-                href="/banque/releves"
-                className="mt-5 block rounded-sm border px-3 py-2 text-[12px]"
-                style={{ borderColor: FIN.rose, backgroundColor: FIN.paper, color: FIN.rose }}
-              >
-                {missingAccounts.map((a) => (
-                  <span key={a} className="flex items-start gap-2 py-0.5">
-                    <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden />
-                    <span>Relevé {a} manquant</span>
-                  </span>
-                ))}
-              </Link>
-            )}
             {/* Virements dont on ne sait pas vers quel compte va l'argent : la réponse permet d'estimer le solde du livret */}
             {/* Rien à vérifier quand tout concorde : la vérification n'apparaît qu'en cas d'incohérence ou de question */}
             {(questions.length > 0 || flagged || mismatches.length > 0) && (
@@ -350,29 +399,90 @@ export default function FinancePage() {
             {/* Même place, même hauteur pour les deux (cases de hauteur fixe) : rien ne se décale en changeant d'onglet */}
             <div className="mt-6">
             {tab === 'resultat' ? (
-              <MonthCashSummary period={period} />
+              period ? (
+                <MonthCashSummary period={period} />
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  {[['Entrées', 'revenus'], ['Sorties', 'dépenses'], ['Reste', 'résultat']].map(([label, note]) => (
+                    <SummaryTile key={label} label={label} note={note} value="—" color={FIN.slate} />
+                  ))}
+                </div>
+              )
             ) : (
             <>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               <SummaryTile
                 label="Patrimoine net"
                 value={incomplete ? '—' : `${estimatedBilan ? '≈ ' : ''}${formatEuros(t.patrimoine)}`}
                 color={incomplete || t.patrimoine >= 0 ? FIN.navy : FIN.rose}
-                note={estimatedBilan ? 'estimé, relevé manquant' : undefined}
+                note={estimatedBilan ? 'ce que je possède, estimé' : 'ce que je possède'}
+                // Relevés manquants : un triangle sur le coin de la case, qui affiche ou masque leurs messages
+                corner={
+                  !empty && missingAccounts.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowMissing((v) => !v)}
+                      aria-expanded={showMissing}
+                      aria-label={`${missingAccounts.length} relevé${missingAccounts.length > 1 ? 's' : ''} manquant${missingAccounts.length > 1 ? 's' : ''}`}
+                      className="flex h-7 w-7 items-center justify-center rounded-full border shadow-sm"
+                      style={{ borderColor: FIN.rose, backgroundColor: showMissing ? FIN.rose : FIN.paper, color: showMissing ? FIN.paper : FIN.rose }}
+                    >
+                      <AlertTriangle size={15} aria-hidden />
+                    </button>
+                  ) : undefined
+                }
+              />
+              {/* Bilan déséquilibré (connecteurs) : « ≈ » devant le montant et triangle d'alerte, qui montre les problèmes */}
+              <SummaryTile
+                label="Dette"
+                value={empty ? '—' : `${unbalanced ? '≈ ' : ''}${formatEuros(Math.abs(iOwe))}`}
+                color={empty ? FIN.slate : unbalanced ? FIN.rose : FIN.navy}
+                note="ce que je dois"
+                corner={!empty && unbalanced ? unbalancedButton : undefined}
               />
               <SummaryTile
-                label="Épargne du mois"
-                value={resultIncomplete ? '—' : formatEuros(t.resultat)}
-                color={resultIncomplete || t.resultat >= 0 ? FIN.sage : FIN.rose}
-                note={!resultIncomplete && t.tauxEpargne !== null ? `${Math.round(t.tauxEpargne * 100)} % des revenus` : undefined}
+                label="Créance"
+                value={empty ? '—' : `${unbalanced ? '≈ ' : ''}${formatEuros(Math.abs(owedToMe))}`}
+                color={empty ? FIN.slate : unbalanced ? FIN.rose : FIN.navy}
+                note="ce qu'on me doit"
+                corner={!empty && unbalanced ? unbalancedButton : undefined}
               />
             </div>
+            {showUnbalanced && !empty && unbalanced && (
+              <Link
+                href="/banque/releves"
+                className="mt-2 block rounded-sm border px-3 py-2 text-[12px]"
+                style={{ borderColor: FIN.rose, backgroundColor: FIN.paper, color: FIN.rose }}
+              >
+                <span className="flex items-start gap-2 py-0.5 font-bold">
+                  <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden />
+                  <span>Bilan déséquilibré : vérifie tes connecteurs</span>
+                </span>
+                {balanceProblems.map((p) => (
+                  <span key={p} className="block py-0.5 pl-[22px]">
+                    {p}
+                  </span>
+                ))}
+              </Link>
+            )}
+            {/* Messages des relevés manquants, ouverts par le triangle : un par compte, ils mènent à l'import (même quand
+                le solde d'un livret est estimé) */}
+            {showMissing && !empty && missingAccounts.length > 0 && (
+              <Link
+                href="/banque/releves"
+                className="mt-2 block rounded-sm border px-3 py-2 text-[12px]"
+                style={{ borderColor: FIN.rose, backgroundColor: FIN.paper, color: FIN.rose }}
+              >
+                {missingAccounts.map((a) => (
+                  <span key={a} className="flex items-start gap-2 py-0.5">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden />
+                    <span>Relevé {a} manquant</span>
+                  </span>
+                ))}
+              </Link>
+            )}
             </>
             )}
-            </div>
-
-            <div className="mt-5">
-              <StatementTabs tabs={TABS} value={tab} onChange={setTab} />
             </div>
 
             {/* Chaque tableau sur sa page : on passe de l'une à l'autre en glissant le doigt, ou avec les points en bas de l'écran */}
@@ -383,10 +493,10 @@ export default function FinancePage() {
                 labels={BILAN_PAGES}
                 tabs
                 scriptLabels
-                caption={`Au ${monthEndLabel(period)}`}
+                dots={false}
                 pages={[
                   <div key="actif">
-                    <Ledger total={known(t.actif)} color={ON_NAVY.sage} totalLabel="Total de l'actif">
+                    <Ledger open={tablesOpen} onToggle={() => setTablesOpen((o) => !o)} total={known(t.actif)} color={ON_NAVY.sage} alert={!empty && unbalanced} totalLabel="Total de l'actif">
                       {renderSide('actif')}
                     </Ledger>
                     <Explain>
@@ -394,10 +504,13 @@ export default function FinancePage() {
                     </Explain>
                   </div>,
                   <div key="passif">
-                    <Ledger total={known(t.patrimoine + t.dettes)} color={ON_NAVY.rose} totalLabel="Total du passif">
+                    <Ledger open={tablesOpen} onToggle={() => setTablesOpen((o) => !o)} total={known(t.patrimoine + t.dettes)} color={ON_NAVY.rose} alert={!empty && unbalanced} totalLabel="Total du passif">
                       {/* Capitaux propres : ce qui t'appartient vraiment, dont le résultat du mois */}
                       <LedgerComputed
                         title="Capitaux propres"
+                        folded={!tablesOpen}
+                        open={openSections.has(CAPITAUX)}
+                        onToggle={() => toggleSection(CAPITAUX)}
                         rows={[
                           {
                             label: 'Situation nette avant le résultat',
@@ -428,10 +541,10 @@ export default function FinancePage() {
                 labels={RESULT_PAGES}
                 tabs
                 scriptLabels
-                caption={`Du 1er au ${monthEndLabel(period)}`}
+                dots={false}
                 pages={[
                   <div key="produits">
-                    <Ledger total={knownResult(t.produits)} color={ON_NAVY.sage} totalLabel="Total des produits">
+                    <Ledger open={tablesOpen} onToggle={() => setTablesOpen((o) => !o)} total={knownResult(t.produits)} color={ON_NAVY.sage} totalLabel="Total des produits">
                       {renderSide('produits')}
                     </Ledger>
                     <Explain>
@@ -439,35 +552,9 @@ export default function FinancePage() {
                     </Explain>
                   </div>,
                   <div key="charges">
-                    <Ledger total={knownResult(t.charges)} color={ON_NAVY.rose} totalLabel="Total des charges">
+                    <Ledger open={tablesOpen} onToggle={() => setTablesOpen((o) => !o)} total={knownResult(t.charges)} color={ON_NAVY.rose} totalLabel="Total des charges">
                       {renderSide('charges')}
                     </Ledger>
-                    <table className="mt-3 w-full table-fixed border-collapse text-[12px]">
-                      <tbody>
-                        <tr
-                          style={{
-                            backgroundColor: FIN.navy,
-                            color: FIN.paper
-                          }}
-                        >
-                          <td className="px-2 py-2.5 text-[10px] uppercase tracking-[0.2em]">
-                            {resultIncomplete ? 'Résultat du mois' : t.resultat >= 0 ? 'Résultat : épargne du mois' : 'Résultat : déficit du mois'}
-                            <span className="block text-[9px] normal-case tracking-normal opacity-70">
-                              Produits moins charges
-                              {!resultIncomplete && t.tauxEpargne !== null ? `, soit ${Math.round(t.tauxEpargne * 100)} % des revenus` : ''} · reporté au passif du bilan
-                            </span>
-                          </td>
-                          <td
-                            className="w-[146px] px-2 py-2.5 text-right text-[15px] font-bold"
-                            style={{
-                              color: t.resultat >= 0 ? ON_NAVY.sage : ON_NAVY.rose
-                            }}
-                          >
-                            {resultIncomplete ? '—' : formatEuros(t.resultat)}
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
                     <Explain>
                       Les charges, c&apos;est tout l&apos;argent dépensé pendant le mois : logement, courses, transport, abonnements, loisirs… Produits moins charges donne le résultat : ce que tu as épargné (ou perdu) ce mois-ci.
                     </Explain>
