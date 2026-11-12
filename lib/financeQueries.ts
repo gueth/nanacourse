@@ -2,10 +2,20 @@
 
 import { useMemo } from 'react';
 import { orThrow, useCached } from '@/lib/cache';
-import { fetchLines, fetchLinesRange, shiftMonth } from '@/lib/finance';
+import { fetchAllLines, fetchLines, fetchLinesRange, shiftMonth } from '@/lib/finance';
 import { fetchMonthPlans } from '@/lib/repartition';
-import { fetchBalanceLinks, linkCategories } from '@/lib/balanceLinks';
-import { countTransactions, fetchBudgets, fetchCoverage, fetchMonthBudgets, fetchTransactions, loadCategories } from '@/lib/transactions';
+import { fetchBalanceLinks } from '@/lib/balanceLinks';
+import {
+  connectedFrom,
+  countTransactions,
+  fetchBudgets,
+  fetchCoverage,
+  fetchMonthBudgets,
+  fetchTransactions,
+  isConnectedTx,
+  loadCategories,
+  type Transaction
+} from '@/lib/transactions';
 
 // Données des pages Finances gardées en mémoire (lib/cache) : partagées entre les pages Santé, Bilan,
 // Budget et l'accueil, elles ne sont chargées qu'une fois puis rafraîchies en arrière-plan.
@@ -51,6 +61,16 @@ export function useMonthLines(period: string | null) {
   });
 }
 
+// Lignes du bilan et du compte de résultat qui ont déjà eu un montant, un mois ou un autre (« rubrique|intitulé en
+// minuscules ») : celles qui n'en ont jamais eu peuvent être masquées pour que deux tableaux côte à côte aient la même longueur
+export const lineKey = (section: string, label: string) => `${section}|${label.trim().toLowerCase()}`;
+export function useFilledLines() {
+  return useCached('finances:lignes-remplies', async () => {
+    const { rows, error } = await fetchAllLines<{ section: string; label: string }>('section, label', (q) => q.neq('amount', 0));
+    return orThrow([...new Set(rows.map((r) => lineKey(r.section, r.label)))], error);
+  });
+}
+
 // Limites mensuelles des grandes catégories (Finances > Budget) : même mémoire que la page Budget
 export function useCategoryLimits() {
   return useCached('finances:budgets', async () => {
@@ -90,19 +110,18 @@ export function useMonthTransactions(month: string | null) {
   });
 }
 
-// Catégories des créances et des dettes (lignes du bilan « Sommes à recevoir » et « Autres dettes » reliées à des
-// catégories dans Finances > Gestion) : prêts aux proches, emprunts entre proches et leurs remboursements.
-// Les chiffres d'indication des cartes Finances ne les comptent pas (ce n'est ni un revenu ni une dépense).
+// Opérations des catégories reliées à une ligne du bilan (créances, emprunts, dettes : Finances > Gestion, connecteurs) :
+// prêts aux proches, emprunts et leurs remboursements. Les chiffres d'indication des cartes Finances ne les comptent pas
+// (ce n'est ni un revenu ni une dépense). Renvoie un test : l'opération va-t-elle au bilan ?
 export function useDebtCategories() {
   const links = useCached('finances:lignes-reliees', async () => {
     const { links, error } = await fetchBalanceLinks();
     return orThrow(links, error);
   }).data;
-  return useMemo(
-    () =>
-      new Set(
-        (links ?? []).filter((l) => l.section === 'creances' || l.section === 'dettes').flatMap((l) => linkCategories([...l.targets, ...l.decreases]))
-      ),
-    [links]
-  );
+  // Même règle que le compte de résultat (lib/transactions, connectedCategories) : toutes les rubriques reliées
+  // (créances, emprunts, dettes), à partir du mois de départ de chaque connecteur
+  return useMemo(() => {
+    const connected = connectedFrom(links ?? []);
+    return (t: Pick<Transaction, 'category' | 'date'>) => isConnectedTx(connected, t);
+  }, [links]);
 }

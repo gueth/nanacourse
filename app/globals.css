@@ -382,6 +382,50 @@ body {
     }
   }
 
+  /* Glissade sur une même page (SwipePages) : la partie qu'on quitte sort d'un côté pendant que l'autre entre de
+     l'autre, d'un seul mouvement, sans fondu. Pas de "forwards" : au repos, plus aucun transform */
+  .slide-in-next {
+    animation: slide-in-next 0.34s cubic-bezier(0.22, 0.8, 0.3, 1);
+  }
+  .slide-in-prev {
+    animation: slide-in-prev 0.34s cubic-bezier(0.22, 0.8, 0.3, 1);
+  }
+  .slide-out-next {
+    animation: slide-out-next 0.34s cubic-bezier(0.22, 0.8, 0.3, 1) forwards;
+  }
+  .slide-out-prev {
+    animation: slide-out-prev 0.34s cubic-bezier(0.22, 0.8, 0.3, 1) forwards;
+  }
+  @keyframes slide-in-next {
+    from {
+      transform: translateX(100%);
+    }
+  }
+  @keyframes slide-in-prev {
+    from {
+      transform: translateX(-100%);
+    }
+  }
+  @keyframes slide-out-next {
+    to {
+      transform: translateX(-100%);
+    }
+  }
+  @keyframes slide-out-prev {
+    to {
+      transform: translateX(100%);
+    }
+  }
+  /* Mouvement réduit : le changement est immédiat (durée minuscule, pour que la fin de l'animation range bien la partie quittée) */
+  @media (prefers-reduced-motion: reduce) {
+    .slide-in-next,
+    .slide-in-prev,
+    .slide-out-next,
+    .slide-out-prev {
+      animation-duration: 1ms;
+    }
+  }
+
   /* Transition entre pages : barres beige à 30° qui recouvrent puis se retirent */
   /* Mouvement continu, sans palier : la barre (bien plus large que l'écran) recouvre
      tout l'écran pendant toute une portion de son trajet, pas besoin de pause pour ça. */
@@ -474,11 +518,11 @@ body:has(.home-screen) {
   background-image: none;
 }
 
-/* Page Finances : fond de la teinte de santé (--fin-page-bg, posé par useFinanceToneVars ; bleu brume par défaut)
+/* Page Finances : fond de la teinte de santé (--fin-page-bg, posé par useFinanceToneVars ; gris neutre tant qu'aucune teinte n'est connue)
    jusque dans les zones visibles quand on tire la page au-delà de ses bords */
 html:has(.finance-screen),
 body:has(.finance-screen) {
-  background-color: var(--fin-page-bg, #e8edf4);
+  background-color: var(--fin-page-bg, #efede9);
   background-image: none;
 }
 
@@ -708,9 +752,6 @@ body:has(.gazette) {
 .morning-card-float {
   animation: morningFloat 6s ease-in-out infinite;
 }
-.morning-hint {
-  animation: morningHint 1.8s ease-in-out infinite;
-}
 @keyframes morningCardIn {
   from { opacity: 0; transform: translateY(48px) scale(0.88); }
   to { opacity: 1; transform: none; }
@@ -719,26 +760,9 @@ body:has(.gazette) {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-5px); }
 }
-@keyframes morningHint {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(4px); }
-}
-/* Icônes du menu en trèfle : elles apparaissent l'une après l'autre quand il s'ouvre */
-.quatrefoil-entry {
-  animation: quatrefoilEntry 0.32s cubic-bezier(0.2, 0.9, 0.3, 1.3) both;
-}
-.quatrefoil-entry:active {
-  background-color: color-mix(in srgb, var(--m-accent, #9b6a92) 15%, transparent);
-}
-@keyframes quatrefoilEntry {
-  from { opacity: 0; transform: scale(0.4); }
-  to { opacity: 1; transform: none; }
-}
 @media (prefers-reduced-motion: reduce) {
   .morning-card-in,
-  .morning-card-float,
-  .morning-hint,
-  .quatrefoil-entry {
+  .morning-card-float {
     animation: none;
   }
 }
@@ -890,8 +914,8 @@ select.fin-select {
   font-family: inherit;
   padding-right: 1.75rem;
   background-image:
-    linear-gradient(45deg, transparent 50%, var(--fin-accent, #4a566b) 50%),
-    linear-gradient(135deg, var(--fin-accent, #4a566b) 50%, transparent 50%);
+    linear-gradient(45deg, transparent 50%, var(--fin-accent, #5e5b57) 50%),
+    linear-gradient(135deg, var(--fin-accent, #5e5b57) 50%, transparent 50%);
   background-repeat: no-repeat;
   background-position:
     calc(100% - 0.8rem) 55%,
@@ -900,7 +924,7 @@ select.fin-select {
 }
 select.fin-select:hover,
 select.fin-select:focus {
-  border-color: var(--fin-accent, #4a566b);
+  border-color: var(--fin-accent, #5e5b57);
   outline: none;
 }
 select.fin-select:focus-visible {

@@ -12,8 +12,11 @@ export default function manifest(): MetadataRoute.Manifest {
     scope: '/',
     display: 'standalone',
     orientation: 'portrait',
-    background_color: '#8494c6',
-    theme_color: '#8494c6',
+    // Couleur de la barre du bas du téléphone une fois l'appli installée (Chrome ne la change pas selon la page) :
+    // celle du menu du bas, qui reprend le bas de l'accueil (components/TabBar.tsx, TAB_BAR_BG). Selon la version
+    // d'Android et de Chrome, la barre prend theme_color ou background_color : les deux ont donc cette couleur.
+    background_color: '#ecdde8',
+    theme_color: '#ecdde8',
     icons: [
       // Napperon blanc et monogramme « N&Co » sur le bleu de fond (dessin : app/icon.svg)
       { src: '/app-icon/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },

@@ -244,6 +244,9 @@ export function EditablePhoto({ kind, photo, url, label, confirm }: { kind: 'sta
   const input = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // Adresse de la photo déjà chargée : tant qu'elle ne l'est pas, le dessin reste visible dessous
+  const [loadedUrl, setLoadedUrl] = useState('');
+  const loaded = loadedUrl === url;
 
   async function run(action: () => Promise<string | null>) {
     setBusy(true);
@@ -256,13 +259,25 @@ export function EditablePhoto({ kind, photo, url, label, confirm }: { kind: 'sta
   const round = 'absolute flex items-center justify-center rounded-full bg-white/90 p-1.5 shadow-sm disabled:opacity-60';
   return (
     <div className="relative h-full w-full">
-      {url ? (
-        // eslint-disable-next-line @next/next/no-img-element -- photo du stockage Supabase, taille déjà réduite
-        <img src={url} alt={label} className={`block h-full w-full object-cover ${busy ? 'opacity-50' : ''}`} />
-      ) : (
+      {(!url || !loaded) && (
         <div className={busy ? 'h-full opacity-50' : 'h-full'}>
           <BluePhoto kind={kind} />
         </div>
+      )}
+      {url && (
+        // eslint-disable-next-line @next/next/no-img-element -- photo du stockage Supabase, taille déjà réduite
+        <img
+          src={url}
+          alt={label}
+          fetchPriority="high"
+          decoding="async"
+          ref={(img) => {
+            // Photo déjà en cache : l'événement load a pu passer avant l'hydratation
+            if (img?.complete && img.naturalWidth) setLoadedUrl(url);
+          }}
+          onLoad={() => setLoadedUrl(url)}
+          className={`absolute inset-0 block h-full w-full object-cover transition-opacity duration-300 ${loaded ? (busy ? 'opacity-50' : 'opacity-100') : 'opacity-0'}`}
+        />
       )}
       <input
         ref={input}

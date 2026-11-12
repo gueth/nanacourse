@@ -38,7 +38,8 @@ export const viewport = {
   // transparente et laisse voir le fond de la page, qui suit sa couleur (components/SystemBarsColor.tsx).
   // Le contenu garde une marge de la hauteur de cette barre (env(safe-area-inset-bottom), voir globals.css).
   viewportFit: 'cover',
-  themeColor: '#8494c6'
+  // Même couleur que le menu du bas et la barre du téléphone de l'appli installée (app/manifest.ts)
+  themeColor: '#ecdde8'
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -46,6 +47,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="fr" suppressHydrationWarning className={`${caveat.variable} ${courierPrime.variable} ${greatVibes.variable} ${blackletter.variable} ${gothic.variable} ${playfair.variable} ${archivoNarrow.variable} ${reenie.variable} ${dmSans.variable}`}>
       {/* Le fond et la barre du haut sont colorés par un script avant l'arrivée de React : on ne les compare pas */}
       <body suppressHydrationWarning>
+        {/* Teinte des Finances : la dernière connue (gardée par lib/health, clé FINANCE_TONE_KEY) est posée avant le premier
+            affichage, pour ne jamais voir une couleur par défaut le temps que l'état de santé soit recalculé */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{var t=JSON.parse(localStorage.getItem('nanacourses.finance-tone')||'null');if(t&&t.dark&&t.pale){var s=document.documentElement.style;s.setProperty('--fin-accent',t.dark);s.setProperty('--fin-bg',t.pale);s.setProperty('--fin-page-bg',t.pale)}}catch(e){}`
+          }}
+        />
         <PageShell>{children}</PageShell>
         {/* Couleur des barres du téléphone et du fond appliquée dès que la page est lue, avant le premier affichage :
             pas d'éclair bleu avant la bonne teinte (ensuite, components/SystemBarsColor prend le relais) */}

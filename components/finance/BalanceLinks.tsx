@@ -7,16 +7,13 @@ import { orThrow, useCached } from '@/lib/cache';
 import { formatEuros } from '@/lib/finance';
 import { describeDbError } from '@/lib/financePlans';
 import {
-  deleteBalanceLinks,
   fetchBalanceLinks,
   groupTarget,
-  isProches,
   natureOf,
   plainTarget,
   withNature,
   type LinkNature,
   LINKABLE_SECTIONS,
-  PROCHES,
   refreshBalanceLinks,
   removeBalanceLink,
   saveBalanceLink,
@@ -230,13 +227,19 @@ function ConnectForm({ links, initial, onSaved, onCancel }: { links: BalanceLink
       return onSaved(`${categoryById(category).label} = « ${p?.label ?? 'dépense annuelle'} » : limite de ${formatEuros(annualLimitOf(category) ?? 0)} par mois.`);
     }
     // La ligne choisie vaut le montant de la catégorie (=) ; la ligne d'équilibrage, de l'autre côté du bilan, suit la nature choisie
-    const connect = (target: { section: string; label: string }, how: LinkNature) => {
+    // Rôle de la ligne pour cette catégorie : ligne du connecteur (asCounter false) ou ligne d'équilibrage (true)
+    const roles = (existing: BalanceLink | undefined, asCounter: boolean) => {
+      const kept = (existing?.counters ?? []).filter((c) => c !== category);
+      return asCounter ? [...kept, category] : kept;
+    };
+    const connect = (target: { section: string; label: string }, how: LinkNature, asCounter: boolean) => {
       const existing = links.find((l) => l.section === target.section && l.label.trim().toLowerCase() === target.label.toLowerCase());
       return saveBalanceLink({
         id: existing?.id,
         section: target.section,
         label: existing?.label ?? target.label,
         ...withNature(existing ?? { targets: [], decreases: [] }, category, how),
+        counters: roles(existing, asCounter),
         opening: existing?.opening ?? 0,
         opening_month: existing?.opening_month ?? null
       });
@@ -248,26 +251,34 @@ function ConnectForm({ links, initial, onSaved, onCancel }: { links: BalanceLink
     for (const l of previous.filter((p) => !same(p, chosen) && !same(p, other))) {
       const targets = l.targets.filter((t) => plainTarget(t) !== initial!.category);
       const decreases = l.decreases.filter((t) => t !== initial!.category);
-      err = targets.length + decreases.length === 0 && !l.opening ? await removeBalanceLink(l.id) : await saveBalanceLink({ ...l, targets, decreases });
+      const counters = l.counters.filter((t) => t !== initial!.category);
+      err = targets.length + decreases.length === 0 && !l.opening ? await removeBalanceLink(l.id) : await saveBalanceLink({ ...l, targets, decreases, counters });
       if (err) break;
     }
     // Catégorie changée : elle est aussi retirée des lignes gardées (la nouvelle y est ajoutée juste après)
     const strip = (l: BalanceLink | undefined) =>
       l && initial && initial.category !== category
-        ? { ...l, targets: l.targets.filter((t) => plainTarget(t) !== initial.category), decreases: l.decreases.filter((t) => t !== initial.category) }
+        ? {
+            ...l,
+            targets: l.targets.filter((t) => plainTarget(t) !== initial.category),
+            decreases: l.decreases.filter((t) => t !== initial.category),
+            counters: l.counters.filter((t) => t !== initial.category)
+          }
         : l;
-    const connectKept = (target: { section: string; label: string }, how: LinkNature) => {
+    const connectKept = (target: { section: string; label: string }, how: LinkNature, asCounter: boolean) => {
       const existing = strip(links.find((l) => same(l, target)));
       return saveBalanceLink({
         id: existing?.id,
         section: target.section,
         label: existing?.label ?? target.label,
         ...withNature(existing ?? { targets: [], decreases: [] }, category, how),
+        counters: roles(existing, asCounter),
         opening: existing?.opening ?? 0,
         opening_month: existing?.opening_month ?? null
       });
     };
-    err = err ?? (await (initial ? connectKept : connect)(chosen, lineNature)) ?? (await (initial ? connectKept : connect)(other, nature)) ?? (await refreshBalanceLinks());
+    const link = initial ? connectKept : connect;
+    err = err ?? (await link(chosen, lineNature, false)) ?? (await link(other, nature, true)) ?? (await refreshBalanceLinks());
     setBusy(false);
     if (err) return setError(describeDbError(err.message));
     const sign = NATURES.find((n) => n.id === nature)!.sign;
@@ -494,17 +505,6 @@ export function BalanceLinksPanel({ ready, onError, onChanged }: { ready: boolea
     return orThrow(links, error);
   });
   const links = query.data ?? [];
-  // Lignes des proches (Créance, Dette) : leurs catégories s'affichent dans les connexions ; reste la carte du report de la dette sur la créance
-  const proches = links.filter(isProches);
-
-  async function remove(removed: BalanceLink[], name: string) {
-    if (!(await confirm('Délier', `Ne plus relier « ${name} » à ses catégories ? Les montants inscrits au bilan sont remis à zéro.`, { confirm: 'Délier', cancel: 'Annuler' })))
-      return;
-    const err = await deleteBalanceLinks(removed);
-    if (err) return onError(describeDbError(err.message));
-    query.reload();
-    onChanged(`« ${name} » n'est plus reliée à des catégories.`);
-  }
 
   const saved = (message: string) => {
     setEditing(null);
@@ -542,17 +542,27 @@ export function BalanceLinksPanel({ ready, onError, onChanged }: { ready: boolea
   // s'affiche à part, ligne par ligne.
   const pairs: { category: string; line: BalanceLink; counters: { link: BalanceLink; nature: LinkNature }[] }[] = [];
   const shown = new Set<string>(); // « id de liaison|catégorie » déjà affichés dans une connexion
-  // Toutes les lignes, Créance et Dette comprises : leurs rééquilibrages s'affichent comme les autres
-  for (const link of links) {
-    for (const category of [...link.targets.map(plainTarget), ...link.decreases]) {
-      if (shown.has(`${link.id}|${category}`)) continue;
-      const counters = links
-        .filter((m) => m.id !== link.id && sideOf(m.section) !== sideOf(link.section) && !shown.has(`${m.id}|${category}`))
-        .map((m) => ({ link: m, nature: natureOf(m, category) }))
-        .filter((c): c is { link: BalanceLink; nature: LinkNature } => c.nature !== null);
-      if (!counters.length && natureOf(link, category) !== '=') continue;
-      pairs.push({ category, line: link, counters });
-      shown.add(`${link.id}|${category}`);
+  // Ligne du connecteur d'une catégorie : celle enregistrée comme telle (les autres sont ses lignes d'équilibrage) ;
+  // pour les connexions enregistrées sans ce rôle, la ligne du côté proposé par défaut (entrée → actif, sortie → passif)
+  const categoriesLinked = [...new Set(links.flatMap((l) => [...l.targets.map(plainTarget), ...l.decreases]))];
+  for (const category of categoriesLinked) {
+    for (;;) {
+      const candidates = links.filter((l) => natureOf(l, category) !== null && !shown.has(`${l.id}|${category}`));
+      if (!candidates.length) break;
+      const known = candidates.some((l) => l.counters.includes(category));
+      const defaultSide = kindOfTarget(category) === 'income' ? 'actif' : 'passif';
+      const line =
+        (known ? candidates.find((l) => !l.counters.includes(category)) : candidates.find((l) => sideOf(l.section) === defaultSide)) ?? candidates[0];
+      const counters = candidates
+        .filter((m) => m.id !== line.id && sideOf(m.section) !== sideOf(line.section))
+        .map((m) => ({ link: m, nature: natureOf(m, category)! }));
+      shown.add(`${line.id}|${category}`);
+      // Sans ligne d'équilibrage ni « == », la ligne s'affiche à part (leftovers)
+      if (!counters.length && natureOf(line, category) !== '=') {
+        shown.delete(`${line.id}|${category}`);
+        break;
+      }
+      pairs.push({ category, line, counters });
       for (const c of counters) shown.add(`${c.link.id}|${category}`);
     }
   }
@@ -576,7 +586,8 @@ export function BalanceLinksPanel({ ready, onError, onChanged }: { ready: boolea
     for (const l of lines) {
       const targets = l.targets.filter((t) => plainTarget(t) !== category);
       const decreases = l.decreases.filter((t) => t !== category);
-      const err = targets.length + decreases.length === 0 && !l.opening ? await removeBalanceLink(l.id) : await saveBalanceLink({ ...l, targets, decreases });
+      const counters = l.counters.filter((t) => t !== category);
+      const err = targets.length + decreases.length === 0 && !l.opening ? await removeBalanceLink(l.id) : await saveBalanceLink({ ...l, targets, decreases, counters });
       if (err) return onError(describeDbError(err.message));
     }
     const err = await refreshBalanceLinks();
@@ -584,10 +595,6 @@ export function BalanceLinksPanel({ ready, onError, onChanged }: { ready: boolea
     query.reload();
     onChanged(`« ${name} » n'est plus reliée à ${lines.map((l) => `« ${l.label} »`).join(' ni à ')}.`);
   }
-
-  const dette = proches.find((l) => sideOf(l.section) === 'passif');
-  const creance = proches.find((l) => sideOf(l.section) === 'actif');
-  const creanceLabel = creance?.label ?? PROCHES.creance.label;
 
   return (
     <Panel
@@ -619,7 +626,8 @@ export function BalanceLinksPanel({ ready, onError, onChanged }: { ready: boolea
               key={`${line.id}|${category}`}
               actions={actions(categoryInfo(category).label, () => setEditing({ category, line, counter: counters[0] }), () => unlink(category, [line, ...counters.map((c) => c.link)]))}
             >
-              <ConnectionRow from={lineBox(line)} nature="=" to={categoryInfo(category)} />
+              {/* Ligne du connecteur et sa catégorie, avec le type de liaison choisi (+=, −= ou ==) */}
+              <ConnectionRow from={lineBox(line)} nature={natureOf(line, category) ?? '='} symbol={BALANCE_SYMBOL[natureOf(line, category) ?? '=']} to={categoryInfo(category)} />
               {counters.map(({ link, nature }) => (
                 // Ligne choisie pour rééquilibrer += / −= / == le connecteur choisi
                 <ConnectionRow
@@ -644,23 +652,6 @@ export function BalanceLinksPanel({ ready, onError, onChanged }: { ready: boolea
                 <ConnectionRow from={lineBox(link)} nature="=" to={categoryInfo(c)} />
               </ConnectionCard>
             ))
-          )}
-          {/* Proches : la créance et la dette, puis le report de la dette sur la créance */}
-          {proches.length > 0 && (
-            <>
-              {dette && (
-            <ConnectionCard actions={actions('Proches', null, () => remove(proches, 'Proches'))}>
-                <ConnectionRow
-                  tag="Rééquilibrage du bilan"
-                  from={creance ? lineBox(creance) : { tag: 'Ligne de l’actif', label: creanceLabel }}
-                  nature="+"
-                  symbol={BALANCE_SYMBOL['+']}
-                  to={lineBox(dette)}
-                  sentence={`Ce que tu dois à tes proches (« ${dette.label} », au passif) est aussi compté dans « ${creanceLabel} » (à l'actif), chaque mois : les deux côtés du bilan bougent du même montant et restent égaux.`}
-                />
-            </ConnectionCard>
-              )}
-            </>
           )}
         </ul>
       )}

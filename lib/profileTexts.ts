@@ -114,10 +114,14 @@ export async function saveProfileTexts(texts: ProfileTexts): Promise<string | nu
 // Remplace une photo du profil : réduite en JPEG, envoyée dans le stockage Supabase ("profile-photos"),
 // puis son adresse est enregistrée avec les textes. Renvoie un message d'erreur, ou null.
 export async function uploadProfilePhoto(photo: ProfilePhoto, file: File): Promise<string | null> {
-  const jpeg = await toJpeg(file);
+  // Photos affichées en petit : 720 px suffisent (même sur écran haute densité), soit un fichier ~5x plus léger
+  const jpeg = await toJpeg(file, 720, 0.8);
   if (!jpeg) return 'Cette image ne peut pas être lue : essaie une autre photo.';
   const path = `${photo}-${Date.now()}.jpg`;
-  const { error } = await supabase.storage.from('profile-photos').upload(path, jpeg, { contentType: 'image/jpeg' });
+  // Nom de fichier unique à chaque envoi : le navigateur peut garder la photo en cache un an
+  const { error } = await supabase.storage
+    .from('profile-photos')
+    .upload(path, jpeg, { contentType: 'image/jpeg', cacheControl: '31536000' });
   if (error)
     return /bucket/i.test(error.message)
       ? 'Le stockage des photos n’existe pas encore dans Supabase : lance le script supabase/profile_texts.sql dans l’éditeur SQL.'

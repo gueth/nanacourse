@@ -9,7 +9,6 @@ import { readPdfStatement } from '@/lib/bankPdf';
 import { orThrow, useCached } from '@/lib/cache';
 import {
   addPlanned,
-  categoryById,
   checkStatement,
   completeFromStatement,
   deletePlanned,
@@ -55,12 +54,20 @@ function diffText(c: StatementCheck) {
   return `${c.present} identique${c.present > 1 ? 's' : ''}, ${parts.join(', ')}`;
 }
 
-// Abonnements et prélèvements repérés sur les 12 derniers mois d'opérations
+// Abonnements et prélèvements repérés sur les 12 derniers mois d'opérations. On n'affiche que ceux prélevés
+// au cours des 3 derniers mois complets (le mois en cours exclu), du plus récent au plus ancien.
 function SubscriptionsPanel({ transactions }: { transactions: Transaction[] }) {
-  const subscriptions = useMemo(() => detectSubscriptions(transactions), [transactions]);
+  const currentMonth = useSyncExternalStore(noSubscribe, readMonth, () => null);
+  const subscriptions = useMemo(() => {
+    if (!currentMonth) return [];
+    const from = shiftMonth(currentMonth, -3);
+    return detectSubscriptions(transactions)
+      .filter((s) => monthOf(s.lastDate) >= from && monthOf(s.lastDate) < currentMonth)
+      .sort((a, b) => b.lastDate.localeCompare(a.lastDate));
+  }, [transactions, currentMonth]);
   if (subscriptions.length === 0) return null;
   return (
-    <Panel collapsible title="Dépenses récurrentes" subtitle="Abonnements et prélèvements qui reviennent chaque mois : vérifie que tu les utilises tous.">
+    <Panel collapsible title="Dépenses récurrentes" subtitle="Abonnements et prélèvements des 3 derniers mois (hors mois en cours), du plus récent au plus ancien : vérifie que tu les utilises tous.">
       <ul className="space-y-1.5 text-[12px]">
         {subscriptions.map((s) => (
           <li key={s.key} className="flex items-center justify-between gap-2">
@@ -69,8 +76,8 @@ function SubscriptionsPanel({ transactions }: { transactions: Transaction[] }) {
               <span className="min-w-0">
                 <span className="block break-words">{s.key}</span>
                 <span className="text-[10px]" style={{ color: FIN.slate }}>
-                  {categoryById(s.category).label} · {s.months} mois
-                  {s.stopped && ' · plus vu depuis le ' + shortDate(s.lastDate)}
+                  {s.stopped ? 'plus vu depuis le ' : 'dernier prélèvement le '}
+                  {shortDate(s.lastDate)} · {s.months} mois
                 </span>
               </span>
             </span>
@@ -377,6 +384,9 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
       if (cancelled) return;
       if (err) setError(describeDbError(err.message));
       setCheck(c);
+      // Relevé déjà importé : sa période est quand même enregistrée (mois sans opération compris), pour les relevés
+      // importés avant que les mois couverts soient retenus
+      if (c?.status === 'same') await recordStatementMonths(account.trim() || 'Compte courant', statementMonths(parsed.transactions, parsed.summary));
     }, 300);
     return () => {
       cancelled = true;
@@ -402,6 +412,8 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
         const { check: c, error: err } = await checkStatement(it.parsed.transactions, name, it.parsed.summary);
         if (cancelled) return;
         if (err) setError(describeDbError(err.message));
+        // Déjà importé : sa période est quand même enregistrée (voir plus haut)
+        if (c?.status === 'same') await recordStatementMonths(name, statementMonths(it.parsed.transactions, it.parsed.summary));
         setBatch((items) => items.map((b) => (b.id === it.id && (b.account.trim() || 'Compte courant') === name ? { ...b, check: c, checkedFor: name } : b)));
       }
     }, 300);
@@ -661,7 +673,7 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
                         </p>
                       ) : it.check.status === 'same' ? (
                         <p className="mt-1" style={{ color: FIN.sage }}>
-                          ✓ Déjà importé à l&apos;identique : passé.
+                          ✓ Déjà importé à l&apos;identique : passé (toute sa période est comptée, mois sans opération compris).
                         </p>
                       ) : it.check.status === 'different' ? (
                         <label className="mt-1 flex items-start gap-2 leading-relaxed" style={{ color: FIN.rose }}>
@@ -830,7 +842,7 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
             </p>
           ) : check.status === 'same' ? (
             <p className="mt-3 rounded-sm border px-3 py-2 text-[11px] leading-relaxed" style={{ borderColor: FIN.sage, color: FIN.sage }}>
-              ✓ Relevé déjà importé : ses {check.present} opérations sont toutes enregistrées sur « {account.trim() || 'Compte courant'} ». Rien à retraiter.
+              ✓ Relevé déjà importé : ses {check.present} opérations sont toutes enregistrées sur « {account.trim() || 'Compte courant'} ». Rien à retraiter : toute sa période est comptée, mois sans opération compris.
             </p>
           ) : check.status === 'different' ? (
             <div className="mt-3 rounded-sm border px-3 py-2 text-[11px] leading-relaxed" style={{ borderColor: FIN.rose, color: FIN.rose }}>

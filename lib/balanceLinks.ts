@@ -1,6 +1,6 @@
 import { supabase } from '@/lib/supabase';
-import { addLine, deleteLine, monthKey, SECTIONS, setLineAmount, shiftMonth, updateLine } from '@/lib/finance';
-import { CATEGORIES, categoryById, groupKindOf, lastDayOf, monthOf, refreshStatements, type Transaction } from '@/lib/transactions';
+import { addLine, deleteLine, fetchAllLines, monthKey, SECTIONS, setLineAmount, shiftMonth, updateLine } from '@/lib/finance';
+import { categoryById, connectedFrom, groupKindOf, lastDayOf, monthOf, refreshStatements, targetCategories, type Transaction } from '@/lib/transactions';
 
 // Lignes du bilan complétées par des catégories du Budget (Finances > Gestion, « Créer des connecteurs ») :
 // chaque ligne (sommes à recevoir, emprunts, autres dettes) a des catégories qui l'augmentent et d'autres qui la diminuent
@@ -16,6 +16,9 @@ export type BalanceLink = {
   targets: string[]; // catégories qui augmentent la ligne, ou grandes catégories ("groupe:<id>") ; précédées de « = » (EQUAL),
   // la ligne vaut leur montant du mois (sans cumul), gardé tant qu'un autre mois ne le change pas
   decreases: string[]; // catégories qui la diminuent (remboursements), même forme
+  // catégories pour lesquelles cette ligne est la ligne d'équilibrage d'une connexion (l'autre côté du bilan), et non
+  // la ligne du connecteur ; vide tant que supabase/balance_links_counters.sql n'a pas été lancé
+  counters: string[];
   opening: number; // montant au dernier jour du mois de départ (0 par défaut)
   opening_month: string | null; // AAAA-MM, facultatif : sans lui, tout l'historique des catégories compte
 };
@@ -26,20 +29,13 @@ export const isLinkableSection = (section: string) => LINKABLE_SECTIONS.some((s)
 
 export const groupTarget = (groupId: string) => `groupe:${groupId}`;
 
-// Prêts entre proches : une créance (ce qu'ils te doivent) et une dette (ce que tu leur dois), réglées ensemble.
-// La créance monte quand tu prêtes et baisse quand on te rembourse ; la dette monte quand on te prête et baisse quand tu rembourses.
-// Le montant de la dette est aussi reporté sur la créance (refreshBalanceLinks).
-export const PROCHES = {
+// Lignes des prêts entre proches : la créance (ce qu'ils te doivent) et la dette (ce que tu leur dois)
+const PROCHES = {
   creance: { section: 'creances', label: 'Créance' },
   dette: { section: 'dettes', label: 'Dette' }
 } as const;
 // Anciens noms de ces lignes, renommés au prochain recalcul du bilan (renameProchesLines)
 const OLD_PROCHES = { creance: 'Créances envers des proches', dette: 'Dettes envers des proches' } as const;
-export type ProchesPart = keyof typeof PROCHES;
-const sameLine = (link: Pick<BalanceLink, 'section' | 'label'>, line: { section: string; label: string }) =>
-  link.section === line.section && link.label.trim().toLowerCase() === line.label.toLowerCase();
-export const isProches = (link: Pick<BalanceLink, 'section' | 'label'>) => sameLine(link, PROCHES.creance) || sameLine(link, PROCHES.dette);
-export const prochesPart = (links: BalanceLink[], part: ProchesPart) => links.find((l) => sameLine(l, PROCHES[part]));
 
 // Nature d'une liaison entre une catégorie et une ligne du bilan :
 //  « + » la ligne augmente du montant de la catégorie, mois après mois (targets) ;
@@ -70,15 +66,8 @@ export function withNature(link: Pick<BalanceLink, 'targets' | 'decreases'>, tar
 }
 
 // Catégories désignées par une liste (les sous-catégories des grandes catégories choisies), quelle que soit leur nature
-export function linkCategories(targets: string[]) {
-  const ids = new Set<string>();
-  for (const raw of targets) {
-    const target = plainTarget(raw);
-    if (target.startsWith('groupe:')) CATEGORIES.filter((c) => c.group === target.slice(7)).forEach((c) => ids.add(c.id));
-    else ids.add(target);
-  }
-  return [...ids];
-}
+// (même règle que le compte de résultat : lib/transactions, targetCategories)
+export const linkCategories = targetCategories;
 
 const round = (n: number) => Math.round(n * 100) / 100;
 // Côté du bilan d'une rubrique
@@ -87,24 +76,26 @@ export const sideOf = (section: string) => SECTIONS.find((s) => s.id === section
 // Montant d'une opération pour sa catégorie : une entrée reçue ou une sortie payée compte en positif (un avoir, en négatif)
 const moveOf = (t: Pick<Transaction, 'amount' | 'category'>) => (groupKindOf(categoryById(t.category)) === 'income' ? t.amount : -t.amount);
 
-// Catégories reliées retenues dans ce navigateur lors du dernier recalcul (null : jamais recalculé ici)
-const CONNECTED_KEY = 'finances:categories-reliees';
-function readConnected(): Set<string> | null {
+// Catégories reliées (et date à partir de laquelle elles vont au bilan) retenues dans ce navigateur lors du dernier
+// recalcul (null : jamais recalculé ici avec le mois de départ pris en compte)
+const CONNECTED_KEY = 'finances:categories-reliees-depuis';
+function readConnected(): Map<string, string> | null {
   try {
     const raw = window.localStorage.getItem(CONNECTED_KEY);
-    return raw ? new Set(JSON.parse(raw) as string[]) : null;
+    return raw ? new Map(JSON.parse(raw) as [string, string][]) : null;
   } catch {
     return null;
   }
 }
 
-// Une catégorie reliée à un connecteur ne compte plus dans le compte de résultat (comme un virement), et y revient quand
-// on la détache : les mois où les catégories reliées ou détachées depuis le dernier recalcul ont des opérations sont
-// recalculés (au premier passage dans ce navigateur, tous ceux des catégories reliées).
+// Une catégorie reliée à un connecteur ne compte plus dans le compte de résultat (comme un virement) à partir du mois de
+// départ du connecteur, et y revient quand on la détache : les mois où les catégories reliées, détachées ou dont le mois
+// de départ a changé depuis le dernier recalcul ont des opérations sont recalculés (au premier passage dans ce
+// navigateur, tous ceux des catégories reliées).
 async function syncConnectedStatements(links: BalanceLink[]) {
-  const now = new Set(links.flatMap((l) => [...linkCategories(l.targets), ...linkCategories(l.decreases)]));
+  const now = connectedFrom(links);
   const before = readConnected();
-  const changed = before ? [...new Set([...now, ...before])].filter((id) => now.has(id) !== before.has(id)) : [...now];
+  const changed = before ? [...new Set([...now.keys(), ...before.keys()])].filter((id) => now.get(id) !== before.get(id)) : [...now.keys()];
   if (changed.length) {
     const { data, error } = await supabase.from('bank_transactions').select('date').in('category', changed);
     if (error) return error;
@@ -115,7 +106,7 @@ async function syncConnectedStatements(links: BalanceLink[]) {
     }
   }
   try {
-    window.localStorage.setItem(CONNECTED_KEY, JSON.stringify([...now]));
+    window.localStorage.setItem(CONNECTED_KEY, JSON.stringify([...now.entries()]));
   } catch {
     // pas de stockage : le prochain recalcul repartira de zéro
   }
@@ -160,23 +151,37 @@ export function linkBalances(link: BalanceLink, transactions: Pick<Transaction, 
 // La colonne "decreases" peut manquer tant que supabase/balance_links_decreases.sql n'a pas été lancé :
 // les liaisons se lisent quand même, sans catégories qui diminuent
 const missingDecreases = (message: string) => /decreases/.test(message);
+// Même chose pour la colonne "counters" (supabase/balance_links_counters.sql) : sans elle, les rôles sont devinés à l'affichage
+const missingCounters = (message: string) => /counters/.test(message);
 
 export async function fetchBalanceLinks() {
   const columns = 'id, section, label, targets, opening, opening_month';
-  let { data, error }: { data: unknown; error: { message: string } | null } = await supabase.from('balance_links').select(`${columns}, decreases`).order('created_at');
-  if (error && missingDecreases(error.message)) ({ data, error } = await supabase.from('balance_links').select(columns).order('created_at'));
+  const read = (cols: string) => supabase.from('balance_links').select(cols).order('created_at');
+  let { data, error }: { data: unknown; error: { message: string } | null } = await read(`${columns}, decreases, counters`);
+  if (error && missingCounters(error.message)) ({ data, error } = await read(`${columns}, decreases`));
+  if (error && missingDecreases(error.message)) ({ data, error } = await read(columns));
   return {
-    links: ((data as Partial<BalanceLink>[]) ?? []).map((l) => ({ ...l, opening: Number(l.opening), targets: l.targets ?? [], decreases: l.decreases ?? [] }) as BalanceLink),
+    links: ((data as Partial<BalanceLink>[]) ?? []).map(
+      (l) => ({ ...l, opening: Number(l.opening), targets: l.targets ?? [], decreases: l.decreases ?? [], counters: l.counters ?? [] }) as BalanceLink
+    ),
     error
   };
 }
 
 // Enregistre une liaison (sans recalculer le bilan : refreshBalanceLinks s'en charge)
-export async function saveBalanceLink(link: Omit<BalanceLink, 'id'> & { id?: string }) {
-  const { id, decreases, ...rest } = link;
+export async function saveBalanceLink(link: Omit<BalanceLink, 'id' | 'counters'> & { id?: string; counters?: string[] }) {
+  const { id, decreases, counters, ...rest } = link;
   const base = { ...rest, label: link.label.trim(), opening_month: link.opening_month || null };
   const write = (row: object) => (id ? supabase.from('balance_links').update(row).eq('id', id) : supabase.from('balance_links').insert(row));
-  const { error } = await write({ ...base, decreases });
+  let row: Record<string, unknown> = { ...base, decreases, ...(counters ? { counters } : {}) };
+  let { error } = await write(row);
+  // Sans la colonne des rôles, la liaison s'enregistre quand même (les rôles sont alors devinés à l'affichage)
+  if (error && missingCounters(error.message) && 'counters' in row) {
+    const { counters: _skip, ...without } = row;
+    void _skip;
+    row = without;
+    ({ error } = await write(row));
+  }
   // Sans la colonne, une liaison sans catégories qui diminuent s'enregistre quand même
   if (error && missingDecreases(error.message) && decreases.length === 0) return (await write(base)).error;
   return error;
@@ -197,15 +202,6 @@ export function refreshBalanceLinksOnce() {
   return refreshedOnce;
 }
 
-// Retire les liaisons, puis recalcule le bilan : les montants qu'elles avaient inscrits sont remis à zéro
-export async function deleteBalanceLinks(links: BalanceLink[]) {
-  for (const link of links) {
-    const error = await removeBalanceLink(link.id);
-    if (error) return error;
-  }
-  return refreshBalanceLinks();
-}
-
 // « Créances envers des proches » devient « Créance », « Dettes envers des proches » devient « Dette » : liaisons et lignes
 // déjà inscrites au bilan, tous mois confondus (sans effet une fois fait)
 async function renameProchesLines() {
@@ -220,18 +216,55 @@ async function renameProchesLines() {
 // À relancer après un import, un reclassement, une opération ajoutée à la main, ou une liaison créée, modifiée ou retirée :
 // tout est recalculé depuis le départ. Les montants calculés qui ne correspondent plus à aucune liaison (ligne renommée ou
 // déliée, mois avant le nouveau mois de départ…) sont remis à zéro ; deux liaisons sur la même ligne s'additionnent.
-export async function refreshBalanceLinks() {
+// Un seul recalcul à la fois : deux recalculs en même temps (ouverture de la page et import, par exemple) verraient tous
+// deux une ligne manquante et l'ajouteraient chacun, d'où des lignes en double
+let running: ReturnType<typeof runRefresh> = Promise.resolve(null);
+export function refreshBalanceLinks(): ReturnType<typeof runRefresh> {
+  const next = running.then(runRefresh, runRefresh);
+  running = next;
+  return next;
+}
+
+type LineRow = { id: string; period: string; statement: string; section: string; label: string; amount: number; auto?: boolean };
+const keyOf = (period: string, section: string, label: string) => `${period}|${section}|${label.trim().toLowerCase()}`;
+
+// Retire les lignes en double (même mois, même rubrique, même intitulé) des rubriques reliées : leurs montants sont
+// recalculés juste après, on garde la ligne qui a un montant (sinon la première). Renvoie les lignes restantes.
+async function removeDuplicateLines(lines: LineRow[]) {
+  const kept = new Map<string, LineRow>();
+  const extra: string[] = [];
+  for (const line of lines) {
+    if (!isLinkableSection(line.section)) continue;
+    const key = keyOf(line.period, line.section, line.label);
+    const other = kept.get(key);
+    if (!other) kept.set(key, line);
+    else if (Number(other.amount) === 0 && Number(line.amount) !== 0) {
+      extra.push(other.id);
+      kept.set(key, line);
+    } else extra.push(line.id);
+  }
+  for (let i = 0; i < extra.length; i += 100) {
+    const { error } = await supabase.from('finance_lines').delete().in('id', extra.slice(i, i + 100));
+    if (error) return { lines, error };
+  }
+  const removed = new Set(extra);
+  return { lines: lines.filter((l) => !removed.has(l.id)), error: null };
+}
+
+async function runRefresh() {
   await renameProchesLines();
   const { links, error } = await fetchBalanceLinks();
   if (error) return /balance_links/.test(error.message) ? null : error; // table pas encore créée : rien à faire
   const statementError = await syncConnectedStatements(links);
   if (statementError) return statementError;
   const currentMonth = monthKey(new Date());
-  const { data: lineRows, error: lineError } = await supabase.from('finance_lines').select('id, period, statement, section, label, amount').lte('period', currentMonth);
+  // Toutes les lignes (plus de 1 000 : lues page par page, sinon des lignes existantes passaient pour absentes et étaient recréées)
+  const { rows, error: lineError } = await fetchAllLines<LineRow>('id, period, statement, section, label, amount', (q) => q.lte('period', currentMonth));
   if (lineError) return lineError;
-  const lines = (lineRows as { id: string; period: string; statement: string; section: string; label: string; amount: number }[]) ?? [];
+  const deduped = await removeDuplicateLines(rows);
+  if (deduped.error) return deduped.error;
+  const lines = deduped.lines;
   const opened = new Set(lines.map((r) => r.period));
-  const keyOf = (period: string, section: string, label: string) => `${period}|${section}|${label.trim().toLowerCase()}`;
 
   // Montant voulu pour chaque ligne reliée, mois par mois
   const wanted = new Map<string, { period: string; section: string; label: string; amount: number }>();
@@ -251,12 +284,8 @@ export async function refreshBalanceLinks() {
     }
   }
 
-  // La dette envers des proches est reportée, chaque mois, sur la créance envers des proches (qui y ajoute sa propre liaison s'il y en a une)
-  for (const debt of [...wanted.values()].filter((w) => sameLine(w, PROCHES.dette))) {
-    const key = keyOf(debt.period, PROCHES.creance.section, PROCHES.creance.label);
-    const own = wanted.get(key)?.amount ?? 0;
-    wanted.set(key, { period: debt.period, ...PROCHES.creance, amount: round(own + debt.amount) });
-  }
+  // Plus de report automatique de « Dette » sur « Créance » : l'équilibre du bilan passe uniquement par les
+  // rééquilibrages choisis dans les connecteurs (sinon le montant était compté deux fois à l'actif)
 
   // Lignes de ces rubriques qui ne viennent plus d'aucune liaison (déliée, renommée, mois avant le nouveau mois de départ…) :
   // le bilan ne se modifie pas à la main, leurs montants ne peuvent venir que d'une liaison. Les lignes du modèle

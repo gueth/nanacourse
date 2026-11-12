@@ -10,7 +10,7 @@ const noSubscribe = () => () => {};
 const readToday = () => new Date().toDateString();
 
 // Page de titre : la page de connexion, une carte « Nana & Co » sur fond uni (rien n'est vérifié).
-// « Se connecter » ouvre la page des cartes du jour (/cartes), d'où l'on passe au journal en glissant le doigt.
+// « Se connecter » ouvre la page des cartes du jour (/cartes), d'où le menu du bas mène au journal.
 export default function TitlePage() {
   const router = useRouter();
   const { startTransition } = usePageTransition();

@@ -1,7 +1,6 @@
 'use client';
 
 import Link from 'next/link';
-import { ArrowLeft } from 'lucide-react';
 import { RewardsCorner } from '@/components/gazette/ChallengeCorner';
 import ShoppingReceipts from '@/components/ShoppingReceipts';
 import { KitchenManager } from '@/components/KitchenManager';
@@ -38,10 +37,7 @@ export function KitchenPage({ today }: { today: Date | null }) {
   const day = today?.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
   return (
     <div className="cuisine mx-auto max-w-[430px] px-4 pt-4">
-      {/* EN-TÊTE : retour au 2ᵉ écran titre (les cartes du jour, d'où s'ouvre le menu), la date, et la question du jour */}
-      <Link href="/cartes" className="-ml-2 inline-flex items-center gap-1 px-2 py-2 text-[13px] font-medium opacity-70">
-        <ArrowLeft size={16} /> Retour
-      </Link>
+      {/* EN-TÊTE : la date et la question du jour (le retour se fait par le menu du bas) */}
       <p className="mt-2 text-[13px] capitalize opacity-60">{day ?? ' '}</p>
       <h1 className="mt-1 text-[34px] font-bold leading-[1.05] tracking-tight">
         Qu&apos;est-ce qu&apos;on <span className="font-normal italic">mange</span> ?

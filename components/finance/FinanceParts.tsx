@@ -7,7 +7,7 @@ import Portal from '@/components/Portal';
 import { useModalSfx } from '@/lib/sfx';
 import { ChevronDown, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { formatEuros, monthLabel, type FinanceLine, type Section } from '@/lib/finance';
-import { forgetFinanceMonth, useFinanceTone } from '@/lib/health';
+import { useFinanceTone } from '@/lib/health';
 
 // Palette de la page Finances : bleu dominant, rehaussé d'or, de vert sauge (ce qui entre / ce que l'on possède)
 // et de vieux rose (ce qui sort / ce que l'on doit)
@@ -15,9 +15,9 @@ export const FIN = {
   navy: '#2b3a55',
   slate: '#4a566b',
   // Fond des pages, et couleur forte (en-tête, onglet actif, boutons pleins) : teintées selon l'état de santé
-  // (variables posées par FinancePage, voir useFinanceTone dans lib/health) ; bleu par défaut
-  mist: 'var(--fin-bg, #e8edf4)',
-  accent: 'var(--fin-accent, #4a566b)',
+  // (variables posées par FinancePage, voir useFinanceTone dans lib/health) ; gris neutre tant qu'aucune teinte n'est connue
+  mist: 'var(--fin-bg, #efede9)',
+  accent: 'var(--fin-accent, #5e5b57)',
   paper: '#f8f7f4',
   line: '#c9d2df',
   gold: '#b08d57',
@@ -31,6 +31,27 @@ const LINE_NOTES: Record<string, string> = {
 };
 
 const script = { fontFamily: 'var(--font-script), cursive' };
+
+// Hauteur unique de toutes les lignes des tableaux (titres de rubrique, lignes, lignes vides) : deux tableaux côte à côte
+// qui ont le même nombre de lignes ont ainsi exactement la même longueur. Elle laisse la place à l'intitulé et, en dessous,
+// à une précision sur une ligne.
+const ROW = 'h-[40px]';
+
+// Intitulé d'une ligne sur une seule ligne, et sa précision seule en dessous (coupés par « … » s'ils sont trop longs)
+function RowLabel({ label, note, italicNote }: { label: React.ReactNode; note?: string; italicNote?: boolean }) {
+  return (
+    <div className="min-w-0 px-1">
+      <p className="truncate text-[12px] leading-4" style={{ color: FIN.navy }}>
+        {label}
+      </p>
+      {note && (
+        <p className={`truncate text-[9px] leading-3 ${italicNote ? 'italic' : ''}`} style={{ color: FIN.slate }}>
+          {note}
+        </p>
+      )}
+    </div>
+  );
+}
 
 // "1 234,5" -> 1234.5 (espaces, virgule ou point acceptés) ; null si ce n'est pas un nombre
 export function parseAmount(text: string) {
@@ -61,7 +82,7 @@ function FinanceNav() {
   const pathname = usePathname();
   return (
     // Centré seulement quand tout tient ("justify-center-safe") : sinon la première pastille serait coupée à gauche
-    <nav className="no-scrollbar -mx-4 mt-4 flex justify-center-safe gap-1.5 overflow-x-auto px-4">
+    <nav className="no-scrollbar -mx-4 mt-2 flex justify-center-safe gap-1.5 overflow-x-auto px-4">
       {FINANCE_PAGES.map((p) => {
         const active = pathname === p.href;
         return (
@@ -98,29 +119,23 @@ export function FinanceHeader({
   action?: React.ReactNode;
 }) {
   return (
-    <header className="relative px-4 pb-10 pt-4 text-center" style={{ backgroundColor: FIN.accent, color: FIN.paper }}>
-      {/* z-10 : sinon le sous-titre (rendu au-dessus à cause de son opacité) recouvre le lien et bloque le toucher */}
-      <Link href="/cartes" onClick={forgetFinanceMonth} className="absolute left-1 top-2 z-10 flex items-center gap-1 px-2 py-2 text-[11px] uppercase tracking-[0.25em] opacity-80">
-        <ChevronLeft size={16} /> Retour
-      </Link>
-      <p className="pt-8 text-[10px] uppercase tracking-[0.35em] opacity-70">{subtitle}</p>
-      <h1 className="mt-1 text-[56px] leading-none" style={script}>
+    // En-tête compact : titre, sous-titre juste dessous (le retour se fait par le menu du bas)
+    <header className="relative px-4 pb-5 pt-2 text-center" style={{ backgroundColor: FIN.accent, color: FIN.paper }}>
+      <h1 className="pt-2 text-[32px] leading-none" style={script}>
         Finances
       </h1>
-      <div className="mt-2">
-        <Ornament color={FIN.gold} />
-      </div>
+      <p className="text-[9px] uppercase tracking-[0.3em] opacity-70">{subtitle}</p>
       <FinanceNav />
       {month !== undefined && (
         // Trois colonnes : le mois reste centré, l'action se place à droite
-        <div className="mt-4 grid grid-cols-[1fr_auto_1fr] items-center">
+        <div className="mt-1 grid grid-cols-[1fr_auto_1fr] items-center">
           <span />
           <div className="flex items-center justify-center gap-3">
-            <button type="button" onClick={onPrev} aria-label="Mois précédent" className="rounded-full p-1.5 opacity-80 hover:opacity-100">
+            <button type="button" onClick={onPrev} aria-label="Mois précédent" className="rounded-full p-1 opacity-80 hover:opacity-100">
               <ChevronLeft size={20} />
             </button>
             <span className="min-w-[140px] text-[13px] uppercase tracking-[0.25em]">{month}</span>
-            <button type="button" onClick={onNext} disabled={!canNext} aria-label="Mois suivant" className="rounded-full p-1.5 opacity-80 hover:opacity-100 disabled:opacity-20">
+            <button type="button" onClick={onNext} disabled={!canNext} aria-label="Mois suivant" className="rounded-full p-1 opacity-80 hover:opacity-100 disabled:opacity-20">
               <ChevronRight size={20} />
             </button>
           </div>
@@ -138,18 +153,18 @@ export function FinanceHeader({
 // Tuile de synthèse : intitulé, montant, et une précision facultative
 export function SummaryTile({ label, value, color, note }: { label: string; value: string; color: string; note?: string }) {
   return (
-    <div className="rounded-sm border px-3 py-3 text-center" style={{ backgroundColor: FIN.paper, borderColor: FIN.line }}>
-      <p className="text-[9px] uppercase tracking-[0.25em]" style={{ color: FIN.slate }}>
+    // Hauteur fixe, ligne de précision toujours réservée : deux synthèses (bilan, compte de résultat) ont la même taille,
+    // avec ou sans précision, et rien ne bouge en passant de l'une à l'autre
+    <div className="flex h-[84px] min-w-0 flex-col justify-center rounded-sm border px-2 text-center" style={{ backgroundColor: FIN.paper, borderColor: FIN.line }}>
+      <p className="truncate text-[9px] uppercase tracking-[0.25em]" style={{ color: FIN.slate }}>
         {label}
       </p>
-      <p className="mt-1 text-[18px] font-bold" style={{ color }}>
+      <p className="mt-1 truncate text-[18px] font-bold leading-tight" style={{ color }}>
         {value}
       </p>
-      {note && (
-        <p className="mt-0.5 text-[10px]" style={{ color: FIN.slate }}>
-          {note}
-        </p>
-      )}
+      <p className="mt-0.5 h-[15px] truncate text-[10px] leading-[15px]" style={{ color: FIN.slate }}>
+        {note ?? ''}
+      </p>
     </div>
   );
 }
@@ -204,17 +219,20 @@ export function Ledger({
   totalLabel,
   children
 }: {
-  title: string;
+  // Sans titre : celui-ci est déjà donné au-dessus (intitulés soulignés des pages du Bilan, « Actif · Passif »)
+  title?: string;
   total: number | null;
   color: string;
   totalLabel: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="mt-7">
-      <h2 className="mb-2 text-[38px] leading-none" style={{ ...script, color: FIN.navy }}>
-        {title}
-      </h2>
+    <div className={title ? 'mt-7' : 'mt-3'}>
+      {title && (
+        <h2 className="mb-2 text-[38px] leading-none" style={{ ...script, color: FIN.navy }}>
+          {title}
+        </h2>
+      )}
       <table className="w-full table-fixed border-collapse overflow-hidden rounded-sm text-[12px]" style={{ backgroundColor: FIN.paper }}>
         <colgroup>
           <col />
@@ -244,13 +262,40 @@ export function Ledger({
 }
 
 // Ligne de titre d'une rubrique dans le tableau, avec son sous-total
-function LedgerGroupRow({ title, subtotal }: { title: string; subtotal: number | null }) {
+// "folded" : nombre de lignes repliées dans cette rubrique ; le bouton à côté de l'intitulé les montre ou les replie
+function LedgerGroupRow({
+  title,
+  subtotal,
+  folded = 0,
+  open = false,
+  onToggle
+}: {
+  title: string;
+  subtotal: number | null;
+  folded?: number;
+  open?: boolean;
+  onToggle?: () => void;
+}) {
   return (
-    <tr style={{ backgroundColor: FIN.mist }}>
-      <th className="border-b px-2 py-1.5 text-left text-[9px] font-bold uppercase tracking-[0.25em]" style={{ borderColor: FIN.line, color: FIN.slate }}>
+    <tr className={ROW} style={{ backgroundColor: FIN.mist }}>
+      <th className="truncate border-b px-2 py-0 text-left text-[9px] font-bold uppercase tracking-[0.25em]" style={{ borderColor: FIN.line, color: FIN.slate }}>
         {title}
+        {folded > 0 && onToggle && (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={open}
+            title={open ? 'Replier les lignes' : 'Montrer les lignes repliées'}
+            className="ml-1.5 inline-flex items-center gap-0.5 rounded-full border px-1.5 align-middle text-[9px] normal-case tracking-normal"
+            style={{ borderColor: FIN.line, color: FIN.slate, backgroundColor: FIN.paper }}
+          >
+            {open ? '−' : '+'}
+            {folded}
+            <ChevronDown size={10} aria-hidden className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+          </button>
+        )}
       </th>
-      <td className="border-b px-2 py-1.5 text-right text-[11px] font-bold" style={{ borderColor: FIN.line, color: FIN.slate }}>
+      <td className="border-b px-2 py-0 text-right text-[11px] font-bold" style={{ borderColor: FIN.line, color: FIN.slate }}>
         <Amount value={subtotal} />
       </td>
       <td className="border-b" style={{ borderColor: FIN.line }} />
@@ -270,16 +315,11 @@ export function LedgerComputed({
     <tbody>
       <LedgerGroupRow title={title} subtotal={sumKnown(rows.map((r) => r.value))} />
       {rows.map((r) => (
-        <tr key={r.label} className="border-b" style={{ borderColor: FIN.line }}>
-          <td className="border-r px-2 py-1.5" style={{ borderColor: FIN.line }}>
-            {r.label}
-            {r.note && (
-              <span className="block text-[9px] leading-snug" style={{ color: FIN.slate }}>
-                {r.note}
-              </span>
-            )}
+        <tr key={r.label} className={`${ROW} border-b`} style={{ borderColor: FIN.line }}>
+          <td className="border-r px-1 py-0" style={{ borderColor: FIN.line }} title={r.note ? `${r.label} : ${r.note}` : r.label}>
+            <RowLabel label={r.label} note={r.note} />
           </td>
-          <td className="px-2 py-1.5 text-right font-bold" style={{ color: r.color ?? FIN.navy }}>
+          <td className="px-2 py-0 text-right font-bold" style={{ color: r.color ?? FIN.navy }}>
             <Amount value={r.value} />
           </td>
           <td />
@@ -299,34 +339,37 @@ export function SectionBlock({
   section,
   lines,
   missing,
-  estimated
+  estimated,
+  folded,
+  open = false,
+  onToggle
 }: {
   section: Section;
   lines: FinanceLine[];
   missing?: (line: FinanceLine) => boolean;
   estimated?: (line: FinanceLine) => boolean;
+  // Lignes repliables (jamais remplies) : cachées tant que la rubrique n'est pas dépliée ("open")
+  folded?: Set<string>;
+  open?: boolean;
+  onToggle?: () => void;
 }) {
   const value = (line: FinanceLine) => (missing?.(line) ? null : line.amount);
+  const foldedCount = folded ? lines.filter((l) => folded.has(l.id)).length : 0;
+  const shown = open || !folded ? lines : lines.filter((l) => !folded.has(l.id));
   return (
     <tbody>
-      <LedgerGroupRow title={section.title} subtotal={sumKnown(lines.map(value))} />
-      {lines.map((line) => {
+      <LedgerGroupRow title={section.title} subtotal={sumKnown(lines.map(value))} folded={foldedCount} open={open} onToggle={onToggle} />
+      {shown.map((line) => {
         const amount = value(line);
+        // Précision affichée sous certaines lignes (le nom enregistré ne change pas), ou sous un solde estimé
+        const lineNote = LINE_NOTES[`${line.section}|${line.label.trim().toLowerCase()}`];
+        const note = estimated?.(line) ? [lineNote, 'relevé manquant · solde estimé'].filter(Boolean).join(' · ') : lineNote;
         return (
-          <tr key={line.id} className="border-b" style={{ borderColor: FIN.line }}>
-            <td className="border-r px-1 py-0.5" style={{ borderColor: FIN.line }}>
-              <p className="px-1 py-1 text-[12px]" style={{ color: FIN.navy }}>
-                {line.label}
-                {/* Précision affichée à côté de certaines lignes (le nom enregistré ne change pas) */}
-                {LINE_NOTES[`${line.section}|${line.label.trim().toLowerCase()}`] && ` (${LINE_NOTES[`${line.section}|${line.label.trim().toLowerCase()}`]})`}
-                {estimated?.(line) && (
-                  <span className="block text-[9px] italic" style={{ color: FIN.slate }}>
-                    relevé manquant · solde estimé
-                  </span>
-                )}
-              </p>
+          <tr key={line.id} className={`${ROW} border-b`} style={{ borderColor: FIN.line }}>
+            <td className="border-r px-1 py-0" style={{ borderColor: FIN.line }} title={note ? `${line.label} : ${note}` : line.label}>
+              <RowLabel label={line.label} note={note} italicNote={estimated?.(line)} />
             </td>
-            <td className="px-1 py-0.5">
+            <td className="px-1 py-0">
               <div className="flex items-baseline gap-0.5">
                 <span className={`w-full min-w-0 px-1 py-1 text-right text-[12px] ${estimated?.(line) ? 'italic' : ''}`} style={{ color: FIN.navy }}>
                   {amount !== null && estimated?.(line) && '≈ '}
@@ -345,30 +388,62 @@ export function SectionBlock({
   );
 }
 
+// Lignes vides en bas d'un tableau, de la même hauteur qu'une ligne : pour qu'il ait autant de lignes que celui d'à côté
+export function LedgerFiller({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <tbody aria-hidden>
+      {Array.from({ length: count }, (_, i) => (
+        <tr key={i} className={`${ROW} border-b`} style={{ borderColor: FIN.line }}>
+          <td className="border-r" style={{ borderColor: FIN.line }} />
+          <td />
+          <td />
+        </tr>
+      ))}
+    </tbody>
+  );
+}
+
 // Encadré de contenu : titre calligraphié, sous-titre facultatif
 export function Panel({
   title,
   subtitle,
+  count,
   collapsible = false,
   preview,
+  action,
   children
 }: {
   title: string;
   subtitle?: string;
+  // Nombre facultatif affiché à côté du titre (ex. nombre de transactions)
+  count?: number;
+  // Bouton facultatif placé à droite du titre
+  action?: React.ReactNode;
   // true : le panneau s'ouvre et se referme en touchant son titre, et commence plié
   collapsible?: boolean;
   // Panneau repliable : ce qui reste visible même replié (les chiffres principaux), sous le titre
   preview?: React.ReactNode;
   children: React.ReactNode;
 }) {
+  // Nombre à côté du titre : dans une pastille, avec la police des libellés (les chiffres calligraphiés se lisent mal)
+  const badge = count !== undefined && (
+    <span
+      className="ml-2 inline-block translate-y-[-6px] rounded-full border px-2 py-0.5 align-middle text-[10px] font-semibold tracking-[0.1em]"
+      style={{ fontFamily: 'inherit', borderColor: FIN.gold, color: FIN.gold }}
+    >
+      {count}
+    </span>
+  );
   if (collapsible)
     return (
       <details className="group mt-5 rounded-sm border px-4 pb-3 pt-3" style={{ backgroundColor: FIN.paper, borderColor: FIN.line }}>
         <summary className="block cursor-pointer list-none [&::-webkit-details-marker]:hidden">
           <span className="flex items-start justify-between gap-2">
             <span className="min-w-0">
-              <h2 className="text-[32px] leading-tight" style={{ ...script, color: FIN.navy }}>
-                {title}
+              <h2 className="text-[32px] leading-tight" style={{ color: FIN.navy }}>
+                <span style={script}>{title}</span>
+                {badge}
               </h2>
               {subtitle && (
                 <p className="-mt-1 text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
@@ -376,7 +451,10 @@ export function Panel({
                 </p>
               )}
             </span>
-            <ChevronDown size={20} aria-hidden className="mt-3 shrink-0 transition-transform group-open:rotate-180" style={{ color: FIN.gold }} />
+            <span className="flex shrink-0 items-center gap-2">
+              {action}
+              <ChevronDown size={20} aria-hidden className="mt-3 shrink-0 transition-transform group-open:rotate-180" style={{ color: FIN.gold }} />
+            </span>
           </span>
           {preview && <span className="mt-2 block">{preview}</span>}
         </summary>
@@ -385,9 +463,13 @@ export function Panel({
     );
   return (
     <section className="mt-5 rounded-sm border px-4 pb-4 pt-3" style={{ backgroundColor: FIN.paper, borderColor: FIN.line }}>
-      <h2 className="text-[32px] leading-tight" style={{ ...script, color: FIN.navy }}>
-        {title}
-      </h2>
+      <div className="flex items-start justify-between gap-2">
+        <h2 className="text-[32px] leading-tight" style={{ color: FIN.navy }}>
+          <span style={script}>{title}</span>
+          {badge}
+        </h2>
+        {action && <span className="mt-2 shrink-0">{action}</span>}
+      </div>
       {subtitle && (
         <p className="-mt-1 mb-2 text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
           {subtitle}
@@ -451,6 +533,19 @@ export const ofMonth = (period: string) => {
   const label = monthLabel(period);
   return /^[aeiouyhàâéèê]/i.test(label) ? `du mois d'${label}` : `du mois de ${label}`;
 };
+
+// Mois en cours sans relevé importé : seulement le bouton d'import, au-dessus de la page affichée sans données
+export function ImportStatementButton({ period }: { period: string }) {
+  return (
+    <Link
+      href="/banque/releves"
+      className="mt-5 block rounded-full py-2.5 text-center text-[11px] uppercase tracking-[0.2em]"
+      style={{ backgroundColor: FIN.accent, color: FIN.paper }}
+    >
+      Importer le relevé {ofMonth(period)}
+    </Link>
+  );
+}
 
 // Mois sans relevé importé : les Finances retranscrivent ce qui a été fait, on ne remplit donc pas un mois à la main,
 // on importe son relevé de compte
@@ -552,17 +647,20 @@ export function ErrorNote({ message }: { message: string | null }) {
 
 // Teinte de la partie Finances selon l'état de santé (rouge, orange, jaune, bleu, vert) : variables CSS
 // lues par FIN.accent et FIN.mist, à poser sur le conteneur de chaque page Finances
+// Tant qu'aucune teinte n'est connue, rien n'est posé ici : la page garde celle mise sur la racine du document (par le
+// script de app/layout.tsx au chargement, ou par une page Finances précédente), sinon un fond neutre (jamais de bleu par défaut).
 export function useFinanceToneVars() {
   const tone = useFinanceTone();
-  // Même fond pour la page entière (zones visibles quand on tire la page au-delà de ses bords, voir globals.css)
+  // Même teinte sur la racine : fond de la page entière (zones visibles quand on tire la page au-delà de ses bords,
+  // voir globals.css), et point de départ de la prochaine page Finances
   useEffect(() => {
+    if (!tone.dark || !tone.pale) return;
     const root = document.documentElement;
     root.style.setProperty('--fin-page-bg', tone.pale);
-    return () => {
-      root.style.removeProperty('--fin-page-bg');
-    };
-  }, [tone.pale]);
-  return { '--fin-accent': tone.dark, '--fin-bg': tone.pale } as React.CSSProperties;
+    root.style.setProperty('--fin-bg', tone.pale);
+    root.style.setProperty('--fin-accent', tone.dark);
+  }, [tone.dark, tone.pale]);
+  return (tone.dark && tone.pale ? { '--fin-accent': tone.dark, '--fin-bg': tone.pale } : {}) as React.CSSProperties;
 }
 
 // Fond et largeur communs aux pages Finances

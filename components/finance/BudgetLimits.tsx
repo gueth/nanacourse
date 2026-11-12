@@ -8,13 +8,11 @@ import { activePlans as plansOfMonth, AMORTIZE_TARGET, debtOfMonth, monthLimits 
 import {
   annualCategoryId,
   annualPlans,
-  byLabel,
   CATEGORIES,
   categoryById,
   categoryGroups,
   groupMembers,
   groupTarget,
-  isLockedCategory,
   saveBudget,
   saveMonthBudget,
   SELF_DEBT_ID,
@@ -104,7 +102,6 @@ export function BudgetLimits({
         rows: looseRows
       }
     : null;
-  const unbudgeted = CATEGORIES.filter((c) => c.kind !== 'income' && c.kind !== 'transfer' && !isLockedCategory(c) && limits.category(c.id) === null).sort(byLabel);
 
   // Ligne propre au mois affiché (limite et/ou choix de compter dans la dette), modifiée tout de suite à l'écran
   async function saveForMonth(target: string, changes: Partial<Pick<MonthBudget, 'custom_limit' | 'monthly_limit' | 'counted'>>) {
@@ -286,18 +283,8 @@ export function BudgetLimits({
       title="Budget du mois"
       subtitle="Est-ce que vous avez réussi à respecter votre budget ?"
     >
-      {/* Réponse : le dépassement, ou ce qui reste, sur l'ensemble des limites (et parts des dépenses annuelles) du mois */}
-      {debt.allowed > 0 ? (
-        debt.spent > debt.allowed + 0.005 ? (
-          <p className="text-[13px] font-bold" style={{ color: FIN.rose }}>
-            Non : dépassement de {formatEuros(debt.spent - debt.allowed)}
-          </p>
-        ) : (
-          <p className="text-[13px] font-bold" style={{ color: FIN.sage }}>
-            Oui : il reste {formatEuros(debt.allowed - debt.spent)}
-          </p>
-        )
-      ) : (
+      {/* Pas d'écart affiché sous le titre : seulement l'absence de limites, s'il y a lieu */}
+      {debt.allowed <= 0 && (
         <p className="text-[11px]" style={{ color: FIN.slate }}>
           Aucune limite fixée pour ce mois.
         </p>
@@ -341,17 +328,6 @@ export function BudgetLimits({
             </p>
           )}
         </div>
-      )}
-      {/* Ajout d'une limite pour une autre catégorie, en tête de la liste */}
-      {unbudgeted.length > 0 && (
-        <select value="" onChange={(e) => e.target.value && setEditing(e.target.value)} className="fin-select mt-2 w-full py-1.5 pl-2 text-[11px]" style={{ color: FIN.slate }}>
-          <option value="">+ Limite pour une autre catégorie…</option>
-          {unbudgeted.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.label}
-            </option>
-          ))}
-        </select>
       )}
       <ul className="mt-3 space-y-3">
         {[...expenseGroups, ...(looseGroup ? [looseGroup] : [])].map(({ group, spent, rows }) => {

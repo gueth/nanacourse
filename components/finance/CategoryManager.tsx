@@ -1,8 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { ChevronRight, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Pencil, Plus, Trash2 } from 'lucide-react';
 import { ErrorNote, FIN, FinButton, FinModal, NumberField, Panel, useFinConfirm } from '@/components/finance/FinanceParts';
+import { GROUP_ICONS, GroupIcon, groupIconOf, iconsTakenBesides, iconTone } from '@/components/finance/GroupIcon';
 import { formatEuros, SECTIONS } from '@/lib/finance';
 import { describeDbError } from '@/lib/financePlans';
 import { useCategoryLimits, useMonthPlans } from '@/lib/financeQueries';
@@ -165,7 +166,8 @@ export function NewCategoryForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sections = SECTIONS.filter((s) => s.side === (kind === 'income' ? 'produits' : 'charges'));
-  const taken = CATEGORIES.some((c) => sameLabel(c.label, label));
+  // Un même nom peut servir une fois en sorties et une fois en entrées, pas deux fois dans le même sens
+  const taken = !!kind && CATEGORIES.some((c) => groupKindOf(c) === (kind === 'income' ? 'income' : 'expense') && sameLabel(c.label, label));
 
   async function create() {
     if (!label.trim() || taken || !kind) return;
@@ -193,7 +195,7 @@ export function NewCategoryForm({
       </Field>
       {taken && (
         <p className="mt-1 text-[11px]" style={{ color: FIN.rose }}>
-          Cette catégorie existe déjà.
+          {kind === 'income' ? 'Une catégorie d’entrées porte déjà ce nom.' : 'Une catégorie de sorties porte déjà ce nom.'}
         </p>
       )}
       {!fixedKind && (
@@ -242,6 +244,15 @@ function GroupForm({
   const [kind, setKind] = useState<GroupKind | null>(group?.kind ?? fixedKind ?? null);
   const [label, setLabel] = useState(group?.label ?? '');
   const [limit, setLimit] = useState<number | null>(group?.monthly_limit ?? null);
+  // Icône choisie (null : devinée d'après le nom, tant qu'on n'en choisit pas une)
+  const [icon, setIcon] = useState<string | null>(group?.icon ?? null);
+  // Grille des icônes : repliée au départ, pour ne pas prendre de place si on ne cherche pas à changer l'icône
+  const [iconsOpen, setIconsOpen] = useState(false);
+  // Cette grande catégorie telle qu'elle est dans le formulaire : son icône ne peut pas être celle d'une autre
+  // grande catégorie du même sens (une sortie et une entrée peuvent partager la même)
+  const draft = { id: group?.id ?? 'nouvelle', label, kind: kind ?? 'expense', icon };
+  const shownIcon = groupIconOf(draft);
+  const takenIcons = iconsTakenBesides(draft);
   // Partie de la répartition du revenu (Gestion > Répartition) où compter cette grande catégorie de sorties
   const planQuery = useIncomePlan();
   const monthPlansQuery = useMonthPlans();
@@ -252,17 +263,24 @@ function GroupForm({
   const chosenPart = part === undefined ? currentPart : part;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const taken = categoryGroups().some((g) => g.id !== group?.id && sameLabel(g.label, label));
+  // Un même nom peut servir une fois en sorties et une fois en entrées, pas deux fois dans le même sens
+  const taken = !!kind && categoryGroups().some((g) => g.id !== group?.id && g.kind === kind && sameLabel(g.label, label));
 
   async function save() {
     if (!label.trim() || taken || !kind) return;
     setBusy(true);
     let err;
     let groupId = group?.id;
-    if (group) err = await updateCategoryGroup(group.id, { label: label.trim(), monthly_limit: limit });
+    // L'icône n'est envoyée que si elle a changé : sans la colonne en base (script pas lancé), le reste s'enregistre
+    const iconChange = icon !== (group?.icon ?? null) ? { icon } : {};
+    if (group) err = await updateCategoryGroup(group.id, { label: label.trim(), monthly_limit: limit, ...iconChange });
     else {
       const created = await addCategoryGroup(label, kind);
-      err = created.error ?? (created.group && limit !== null ? await updateCategoryGroup(created.group.id, { monthly_limit: limit }) : null);
+      err =
+        created.error ??
+        (created.group && (limit !== null || icon)
+          ? await updateCategoryGroup(created.group.id, { ...(limit !== null ? { monthly_limit: limit } : {}), ...iconChange })
+          : null);
       groupId = created.group?.id;
     }
     // Répartition : seulement pour une sortie, et si le choix a changé (s'applique au mois en cours et aux suivants)
@@ -293,10 +311,82 @@ function GroupForm({
       </Field>
       {taken && (
         <p className="mt-1 text-[11px]" style={{ color: FIN.rose }}>
-          Cette grande catégorie existe déjà.
+          {kind === 'income' ? 'Une grande catégorie d’entrées porte déjà ce nom.' : 'Une grande catégorie de sorties porte déjà ce nom.'}
         </p>
       )}
       {!group && !fixedKind && <SensePicker value={kind} onChange={setKind} />}
+      {/* Icône : rond légèrement rouge (sortie) ou vert (entrée), à gauche des transactions de ses sous-catégories */}
+      {kind && (
+        <div className="mt-3">
+          <Field label="Icône">
+            {/* Repliée : l'icône actuelle seulement ; « Changer » déplie la grille de toutes les icônes */}
+            <button
+              type="button"
+              onClick={() => setIconsOpen((o) => !o)}
+              aria-expanded={iconsOpen}
+              className="flex w-full items-center gap-2.5 rounded-sm border px-2 py-1.5 text-left"
+              style={{ borderColor: FIN.line, backgroundColor: 'white' }}
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border" style={{ ...iconTone(kind), borderColor: iconTone(kind).color }}>
+                <shownIcon.Icon size={17} strokeWidth={1.9} />
+              </span>
+              <span className="min-w-0 flex-1 text-[12px]" style={{ color: FIN.navy }}>
+                {shownIcon.label}
+                <span className="block text-[10px]" style={{ color: FIN.slate }}>
+                  {icon ? 'choisie par toi' : 'choisie d’après le nom'}
+                </span>
+              </span>
+              <span className="flex shrink-0 items-center gap-1 text-[9px] uppercase tracking-[0.15em]" style={{ color: FIN.accent }}>
+                {iconsOpen ? 'Replier' : 'Changer'}
+                <ChevronDown size={14} className={`transition-transform ${iconsOpen ? 'rotate-180' : ''}`} />
+              </span>
+            </button>
+            {iconsOpen && (
+              <>
+                <p className="mb-1.5 mt-2 text-[10px]" style={{ color: FIN.slate }}>
+                  {icon ? (
+                    <button type="button" onClick={() => setIcon(null)} className="underline">
+                      choisir d&apos;après le nom
+                    </button>
+                  ) : (
+                    'touche une icône pour en choisir une autre'
+                  )}
+                  {takenIcons.size > 0 && ` · les icônes pâles sont déjà prises par une autre grande catégorie ${kind === 'income' ? 'd’entrées' : 'de sorties'}`}
+                </p>
+                <div className="grid grid-cols-7 gap-1.5">
+                  {GROUP_ICONS.map(({ id, label: iconLabel, Icon }) => {
+                    const selected = id === shownIcon.id;
+                    const used = takenIcons.has(id);
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => {
+                          // Icône choisie : la grille se replie
+                          setIcon(id);
+                          setIconsOpen(false);
+                        }}
+                        disabled={used}
+                        aria-label={used ? `${iconLabel} (déjà prise)` : iconLabel}
+                        aria-pressed={selected}
+                        title={used ? `${iconLabel} : déjà prise` : iconLabel}
+                        className="flex aspect-square items-center justify-center rounded-full border"
+                        style={
+                          selected
+                            ? { ...iconTone(kind), borderColor: iconTone(kind).color }
+                            : { borderColor: FIN.line, color: FIN.slate, opacity: used ? 0.25 : 1 }
+                        }
+                      >
+                        <Icon size={17} strokeWidth={1.9} />
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </Field>
+        </div>
+      )}
       <div className="mt-3">
         <NumberField label="Limite par mois" value={limit} onChange={setLimit} />
       </div>
@@ -329,7 +419,8 @@ function CategoryForm({ category, onDone, onCancel, danger }: { category: Catego
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const kind = groupKindOf(category);
-  const taken = CATEGORIES.some((c) => c.id !== category.id && sameLabel(c.label, label));
+  // Même nom permis dans l'autre sens (une sortie et une entrée), pas dans le même
+  const taken = CATEGORIES.some((c) => c.id !== category.id && groupKindOf(c) === kind && sameLabel(c.label, label));
 
   async function save() {
     if (!label.trim() || taken) return;
@@ -350,7 +441,7 @@ function CategoryForm({ category, onDone, onCancel, danger }: { category: Catego
       </Field>
       {taken && (
         <p className="mt-1 text-[11px]" style={{ color: FIN.rose }}>
-          Ce nom est déjà pris.
+          {kind === 'income' ? 'Une catégorie d’entrées porte déjà ce nom.' : 'Une catégorie de sorties porte déjà ce nom.'}
         </p>
       )}
       {kind && <GroupSelect kind={kind} value={group} onChange={setGroup} />}
@@ -497,13 +588,14 @@ function Column({ kind, budgets, onChanged, onError }: { kind: GroupKind; budget
   return (
     <div className="min-w-0 text-[12px]">
       {confirmDialog}
-      <div className="mb-1 border-b pb-0.5" style={{ borderColor: FIN.line }}>
-        <p className="text-[9px] font-bold uppercase tracking-[0.2em]" style={{ color: kind === 'income' ? FIN.sage : FIN.rose }}>
+      {/* Sur une seule ligne : le sens, puis le total des limites */}
+      <div className="mb-1 flex items-baseline gap-1.5 whitespace-nowrap border-b pb-0.5" style={{ borderColor: FIN.line }}>
+        <span className="text-[9px] font-bold uppercase tracking-[0.2em]" style={{ color: kind === 'income' ? FIN.sage : FIN.rose }}>
           {kind === 'income' ? 'Entrées' : 'Sorties'}
-        </p>
-        <p className="text-[10px]" style={{ color: FIN.slate }}>
+        </span>
+        <span className="min-w-0 truncate text-[10px]" style={{ color: FIN.slate }}>
           Limites : <b style={{ color: FIN.navy }}>{formatEuros(limitsTotal(kind, budgets))}</b> / mois
-        </p>
+        </span>
       </div>
 
       {/* Grandes catégories et leurs sous-catégories */}
@@ -521,6 +613,7 @@ function Column({ kind, budgets, onChanged, onError }: { kind: GroupKind; budget
                 style={{ color: FIN.navy }}
               >
                 <ChevronRight size={14} className={`mt-px shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
+                <GroupIcon group={g} size={22} />
                 <span className="min-w-0">
                   {g.label}
                   <span className="block text-[9px] font-normal normal-case tracking-normal" style={{ color: FIN.slate }}>

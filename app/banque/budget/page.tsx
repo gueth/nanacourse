@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useSyncExternalStore } from 'react';
 import { latestCached, orThrow, setCachedAll, useCached } from '@/lib/cache';
-import { Plus, X } from 'lucide-react';
+import { CalendarDays, Plus, X } from 'lucide-react';
 import { formatEuros, monthKey, monthLabel, shiftMonth } from '@/lib/finance';
 import {
   addManualTransaction,
@@ -12,7 +12,6 @@ import {
   categoryGroups,
   DEFAULT_CATEGORY_IDS,
   deleteManualTransaction,
-  detectUnusual,
   fetchTransactions,
   isManual,
   isSavingsAccount,
@@ -21,8 +20,6 @@ import {
   monthOf,
   reclassifyOthers,
   saveRule,
-  splitByKind,
-  summarize,
   updateCategory,
   type Category,
   type CategoryGroup,
@@ -32,9 +29,10 @@ import { describeDbError } from '@/lib/financePlans';
 import { syncFinances } from '@/lib/financeSync';
 import { rememberedFinanceMonth, useViewedMonth } from '@/lib/health';
 import { NewCategoryForm } from '@/components/finance/CategoryManager';
+import { GroupIcon, TransferIcon } from '@/components/finance/GroupIcon';
 import { BudgetLimits } from '@/components/finance/BudgetLimits';
-import { MonthRepartitionPanel } from '@/components/finance/Repartition';
 import { KeyFigures } from '@/components/finance/KeyFigures';
+import { fetchTxWindow, lastDay, TX_PREFIX, type TxWindow } from '@/components/finance/MonthCashSummary';
 import { useCoverage, useDebtCategories } from '@/lib/financeQueries';
 import { flagTransfersToVerify } from '@/lib/coverage';
 import { EstimatedOperations } from '@/components/finance/EstimatedOperations';
@@ -44,27 +42,128 @@ import {
   FinanceHeader,
   FinancePage,
   FinButton,
+  FinModal,
+  ImportStatementButton,
   NewMonthCard,
   NumberField,
   Panel,
-  SummaryTile,
   useFinConfirm
 } from '@/components/finance/FinanceParts';
 
-// Fenêtre d'opérations en mémoire : du mois "from" au mois "to" (inclus)
-type TxWindow = { from: string; to: string; list: Transaction[] };
-const TX_PREFIX = 'finances:operations:';
 
 const noSubscribe = () => () => {};
 const readMonth = () => monthKey(new Date());
 // Mois demandé dans l'adresse (?mois=2026-03), par exemple au retour de la page Gestion
 const readAskedMonth = () => new URLSearchParams(window.location.search).get('mois')?.match(/^\d{4}-\d{2}$/)?.[0] ?? null;
 
-const lastDay = (period: string) => {
-  const [y, m] = period.split('-').map(Number);
-  return `${period}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
-};
 const shortDate = (date: string) => new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+
+// Filtre par date : une icône calendrier qui ouvre le choix des jours (dans le mois affiché). On touche un premier jour,
+// puis un second pour la fin de l'intervalle ; « Valider » sans second jour garde le premier jour et les suivants.
+// Popin calendrier aux couleurs de l'appli (le calendrier du téléphone ne se laisse pas habiller) : les jours du mois
+// affiché, semaine du lundi au dimanche ; un point sous les jours qui ont des opérations ("marked", AAAA-MM-JJ)
+const WEEK_DAYS = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
+// Intervalle de dates (AAAA-MM-JJ) : from '' = toutes les dates ; to '' = jusqu'à la fin du mois
+type DateRange = { from: string; to: string };
+// « Du 13 oct. au 20 oct. », « Le 13 oct. » ou « À partir du 13 oct. »
+const rangeLabel = ({ from, to }: DateRange) =>
+  !to ? `À partir du ${shortDate(from)}` : to === from ? `Le ${shortDate(from)}` : `Du ${shortDate(from)} au ${shortDate(to)}`;
+function DateFilter({ value, period, marked, onChange }: { value: DateRange; period: string; marked: Set<string>; onChange: (range: DateRange) => void }) {
+  const [open, setOpen] = useState(false);
+  // Choix en cours dans la popin (appliqué au second jour touché, ou avec « Valider »)
+  const [draft, setDraft] = useState<DateRange>(value);
+  const [year, month] = period.split('-').map(Number);
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const offset = (new Date(year, month - 1, 1).getDay() + 6) % 7; // cases vides avant le 1er (semaine du lundi)
+  const dateOf = (day: number) => `${period}-${String(day).padStart(2, '0')}`;
+  function apply(range: DateRange) {
+    onChange(range);
+    setOpen(false);
+  }
+  // Premier jour touché : le début ; second (le même jour ou après) : la fin, et la popin se ferme ; un jour d'avant
+  // le début recommence l'intervalle
+  function pick(date: string) {
+    if (!draft.from || draft.to || date < draft.from) setDraft({ from: date, to: '' });
+    else apply({ from: draft.from, to: date });
+  }
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          setDraft(value);
+          setOpen(true);
+        }}
+        aria-label="Filtrer par dates"
+        title="Filtrer par dates"
+        className="flex h-[30px] w-[34px] shrink-0 items-center justify-center rounded-sm border"
+        style={value.from ? { backgroundColor: FIN.accent, borderColor: FIN.accent, color: FIN.paper } : { borderColor: FIN.line, color: FIN.accent, backgroundColor: 'white' }}
+      >
+        <CalendarDays size={16} />
+      </button>
+      {open && (
+        <FinModal title="Dates" onClose={() => setOpen(false)}>
+          <p className="mb-3 text-center text-[11px] uppercase tracking-[0.3em]" style={{ color: FIN.slate }}>
+            {monthLabel(period)}
+          </p>
+          <div className="grid grid-cols-7 gap-1 text-center">
+            {WEEK_DAYS.map((d, i) => (
+              <span key={i} className="pb-1 text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.gold }}>
+                {d}
+              </span>
+            ))}
+            {Array.from({ length: offset }, (_, i) => (
+              <span key={`vide-${i}`} />
+            ))}
+            {Array.from({ length: daysInMonth }, (_, i) => {
+              const date = dateOf(i + 1);
+              // Début et fin de l'intervalle : pleins ; jours entre les deux (ou après le début, sans fin) : légèrement teintés
+              const chosen = date === draft.from || date === draft.to;
+              const kept = !!draft.from && date > draft.from && (!draft.to || date < draft.to);
+              return (
+                <button
+                  key={date}
+                  type="button"
+                  onClick={() => pick(date)}
+                  aria-pressed={chosen}
+                  className="relative flex aspect-square items-center justify-center rounded-full border text-[12px]"
+                  style={
+                    chosen
+                      ? { backgroundColor: FIN.accent, borderColor: FIN.accent, color: FIN.paper, fontWeight: 700 }
+                      : { borderColor: kept ? FIN.line : 'transparent', backgroundColor: kept ? FIN.mist : 'transparent', color: FIN.navy }
+                  }
+                >
+                  {i + 1}
+                  {marked.has(date) && (
+                    <span className="absolute bottom-1 h-1 w-1 rounded-full" style={{ backgroundColor: chosen ? FIN.paper : FIN.gold }} aria-hidden />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-3 text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
+            {!draft.from
+              ? 'Touche le premier jour, puis le dernier. Un point marque les jours qui ont des transactions.'
+              : !draft.to
+                ? `${rangeLabel(draft)} : touche le dernier jour, ou valide pour garder tous les jours suivants.`
+                : `${rangeLabel(draft)}. Touche un jour pour recommencer.`}
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {draft.from && <FinButton onClick={() => apply(draft)}>Valider</FinButton>}
+            {value.from && (
+              <FinButton outline onClick={() => apply({ from: '', to: '' })}>
+                Tous les jours
+              </FinButton>
+            )}
+            <FinButton outline onClick={() => setOpen(false)}>
+              Fermer
+            </FinButton>
+          </div>
+        </FinModal>
+      )}
+    </>
+  );
+}
 
 const OTHER_IDS = DEFAULT_CATEGORY_IDS;
 const NEW_CATEGORY = '__nouvelle';
@@ -80,6 +179,103 @@ function groupedChoices(list: Category[]): { group: CategoryGroup | null; list: 
     .filter((g) => g.list.length > 0)
     .sort((a, b) => a.group.label.localeCompare(b.group.label, 'fr'));
   return [...(loose.length ? [{ group: null, list: loose }] : []), ...groups];
+}
+
+// Grande catégorie d'une catégorie (null : sans regroupement)
+const groupOf = (categoryId: string) => {
+  const id = categoryById(categoryId).group;
+  return (id && categoryGroups().find((g) => g.id === id)) || null;
+};
+
+// Popin « Modifier une transaction », ouverte en touchant l'icône d'une transaction : son libellé, sa date et son compte,
+// puis sa catégorie en deux listes (la grande catégorie, puis la catégorie de celle-ci). Le choix vaut toujours pour ce
+// commerçant (et les prochains relevés) : à partir du mois de la transaction, ou sur tous les mois, même passés.
+type ClassifyScope = 'one' | 'from' | 'all';
+const NO_GROUP = 'sans';
+function ClassifyModal({
+  transaction: t,
+  busy,
+  onClassify,
+  onClose
+}: {
+  transaction: Transaction;
+  busy: boolean;
+  onClassify: (category: string, scope: ClassifyScope) => void;
+  onClose: () => void;
+}) {
+  const choices = groupedChoices(choicesFor(t.amount, t.category));
+  const [group, setGroup] = useState<string>(categoryById(t.category).group ?? NO_GROUP);
+  const [category, setCategory] = useState(t.category);
+  const inGroup = choices.find((g) => (g.group?.id ?? NO_GROUP) === group)?.list ?? [];
+  const month = monthLabel(monthOf(t.date));
+  // Une ligne d'information : l'intitulé puis la valeur, à la suite dans le même texte (une valeur longue revient à la
+  // ligne sous l'intitulé, pas dans une colonne à part)
+  const info = (label: string, value: React.ReactNode) => (
+    <p className="break-words border-b py-1.5 text-[12px]" style={{ borderColor: FIN.line, color: FIN.navy }}>
+      <span className="text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+        {label} :
+      </span>{' '}
+      <b>{value}</b>
+    </p>
+  );
+  return (
+    <FinModal title="Modifier une transaction" onClose={() => !busy && onClose()}>
+      <div className="mt-1">
+        {info('Libellé de la transaction', t.label)}
+        {info('Date', shortDate(t.date))}
+        {info('Type de compte', t.account)}
+      </div>
+
+      {/* Catégorie : la grande catégorie, puis la catégorie */}
+      <p className="mb-1 mt-4 text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+        Catégorie
+      </p>
+      <div className="flex items-center gap-2">
+        <GroupIcon group={choices.find((g) => (g.group?.id ?? NO_GROUP) === group)?.group ?? null} size={30} />
+        <select
+          value={group}
+          onChange={(e) => {
+            setGroup(e.target.value);
+            const list = choices.find((g) => (g.group?.id ?? NO_GROUP) === e.target.value)?.list ?? [];
+            setCategory(list.some((c) => c.id === t.category) ? t.category : list.length === 1 ? list[0].id : '');
+          }}
+          aria-label="Grande catégorie"
+          className="fin-select min-w-0 flex-1 py-2 pl-2 text-[12px]"
+        >
+          {choices.map(({ group: g }) => (
+            <option key={g?.id ?? NO_GROUP} value={g?.id ?? NO_GROUP}>
+              {g ? g.label : 'Sans grande catégorie'}
+            </option>
+          ))}
+        </select>
+      </div>
+      <select value={category} onChange={(e) => setCategory(e.target.value)} aria-label="Catégorie" className="fin-select mt-2 w-full py-2 pl-2 text-[12px]">
+        {!inGroup.some((c) => c.id === category) && <option value="">Choisir une catégorie…</option>}
+        {inGroup.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.label}
+          </option>
+        ))}
+      </select>
+
+      <div className="mt-5 flex flex-col gap-2">
+        <FinButton onClick={() => onClassify(category, 'from')} disabled={busy || !category}>
+          {`Enregistrer pour ${month} et les mois suivants`}
+        </FinButton>
+        <FinButton onClick={() => onClassify(category, 'all')} disabled={busy || !category}>
+          Enregistrer pour tous les mois
+        </FinButton>
+        <FinButton outline onClick={onClose} disabled={busy}>
+          Annuler
+        </FinButton>
+      </div>
+      <p className="mt-3 text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
+        {busy
+          ? 'Enregistrement en cours…'
+          : `Toutes les transactions « ${merchantKey(t.label)} » suivent ce choix, ainsi que les prochains relevés. Avec « ${month} et les mois suivants », les mois d'avant gardent leur classement.`}
+      </p>
+    </FinModal>
+  );
 }
 
 // Liste déroulante des catégories (ordre alphabétique), avec en dernier « + Nouvelle catégorie… »
@@ -229,7 +425,8 @@ function AddOperationForm({
   }
 
   return (
-    <div className="mb-3 rounded-sm border p-3" style={{ borderColor: FIN.line, backgroundColor: FIN.paper }}>
+    // Contenu de la popin « Ajouter une transaction »
+    <div>
       <div className="flex gap-1.5">
         {(
           [
@@ -314,15 +511,19 @@ export default function BudgetPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [adding, setAdding] = useState(false);
+  // Transaction dont la popin de classement est ouverte (depuis son icône)
+  const [classifying, setClassifying] = useState<Transaction | null>(null);
+  // Reclassement en cours depuis la popin de classement
+  const [alwaysBusy, setAlwaysBusy] = useState(false);
   const [accountFilter, setAccountFilter] = useState(''); // '' : tous les comptes
+  // Dates gardées par la liste : un intervalle, ou un jour et les suivants (from '' : toutes)
+  const [dateRange, setDateRange] = useState<DateRange>({ from: '', to: '' });
+  const [flowFilter, setFlowFilter] = useState<'' | 'in' | 'out'>(''); // '' : entrées et sorties
+  const [categoryFilter, setCategoryFilter] = useState(''); // '' : toutes ; sinon une grande catégorie, 'sans' ou 'virements'
 
   // Données gardées en mémoire entre deux visites (lib/cache) : affichées tout de suite, puis rechargées en arrière-plan.
   // Opérations : une fenêtre de 13 mois (le mois affiché et les 12 d'avant) par mois affiché.
-  const txQuery = useCached<TxWindow>(period && `${TX_PREFIX}${period}`, async () => {
-    const from = shiftMonth(period!, -12);
-    const { transactions, error } = await fetchTransactions(`${from}-01`, lastDay(period!));
-    return { from, to: period!, list: orThrow(transactions, error) };
-  });
+  const txQuery = useCached<TxWindow>(period && `${TX_PREFIX}${period}`, () => fetchTxWindow(period!));
   // Les catégories sont rangées dans CATEGORIES (lib/transactions) : la mémoire garde juste le moment du chargement
   const categoriesQuery = useCached('finances:categories', async () => orThrow(Date.now(), await loadCategories()));
 
@@ -338,17 +539,11 @@ export default function BudgetPage() {
   const setTransactions = (update: (ts: Transaction[]) => Transaction[]) => setCachedAll<TxWindow>(TX_PREFIX, (w) => ({ ...w, list: update(w.list) }));
 
   const monthTx = useMemo(() => transactions.filter((t) => period && monthOf(t.date) === period), [transactions, period]);
-  // Chiffres d'indication des cartes (entrées, sorties, reste, en bref, limites, répartition) : sans les créances ni les
-  // dettes (prêts aux proches, emprunts et leurs remboursements). La liste des opérations, elle, les garde toutes.
-  const debtCategories = useDebtCategories();
-  const figureTransactions = useMemo(() => transactions.filter((t) => !debtCategories.has(t.category)), [transactions, debtCategories]);
-  const figureTx = useMemo(() => monthTx.filter((t) => !debtCategories.has(t.category)), [monthTx, debtCategories]);
-  const history = useMemo(() => figureTransactions.filter((t) => period && monthOf(t.date) < period), [figureTransactions, period]);
-  const summary = summarize(figureTx);
-  // Dépenses inhabituelles : comptées comme occasionnelles dans la barre fixes / variables / occasionnelles
-  const unusual = useMemo(() => detectUnusual(figureTx, history), [figureTx, history]);
-  const unusualIds = new Set(unusual.map((t) => t.id));
-  const split = splitByKind(figureTx, unusualIds);
+  // Chiffres d'indication des cartes (entrées, sorties, reste, en bref, limites, répartition) : sans les opérations qui vont
+  // au bilan (connecteurs vers créances, emprunts ou dettes, à partir de leur mois de départ). La liste des opérations, elle, les garde toutes.
+  const isDebtTx = useDebtCategories();
+  const figureTransactions = useMemo(() => transactions.filter((t) => !isDebtTx(t)), [transactions, isDebtTx]);
+  const figureTx = useMemo(() => monthTx.filter((t) => !isDebtTx(t)), [monthTx, isDebtTx]);
   // Mes comptes : ceux des opérations chargées, ceux des relevés importés, et toujours compte courant, Livret A et LEP
   const coverageQuery = useCoverage();
   const accounts = useMemo(() => {
@@ -404,15 +599,39 @@ export default function BudgetPage() {
   }
 
   // Mémorise la correction et l'applique à toutes les opérations du même commerçant
-  async function alwaysLikeThis(t: Transaction) {
+  // Toujours classer ce commerçant ainsi : la règle vaut pour les prochains relevés ; les transactions déjà enregistrées
+  // sont reclassées à partir du mois de la transaction (scope 'from') ou sur tous les mois, même passés ('all')
+  // Choix fait dans la popin de classement : la transaction passe dans la catégorie choisie ; « toujours », le
+  // commerçant y est aussi rangé pour les prochains relevés, et ses autres transactions sont reclassées à partir du
+  // mois de celle-ci (scope 'from') ou sur tous les mois, même passés ('all')
+  async function classifyTransaction(t: Transaction, category: string, scope: ClassifyScope) {
+    setAlwaysBusy(true);
+    if (category !== t.category) await recategorize(t, category);
+    if (scope === 'one') setAlwaysBusy(false);
+    else await alwaysLikeThis({ ...t, category }, scope);
+    setClassifying(null);
+  }
+
+  async function alwaysLikeThis(t: Transaction, scope: 'from' | 'all') {
+    setAlwaysBusy(true);
     const key = merchantKey(t.label);
-    const same = transactions.filter((x) => merchantKey(x.label) === key && x.category !== t.category);
+    const { transactions: stored, error: fetchErr } = await fetchTransactions(scope === 'all' ? '0001-01-01' : `${monthOf(t.date)}-01`, '9999-12-31');
+    if (fetchErr) {
+      setAlwaysBusy(false);
+      return report(fetchErr);
+    }
+    const same = stored.filter((x) => x.id !== t.id && merchantKey(x.label) === key && x.category !== t.category);
+    const ids = new Set(same.map((x) => x.id));
     flagTransfers(same, t.category);
-    setTransactions((ts) => ts.map((x) => (merchantKey(x.label) === key ? { ...x, category: t.category } : x)));
+    setTransactions((ts) => ts.map((x) => (ids.has(x.id) ? { ...x, category: t.category } : x)));
     report(await saveRule(key, t.category));
-    if (same.length) report(await updateCategory(same.map((x) => x.id), t.category));
+    if (same.length) report(await updateCategory([...ids], t.category));
     await sync(same);
-    setNotice(`« ${key} » sera toujours classé en ${categoryById(t.category).label} (${same.length} autre${same.length > 1 ? 's' : ''} opération${same.length > 1 ? 's' : ''} corrigée${same.length > 1 ? 's' : ''}).`);
+    setAlwaysBusy(false);
+    const since = scope === 'all' ? 'sur tous les mois' : `depuis ${monthLabel(monthOf(t.date))}`;
+    setNotice(
+      `« ${key} » sera toujours classé en ${categoryById(t.category).label} : ${same.length} autre${same.length > 1 ? 's' : ''} transaction${same.length > 1 ? 's' : ''} reclassée${same.length > 1 ? 's' : ''} ${since}.`
+    );
   }
 
   // Opération ajoutée à la main : rangée dans les fenêtres d'opérations en mémoire qui couvrent son mois
@@ -443,9 +662,36 @@ export default function BudgetPage() {
     await sync([t]);
   }
 
-  // Liste des opérations : filtrable par compte
+  // Liste des opérations : filtrable par compte et par dates (un intervalle, ou un jour et les suivants)
   const shownAccount = accounts.includes(accountFilter) ? accountFilter : '';
-  const listTx = shownAccount ? monthTx.filter((t) => t.account === shownAccount) : monthTx;
+  // Des dates choisies dans un autre mois ne comptent plus quand on change de mois
+  const shownRange: DateRange = period && dateRange.from && monthOf(dateRange.from) === period ? dateRange : { from: '', to: '' };
+  const shownFrom = shownRange.from;
+  const inRange = (t: Transaction) => !shownFrom || (t.date >= shownFrom && (!shownRange.to || t.date <= shownRange.to));
+  // Sens : entrée (montant positif) ou sortie (négatif)
+  const flowOk = (t: Transaction) => !flowFilter || (flowFilter === 'in' ? t.amount > 0 : t.amount < 0);
+  // Filtre par grande catégorie : celles des transactions du mois, dans le sens choisi ; les virements entre mes comptes
+  // et les catégories sans grande catégorie ont chacun leur choix, en fin de liste
+  const filterKeyOf = (t: Transaction) => (categoryById(t.category).kind === 'transfer' ? 'virements' : (groupOf(t.category)?.id ?? 'sans'));
+  const usedKeys = new Set(monthTx.filter(flowOk).map(filterKeyOf));
+  const usedGroups = categoryGroups()
+    .filter((g) => usedKeys.has(g.id))
+    .sort((a, b) => a.label.localeCompare(b.label, 'fr'));
+  const filterGroups = [
+    // Même nom en sorties et en entrées : le sens est précisé
+    ...usedGroups.map((g) => ({
+      id: g.id,
+      label: usedGroups.some((o) => o.id !== g.id && o.label === g.label) ? `${g.label} (${g.kind === 'income' ? 'entrées' : 'sorties'})` : g.label
+    })),
+    ...(usedKeys.has('sans') ? [{ id: 'sans', label: 'Sans grande catégorie' }] : []),
+    ...(usedKeys.has('virements') ? [{ id: 'virements', label: 'Virements entre mes comptes' }] : [])
+  ];
+  const shownCategory = filterGroups.some((g) => g.id === categoryFilter) ? categoryFilter : '';
+  const filteredTx = monthTx.filter(
+    (t) => (!shownAccount || t.account === shownAccount) && inRange(t) && flowOk(t) && (!shownCategory || filterKeyOf(t) === shownCategory)
+  );
+  // Dates choisies : la liste commence par les transactions du premier jour, puis va vers les suivants
+  const listTx = shownFrom ? [...filteredTx].sort((a, b) => a.date.localeCompare(b.date)) : filteredTx;
   // Livret sans relevé ce mois-ci : ses opérations sont estimées (et modifiables)
   const estimated =
     !!shownAccount &&
@@ -453,6 +699,9 @@ export default function BudgetPage() {
     !!coverageQuery.data &&
     !coverageQuery.data.covered.includes(`${shownAccount.toLowerCase()}|${period}`);
   const shownTx = showAll ? listTx : listTx.slice(0, 15);
+  // Comptes sans relevé importé ce mois-ci : seuls ceux-là reçoivent des transactions ajoutées à la main
+  const uncovered = coverageQuery.data ? accounts.filter((a) => !coverageQuery.data!.covered.includes(`${a.toLowerCase()}|${period}`)) : [];
+  const canAdd = shownAccount ? uncovered.includes(shownAccount) : uncovered.length > 0;
 
   return (
     <FinancePage
@@ -481,120 +730,176 @@ export default function BudgetPage() {
         <p className="mt-10 text-center text-[11px] uppercase tracking-[0.3em]" style={{ color: FIN.slate }}>
           Chargement…
         </p>
-      ) : monthTx.length === 0 ? (
-        // Mois sans relevé importé : les Finances retranscrivent le passé, on importe donc son relevé
+      ) : monthTx.length === 0 && period !== currentMonth ? (
+        // Mois passé sans relevé importé : les Finances retranscrivent le passé, on importe donc son relevé
         <NewMonthCard period={period!} />
       ) : (
         <>
-          <div className="mt-5 grid grid-cols-3 gap-2">
-            <SummaryTile label="Entrées" value={formatEuros(summary.income)} color={FIN.sage} />
-            <SummaryTile label="Sorties" value={formatEuros(summary.expenses)} color={FIN.rose} />
-            <SummaryTile
-              label="Reste"
-              value={formatEuros(summary.income - summary.expenses)}
-              color={summary.income >= summary.expenses ? FIN.navy : FIN.rose}
-            />
-          </div>
-
-          {/* Dépenses fixes, variables, occasionnelles */}
-          {summary.expenses > 0 && (
-            <div className="mt-3">
-              <div className="flex h-3 w-full overflow-hidden rounded-full">
-                {[
-                  [split.fixed, FIN.slate],
-                  [split.variable, FIN.gold],
-                  [split.occasional, FIN.rose]
-                ].map(([v, c], i) => (
-                  <div key={i} style={{ width: `${((v as number) / summary.expenses) * 100}%`, backgroundColor: c as string }} />
-                ))}
-              </div>
-              <p className="mt-1 flex justify-between text-[10px]" style={{ color: FIN.slate }}>
-                <span>Fixes {formatEuros(split.fixed)}</span>
-                <span>Variables {formatEuros(split.variable)}</span>
-                <span>Occasionnelles {formatEuros(split.occasional)}</span>
-              </p>
-            </div>
-          )}
-
+          {/* Mois en cours sans relevé : seulement le bouton d'import, la page suit sans données */}
+          {monthTx.length === 0 && <ImportStatementButton period={period!} />}
+          {/* Entrées, sorties, reste et dépenses fixes / variables / occasionnelles : sur le Bilan, onglet Compte de résultat */}
           <OthersPanel items={monthTx.filter((t) => OTHER_IDS.includes(t.category))} onClassify={classifyOther} />
-          <KeyFigures period={period!} currentMonth={currentMonth} transactions={figureTransactions} fixed={split.fixed} />
+          <KeyFigures period={period!} transactions={figureTransactions} />
 
           {/* Ce que dit le relevé face aux limites : barre de progression, dépassement et de combien */}
           <BudgetLimits period={period!} currentMonth={currentMonth} monthTx={figureTx} onError={setError} onCategoriesChanged={() => categoriesQuery.reload()} />
-          {/* La répartition du revenu choisie pour ce mois, face aux relevés : à titre indicatif */}
-          <MonthRepartitionPanel period={period!} currentMonth={currentMonth} monthTx={figureTx} onError={setError} />
 
-          <Panel collapsible title="Liste des opérations" subtitle="Corrige une catégorie si besoin : l'appli peut retenir ta correction pour les fois suivantes.">
-            {adding ? (
+          {/* Popin de classement, ouverte depuis l'icône d'une transaction */}
+          {classifying && (
+            <ClassifyModal transaction={classifying} busy={alwaysBusy} onClassify={(c, scope) => classifyTransaction(classifying, c, scope)} onClose={() => setClassifying(null)} />
+          )}
+          {/* Popin « Ajouter une transaction » : hors de la carte, pour s'ouvrir même quand celle-ci est pliée */}
+          {adding && (
+            <FinModal title="Ajouter une transaction" onClose={() => setAdding(false)}>
               <AddOperationForm
                 period={period!}
-                accounts={accounts}
-                defaultAccount={shownAccount || undefined}
+                accounts={uncovered.length ? uncovered : accounts}
+                defaultAccount={shownAccount && uncovered.includes(shownAccount) ? shownAccount : undefined}
                 onAdd={addOperation}
                 onCancel={() => setAdding(false)}
               />
-            ) : (
-              <button type="button" onClick={() => setAdding(true)} className="mb-3 flex items-center gap-1 text-[10px] uppercase tracking-[0.2em]" style={{ color: FIN.accent }}>
-                <Plus size={13} /> Ajouter une opération
-              </button>
-            )}
-            <label className="mb-2 flex items-center gap-2 text-[10px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
-              Compte
-              <select
-                value={shownAccount}
-                onChange={(e) => setAccountFilter(e.target.value)}
-                className="fin-select min-w-0 flex-1 py-1 pl-2 text-[12px] normal-case tracking-normal"
-              >
-                <option value="">Tous les comptes</option>
-                {accounts.map((a) => (
-                  <option key={a} value={a}>
-                    {a}
-                  </option>
-                ))}
-              </select>
-            </label>
+            </FinModal>
+          )}
+          <Panel
+            collapsible
+            title="Liste de transactions"
+            action={
+              // À droite du titre, seulement pour les comptes sans relevé ce mois-ci ; ouvre la popin sans plier ni déplier la carte
+              canAdd && !adding ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setAdding(true);
+                  }}
+                  aria-label="Ajouter une transaction"
+                  title="Ajouter une transaction"
+                  className="mt-2 flex items-center gap-1 rounded-full border px-2.5 py-1 text-[9px] uppercase tracking-[0.15em]"
+                  style={{ borderColor: FIN.accent, color: FIN.accent }}
+                >
+                  <Plus size={12} /> Ajouter
+                </button>
+              ) : undefined
+            }
+          >
+            {/* Filtres, dans l'ordre : calendrier, les dates choisies juste à sa droite, puis le type de compte (qui se
+                rétrécit pour laisser la place aux dates, sur la même ligne) */}
+            <div className="mb-2 flex items-end gap-2">
+              <DateFilter value={shownRange} period={period!} marked={new Set(monthTx.map((t) => t.date))} onChange={setDateRange} />
+              {shownFrom && (
+                <span className="flex h-[30px] max-w-[45%] shrink-0 items-center gap-1 text-[10px] leading-tight" style={{ color: FIN.slate }}>
+                  <span className="min-w-0">{rangeLabel(shownRange)}</span>
+                  <button
+                    type="button"
+                    onClick={() => setDateRange({ from: '', to: '' })}
+                    aria-label="Retirer le filtre de dates"
+                    className="shrink-0"
+                    style={{ color: FIN.accent }}
+                  >
+                    <X size={13} />
+                  </button>
+                </span>
+              )}
+              <label className="min-w-0 flex-1">
+                <span className="mb-0.5 block text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+                  Type de compte
+                </span>
+                <select value={shownAccount} onChange={(e) => setAccountFilter(e.target.value)} className="fin-select w-full py-1 pl-2 text-[12px]">
+                  <option value="">Tous les comptes</option>
+                  {accounts.map((a) => (
+                    <option key={a} value={a}>
+                      {a}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {/* Dessous : le sens (entrée ou sortie), puis la grande catégorie (celles du mois, dans ce sens) */}
+            <div className="mb-2 grid grid-cols-[2fr_3fr] gap-2">
+              <label className="min-w-0">
+                <span className="mb-0.5 block text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+                  Entrée ou sortie
+                </span>
+                <select value={flowFilter} onChange={(e) => setFlowFilter(e.target.value as '' | 'in' | 'out')} className="fin-select w-full py-1 pl-2 text-[12px]">
+                  <option value="">Toutes</option>
+                  <option value="in">Entrées</option>
+                  <option value="out">Sorties</option>
+                </select>
+              </label>
+              <label className="min-w-0">
+                <span className="mb-0.5 block text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+                  Grande catégorie
+                </span>
+                <select value={shownCategory} onChange={(e) => setCategoryFilter(e.target.value)} className="fin-select w-full py-1 pl-2 text-[12px]">
+                  <option value="">Toutes</option>
+                  {filterGroups.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {/* Séparation entre les filtres et le début de la liste */}
+            <hr className="mb-3 mt-2 h-[2px] rounded-full border-0" style={{ backgroundColor: FIN.accent, opacity: 0.55 }} />
             {estimated && <EstimatedOperations account={shownAccount} period={period!} accounts={accounts} onSaved={coverageQuery.reload} />}
             {listTx.length === 0 && !estimated && (
               <p className="py-2 text-[11px]" style={{ color: FIN.slate }}>
-                Aucune opération sur ce compte ce mois-ci.
+                {shownFrom || flowFilter || shownCategory ? 'Aucune transaction avec ces filtres.' : 'Aucune transaction sur ce compte ce mois-ci.'}
               </p>
             )}
             <ul className="divide-y" style={{ borderColor: FIN.line }}>
               {shownTx.map((t) => {
                 const cat = categoryById(t.category);
                 return (
-                  <li key={t.id} className="py-2">
-                    <div className="flex items-start justify-between gap-2 text-[12px]">
+                  <li key={t.id} className="flex items-start gap-2.5 py-2">
+                    {/* Icône de la grande catégorie : la toucher ouvre la popin de classement */}
+                    {(() => {
+                      const group = groupOf(t.category);
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => setClassifying(t)}
+                          aria-label={`Classer ${t.label}${group ? ` (${group.label})` : ''}`}
+                          title={group ? `${group.label} · changer la catégorie` : 'Changer la catégorie'}
+                          className="mt-0.5 shrink-0 rounded-full"
+                        >
+                          {/* Virement entre mes comptes : une barre dans un rond bleu */}
+                          {cat.kind === 'transfer' ? <TransferIcon size={34} /> : <GroupIcon group={group} size={34} />}
+                        </button>
+                      );
+                    })()}
+                    <div className="flex min-w-0 flex-1 items-start justify-between gap-2 text-[12px]">
                       <span className="min-w-0">
-                        <span className="block break-words">{t.label}</span>
-                        <span className="text-[10px]" style={{ color: FIN.slate }}>
-                          {shortDate(t.date)}
+                        {/* Au-dessus du nom : date, catégorie (elle se change en touchant l'icône), compte */}
+                        <span className="block text-[10px]" style={{ color: FIN.slate }}>
+                          {/* Date en gras, sans point après le mois (« 29 oct ») */}
+                          <b className="font-semibold" style={{ color: FIN.navy }}>
+                            {shortDate(t.date).replace('.', '')}
+                          </b>
+                          {' · '}
+                          <span style={OTHER_IDS.includes(t.category) ? { color: FIN.gold } : undefined}>{cat.label}</span>
                           {!shownAccount && ` · ${t.account}`}
                           {isManual(t) && ' · ajoutée à la main'}
                         </span>
+                        <span className="block break-words">{t.label}</span>
                       </span>
-                      <b className="shrink-0" style={{ color: cat.kind === 'transfer' ? FIN.slate : t.amount > 0 ? FIN.sage : FIN.navy }}>
-                        {formatEuros(t.amount)}
-                      </b>
-                    </div>
-                    <div className="mt-1 flex items-center gap-2">
-                      <CategorySelect amount={t.amount} value={t.category} onPick={(c) => recategorize(t, c)} />
-                      <button type="button" onClick={() => alwaysLikeThis(t)} title="Toujours classer ce commerçant ainsi" className="shrink-0 text-[10px] underline" style={{ color: FIN.gold }}>
-                        Toujours
-                      </button>
-                      {/* Suppression réservée aux opérations ajoutées à la main : celles des relevés importés font foi, on ne fait que les classer */}
-                      {isManual(t) && (
-                        <button
-                          type="button"
-                          onClick={() => removeOperation(t)}
-                          aria-label={`Supprimer ${t.label}`}
-                          title="Supprimer cette opération ajoutée à la main"
-                          className="shrink-0 opacity-60 hover:opacity-100"
-                          style={{ color: FIN.rose }}
-                        >
-                          <X size={14} />
-                        </button>
-                      )}
+                      <span className="flex shrink-0 items-center gap-1.5">
+                        <b style={{ color: cat.kind === 'transfer' ? FIN.slate : t.amount > 0 ? FIN.sage : FIN.navy }}>{formatEuros(t.amount)}</b>
+                        {/* Suppression réservée aux opérations ajoutées à la main : celles des relevés importés font foi, on ne fait que les classer */}
+                        {isManual(t) && (
+                          <button
+                            type="button"
+                            onClick={() => removeOperation(t)}
+                            aria-label={`Supprimer ${t.label}`}
+                            title="Supprimer cette opération ajoutée à la main"
+                            className="opacity-60 hover:opacity-100"
+                            style={{ color: FIN.rose }}
+                          >
+                            <X size={14} />
+                          </button>
+                        )}
+                      </span>
                     </div>
                   </li>
                 );

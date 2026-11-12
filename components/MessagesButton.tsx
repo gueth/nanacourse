@@ -11,7 +11,8 @@ import { countUnread, runReminders } from '@/lib/messages';
 // Rappels de la session en cours (lancés à la première visite de l'accueil)
 let remindersRun: ReturnType<typeof runReminders> | null = null;
 
-export function MessagesButton() {
+// bottom : distance au bas de l'écran (sur l'accueil, au-dessus du menu du bas)
+export function MessagesButton({ bottom = 'calc(1.25rem + env(safe-area-inset-bottom))' }: { bottom?: string }) {
   const [unread, setUnread] = useState(0);
 
   useEffect(() => {
@@ -33,8 +34,8 @@ export function MessagesButton() {
     <Link
       href="/messages"
       aria-label={unread > 0 ? `Messages, ${unread} non lu${unread > 1 ? 's' : ''}` : 'Messages'}
-      className="fixed bottom-[calc(1.25rem+env(safe-area-inset-bottom))] right-5 z-40 flex h-14 w-14 items-center justify-center rounded-full border-2 bg-[#f8f7f4] text-[#4a566b] shadow-[0_2px_4px_rgba(0,0,0,0.18),0_8px_16px_rgba(27,42,74,0.25)] transition-transform active:scale-95"
-      style={{ borderColor: '#4a566b' }}
+      className="fixed right-5 z-40 flex h-14 w-14 items-center justify-center rounded-full border-2 bg-[#f8f7f4] text-[#4a566b] shadow-[0_2px_4px_rgba(0,0,0,0.18),0_8px_16px_rgba(27,42,74,0.25)] transition-transform active:scale-95"
+      style={{ borderColor: '#4a566b', bottom }}
     >
       <Mail size={26} strokeWidth={1.8} />
       {unread > 0 && (

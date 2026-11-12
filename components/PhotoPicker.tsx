@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Camera, ImagePlus, X } from 'lucide-react';
-import { toJpeg } from '@/lib/image';
 import CameraCapture, { canUseInPageCamera } from '@/components/CameraCapture';
 
 export type Photo = { file: File; url: string };
@@ -34,18 +33,6 @@ export function usePhotos(max: number) {
   }
 
   return { photos, add, remove, error };
-}
-
-// Photos réduites et converties en JPEG, prêtes à être envoyées dans un FormData (champ "photos").
-// Renvoie null si une photo ne peut pas être lue par le navigateur.
-export async function photosFormData(photos: Photo[]) {
-  const formData = new FormData();
-  for (const [i, p] of photos.entries()) {
-    const jpeg = await toJpeg(p.file);
-    if (!jpeg) return null;
-    formData.append('photos', jpeg, `photo-${i + 1}.jpg`);
-  }
-  return formData;
 }
 
 type Props = {

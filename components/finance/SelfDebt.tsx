@@ -28,7 +28,7 @@ export function SelfDebtPanel({ currentMonth, ready }: { currentMonth: string | 
   const budgets = useCategoryLimits().data;
   const monthBudgets = useMonthBudgets().data;
   // Sans les créances ni les dettes (prêts aux proches, emprunts et remboursements) : ni dépassement ni économie
-  const debtCategories = useDebtCategories();
+  const isDebtTx = useDebtCategories();
   // Argent en compte : liquidités du dernier bilan rempli
   const lines = useFinanceLines(currentMonth, 13).data;
   const cash = useMemo(() => {
@@ -38,7 +38,7 @@ export function SelfDebtPanel({ currentMonth, ready }: { currentMonth: string | 
   }, [lines]);
   const history =
     currentMonth && txQuery.data && budgets && monthBudgets
-      ? debtHistory(start, currentMonth, txQuery.data.filter((t) => !debtCategories.has(t.category)), budgets, plans, monthBudgets)
+      ? debtHistory(start, currentMonth, txQuery.data.filter((t) => !isDebtTx(t)), budgets, plans, monthBudgets)
       : null;
 
   if (!ready || firstQuery.data === undefined) return null;

@@ -6,7 +6,7 @@ import { formatEuros, monthLabel } from '@/lib/finance';
 import { DEFAULT_PLAN, newPartId, type IncomePart } from '@/lib/budget';
 import { useIncomePlan } from '@/lib/coursesQueries';
 import { useMonthPlans } from '@/lib/financeQueries';
-import { assignTargets, expenseTargets, ownPlan, partsFor, repartitionCheck, saveDefaultRepartition, saveMonthPlan } from '@/lib/repartition';
+import { assignTargets, expenseTargets, partsFor, repartitionCheck, saveDefaultRepartition, saveMonthPlan } from '@/lib/repartition';
 import type { Transaction } from '@/lib/transactions';
 import { FIN, FinButton, FinModal, Meter, Panel, parseAmount } from '@/components/finance/FinanceParts';
 
@@ -101,7 +101,6 @@ export function MonthRepartitionPanel({
   const plan = planQuery.data;
   const monthPlans = monthPlansQuery.data;
   const past = !!currentMonth && period < currentMonth;
-  const own = ownPlan(period, monthPlans);
   const parts = partsFor(period, plan, monthPlans);
   const { income, rows, unassigned, unassignedTargets } = repartitionCheck(parts, monthTx);
 
@@ -118,9 +117,7 @@ export function MonthRepartitionPanel({
     <Panel
       collapsible
       title="Répartition du mois"
-      subtitle={`À titre indicatif : la part de tes revenus de ${monthLabel(period)} allée dans chaque partie, face à ${
-        own ? 'la répartition propre à ce mois' : 'ta répartition'
-      }. Elle ne compte ni dans la dette à moi-même ni dans la santé financière.`}
+      subtitle="Il s'agit de la façon dont ton argent a été réparti pendant ce mois, selon tes priorités. Elle est donnée à titre indicatif et ne prend pas en compte les dettes et les créances."
     >
       {income <= 0 ? (
         <p className="text-[11px]" style={{ color: FIN.slate }}>
@@ -203,7 +200,6 @@ function RepartitionEditor({ title, initial, onSave, onClose }: { title: string;
   const [saving, setSaving] = useState(false);
 
   const total = Math.round(rows.reduce((s, r) => s + (parseAmount(r.pct) ?? 0), 0) * 100) / 100;
-  const spendingRows = rows.filter((r) => !r.savings);
   const invalid = rows.length === 0 || total !== 100 || rows.some((r) => !r.label.trim());
   const update = (id: string, change: Partial<Row>) => setRows((list) => list.map((r) => (r.id === id ? { ...r, ...change } : r)));
 
@@ -282,37 +278,8 @@ function RepartitionEditor({ title, initial, onSave, onClose }: { title: string;
         <Plus size={13} /> Ajouter une partie
       </button>
 
-      {/* Partie de chaque poste de dépenses */}
-      <p className="mt-4 text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
-        Postes de dépenses
-      </p>
-      <ul className="mt-1 max-h-64 space-y-1 overflow-y-auto pr-1">
-        {all.map((t) => (
-          <li key={t.id} className="flex items-center justify-between gap-2 text-[11px]">
-            <span className={`min-w-0 truncate ${t.id.startsWith('groupe:') ? 'font-bold' : ''}`}>{t.label}</span>
-            <select
-              value={owner.get(t.id) ?? ''}
-              onChange={(e) =>
-                setOwner((m) => {
-                  const next = new Map(m);
-                  if (e.target.value) next.set(t.id, e.target.value);
-                  else next.delete(t.id);
-                  return next;
-                })
-              }
-              aria-label={`Partie de ${t.label}`}
-              className="fin-select max-w-[55%] py-0.5 pl-1.5 text-[11px]"
-            >
-              <option value="">Aucune</option>
-              {spendingRows.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.label || 'Sans nom'}
-                </option>
-              ))}
-            </select>
-          </li>
-        ))}
-      </ul>
+      {/* La partie de chaque poste de dépenses se choisit sur sa grande catégorie (Gestion > Catégories) : ici, elle est
+          gardée telle quelle à l'enregistrement (celle d'une partie supprimée ou devenue l'épargne est libérée) */}
 
       {total !== 100 && rows.length > 0 && (
         <p className="mt-3 text-[11px]" style={{ color: FIN.rose }}>

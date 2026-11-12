@@ -1,12 +1,15 @@
 'use client';
 
 import { formatEuros } from '@/lib/finance';
-import { useCategoryLimits, useDebtCategories, useMonthBudgets } from '@/lib/financeQueries';
+import { useIncomePlan } from '@/lib/coursesQueries';
+import { useCategoryLimits, useMonthBudgets, useMonthPlans } from '@/lib/financeQueries';
+import { partsFor, repartitionCheck } from '@/lib/repartition';
+import { useFinanceTone } from '@/lib/health';
+import { HEALTH_STATES, stateParts, useHealthSettings } from '@/lib/healthSettings';
 import { debtOfMonth } from '@/lib/selfDebt';
-import { annualPlans, categoryById, lastDayOf, monthOf, summarize, type Transaction } from '@/lib/transactions';
+import { annualPlans, monthOf, SELF_DEBT_ID, type Transaction } from '@/lib/transactions';
 import { FIN, Panel } from '@/components/finance/FinanceParts';
 
-const percent = (n: number) => `${Math.round(n * 100)} %`;
 const signed = (n: number) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${formatEuros(Math.abs(n))}`;
 
 // Petit chiffre clé : intitulé, valeur, précision
@@ -28,66 +31,52 @@ function Figure({ label, value, note, color = FIN.navy }: { label: string; value
   );
 }
 
-// « En bref » du Budget : les chiffres clés du mois affiché, comparés aux mois précédents quand ils sont connus.
-// Les sorties sont comparées à la moyenne des 6 mois précédents, sans les créances (prêts aux proches et leurs
-// remboursements, catégories reliées aux lignes de créances du bilan) ni la dette à moi-même.
-// "transactions" : opérations du mois affiché et des mois d'avant ; "fixed" : total des dépenses fixes du mois.
-export function KeyFigures({
-  period,
-  currentMonth,
-  transactions,
-  fixed
-}: {
-  period: string;
-  currentMonth: string | null;
-  transactions: Transaction[];
-  fixed: number;
-}) {
+// « En bref » du Budget, pour le mois affiché :
+//  - la dette à moi-même ajoutée (ou remboursée) et la part du budget utilisée ;
+//  - le nombre d'opérations des catégories rangées dans les charges (Répartition du revenu) ;
+//  - la répartition effective : comment l'argent du mois a été utilisé, partagé entre les parties de la répartition
+//    (charges, investissement personnel, épargne) qui font 100 % à elles trois. L'épargne est ce qui reste des revenus
+//    une fois les sorties payées, 0 % s'il ne reste rien (jamais négative).
+// "transactions" : opérations du mois affiché et des mois d'avant, sans celles qui vont au bilan (créances, dettes…).
+export function KeyFigures({ period, transactions }: { period: string; transactions: Transaction[] }) {
   const budgets = useCategoryLimits().data;
   const monthBudgets = useMonthBudgets().data;
+  const plan = useIncomePlan().data;
+  const monthPlans = useMonthPlans().data;
+  // Couleur du mois affiché (la page suit son mois : useViewedMonth) et sa répartition propre, s'il y en a une
+  const { state } = useFinanceTone();
+  const healthSettings = useHealthSettings().data;
   const monthTx = transactions.filter((t) => monthOf(t.date) === period);
-  const { income, expenses } = summarize(monthTx);
 
-  // Catégories laissées hors des sorties : créances et dettes (Finances > Gestion, lignes reliées) et la dette à moi-même
-  const debtCategories = useDebtCategories();
-  const excluded = new Set(['dette_moi', ...debtCategories]);
-  const outflows = (list: Transaction[]) => summarize(list.filter((t) => !excluded.has(t.category))).expenses;
-  const spent = outflows(monthTx);
-  // Dépenses fixes sans les catégories laissées de côté (la dette à moi-même est rangée dans les fixes)
-  const fixedSpent = Math.max(
-    0,
-    fixed - monthTx.filter((t) => t.amount < 0 && excluded.has(t.category) && categoryById(t.category).kind === 'fixed').reduce((s, t) => s - t.amount, 0)
-  );
-  const sixMonths = [...new Set(transactions.map((t) => monthOf(t.date)))]
-    .filter((m) => m < period)
-    .sort()
-    .slice(-6)
-    .map((m) => outflows(transactions.filter((t) => monthOf(t.date) === m)));
-  const avgSpent = sixMonths.length ? sixMonths.reduce((a, b) => a + b, 0) / sixMonths.length : null;
-
-  // Moyennes des 3 mois précédents qui ont des opérations
-  const previous = [...new Set(transactions.map((t) => monthOf(t.date)))]
-    .filter((m) => m < period)
-    .sort()
-    .slice(-3)
-    .map((m) => summarize(transactions.filter((t) => monthOf(t.date) === m)));
-  const previousRates = previous.filter((p) => p.income > 0).map((p) => (p.income - p.expenses) / p.income);
-  const avgRate = previousRates.length ? previousRates.reduce((s, r) => s + r, 0) / previousRates.length : null;
-
-  const rate = income > 0 ? (income - expenses) / income : null;
   const debt = budgets && monthBudgets ? debtOfMonth(period, monthTx, budgets, annualPlans(), monthBudgets) : null;
-  // Mois en cours : dépense par jour écoulé
-  const days = period === currentMonth ? new Date().getDate() : Number(lastDayOf(period).slice(8));
+
+  // Répartition effective du mois, et opérations des charges (sorties des catégories de la partie « charges »).
+  // Hors calcul : les virements entre mes comptes (écartés par summarize), les catégories reliées au bilan (déjà
+  // retirées de "transactions" par la page) et la dette à moi-même (une écriture de suivi, pas une dépense)
+  const repartitionTx = monthTx.filter((t) => t.category !== SELF_DEBT_ID);
+  // Répartition voulue : celle de la couleur du mois (Paramètres > Finances), sinon celle du mois, sinon celle par défaut
+  const ownOfState = plan ? stateParts(plan.parts, healthSettings, state) : null;
+  const check = plan && monthPlans ? repartitionCheck(ownOfState ?? partsFor(period, plan, monthPlans), repartitionTx) : null;
+  const stateInfo = ownOfState && state ? HEALTH_STATES.find((h) => h.id === state) : null;
+  const chargeCategories = new Set(check?.rows.find((r) => r.part.id === 'charges')?.targets.flatMap((t) => t.categories) ?? []);
+  const chargeOps = monthTx.filter((t) => t.amount < 0 && chargeCategories.has(t.category)).length;
+
+  // Montant de chaque partie (l'épargne à 0 si les sorties dépassent les revenus), et sa part du total, en pourcentages
+  // entiers qui font exactement 100 (les arrondis sont répartis sur les plus grands restes)
+  const used = check?.rows.map((r) => ({ ...r, amount: Math.max(0, r.actual) })) ?? [];
+  const total = used.reduce((sum, r) => sum + r.amount, 0);
+  const exact = used.map((r) => (total > 0 ? (r.amount / total) * 100 : 0));
+  const pcts = exact.map(Math.floor);
+  const missing = total > 0 ? 100 - pcts.reduce((a, b) => a + b, 0) : 0;
+  exact
+    .map((x, i) => ({ i, rest: x - Math.floor(x) }))
+    .sort((a, b) => b.rest - a.rest)
+    .slice(0, missing)
+    .forEach(({ i }) => pcts[i]++);
 
   return (
     <Panel title="En bref">
       <div className="grid grid-cols-3 gap-1.5">
-        <Figure
-          label="Épargne"
-          value={rate === null ? '—' : percent(rate)}
-          note={avgRate === null ? 'des entrées' : `moy. ${percent(avgRate)}`}
-          color={rate === null ? FIN.slate : rate >= 0.1 ? FIN.sage : rate >= 0 ? FIN.gold : FIN.rose}
-        />
         <Figure
           label="Dette à moi"
           value={!debt || debt.allowed === 0 ? '—' : signed(debt.delta)}
@@ -96,19 +85,40 @@ export function KeyFigures({
         />
         <Figure
           label="Budget utilisé"
-          value={!debt || debt.allowed === 0 ? '—' : percent(debt.spent / debt.allowed)}
-          note={debt && debt.allowed > 0 ? `${formatEuros(debt.spent)} / ${formatEuros(debt.allowed)}` : undefined}
+          // + ce qui dépasse le budget, − ce qu'il en reste ; en dessous, juste « dépassement » ou « excédent »
+          value={!debt || debt.allowed === 0 ? '—' : signed(debt.spent - debt.allowed)}
+          note={!debt || debt.allowed === 0 || debt.spent === debt.allowed ? undefined : debt.spent > debt.allowed ? 'dépassement' : 'excédent'}
           color={!debt || debt.allowed === 0 ? FIN.slate : debt.spent > debt.allowed ? FIN.rose : debt.spent >= debt.allowed * 0.8 ? FIN.gold : FIN.sage}
         />
-        <Figure
-          label="Sorties"
-          value={avgSpent ? `${spent >= avgSpent ? '+' : '−'}${percent(Math.abs(spent - avgSpent) / avgSpent)}` : formatEuros(spent)}
-          note={avgSpent ? `vs moy. 6 mois ${formatEuros(avgSpent)}` : 'ce mois'}
-          color={!avgSpent ? FIN.navy : spent > avgSpent ? FIN.rose : FIN.sage}
-        />
-        <Figure label="Par jour" value={formatEuros(spent / days)} note="de sorties" />
-        <Figure label="Fixes" value={spent > 0 ? percent(fixedSpent / spent) : '—'} note={`${formatEuros(fixedSpent)} des sorties`} />
+        <Figure label="Opérations" value={check ? String(chargeOps) : '—'} note="en charges" />
       </div>
+
+      {/* Répartition effective : comment l'argent du mois a été utilisé (les parties font 100 % à elles trois), face à la part voulue */}
+      {check && (
+        <>
+          <p className="mb-1 mt-3 text-center text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+            Répartition effective
+          </p>
+          {stateInfo && (
+            <p className="-mt-0.5 mb-1 text-center text-[9px]" style={{ color: FIN.slate }}>
+              {`voulue : celle d'un mois ${stateInfo.color.toLowerCase()} (${stateInfo.name})`}
+            </p>
+          )}
+          {total <= 0 ? (
+            <p className="text-[11px]" style={{ color: FIN.slate }}>
+              Aucune opération relevée ce mois-ci.
+            </p>
+          ) : (
+            <div className="grid grid-cols-3 gap-1.5">
+              {used.map(({ part }, i) => {
+                const pct = pcts[i];
+                const color = part.savings ? (pct >= part.pct ? FIN.sage : pct > 0 ? FIN.gold : FIN.rose) : pct > part.pct ? FIN.rose : FIN.sage;
+                return <Figure key={part.id} label={part.label} value={`${pct} %`} note={`${part.pct} % voulu`} color={color} />;
+              })}
+            </div>
+          )}
+        </>
+      )}
     </Panel>
   );
 }

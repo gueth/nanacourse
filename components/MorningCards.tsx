@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
+import { useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
 import { useActiveLists } from '@/lib/activeLists';
 import { listTotal } from '@/lib/lists';
 import { formatEuros, monthKey, monthLabel, shiftMonth } from '@/lib/finance';
@@ -10,24 +10,16 @@ import { missingAccounts, monthsToVerify, readTransfersToVerify, subscribeTransf
 import { useShake } from '@/lib/shake';
 import { cyclePhase, PHASES, useCycle } from '@/lib/cycle';
 import { noticeIndex, useNoticeHours } from '@/lib/noticeRotation';
-import { LogOut, Settings, ShoppingBasket, UserRound, Wallet } from 'lucide-react';
-import { useHorizontalSwipe } from '@/lib/swipe';
-import { QuatrefoilMenu } from '@/components/QuatrefoilMenu';
-import { HomeDots } from '@/components/HomeDots';
+import { LogOut, UserRound } from 'lucide-react';
 import { MessagesButton } from '@/components/MessagesButton';
 import { usePageTransition } from '@/components/PageTransitionProvider';
-import Portal from '@/components/Portal';
-import { NAVY, PAPER } from '@/components/gazette/Lace';
-
-// Écran « La Gazette de nana » affiché avant d'ouvrir le journal
-const GAZETTE_SPLASH_MS = 900;
+import { TAB_BAR_HEIGHT } from '@/components/TabBar';
 
 // Page des cartes du jour (/cartes), ouverte après la connexion : l'heure, une grande salutation, et des cartes posées en vrac
 // (phrase du jour, liste de courses active, date, notifications). Toucher une carte la fait rebondir,
 // secouer le téléphone les fait toutes valser.
-// Le menu en trèfle, au centre en bas de l'écran, mène au profil, aux finances, aux courses et aux paramètres.
-// Le journal est la page de droite : en glissant le doigt vers la gauche, l'écran
-// « La Gazette de nana » s'affiche un instant (le temps que l'accueil se prépare), puis l'accueil s'ouvre en fondu.
+// Le menu du bas (components/TabBar, posé par PageShell) mène au journal, aux finances, aux courses et aux paramètres ;
+// le profil s'ouvre par le bouton en haut à droite. La messagerie n'est accessible que d'ici (lettre en bas à droite).
 // Les couleurs suivent la phase du cycle (Profil > Mon cycle) : rouge pour les règles, violet en phase folliculaire,
 // orange à l'ovulation, rose en phase lutéale ; des bulles autour du titre proposent des activités de la phase.
 
@@ -181,22 +173,6 @@ export function MorningCards() {
   const uncategorized = useUncategorizedCount().data ?? 0;
   const noticeHours = useNoticeHours();
   const { startTransition } = usePageTransition();
-  // Journal (la page de droite) : on y passe en glissant le doigt vers la gauche ; l'écran de la gazette s'affiche,
-  // puis l'accueil s'ouvre en fondu
-  const [toJournal, setToJournal] = useState(false);
-  useEffect(() => {
-    if (!toJournal) return;
-    const timer = window.setTimeout(() => startTransition('/accueil', 'fade'), GAZETTE_SPLASH_MS);
-    return () => window.clearTimeout(timer);
-  }, [toJournal, startTransition]);
-  const swipe = useHorizontalSwipe({ onLeft: () => setToJournal(true) });
-  // Menu en trèfle : le profil, les finances, les courses et les paramètres (pages séparées, on n'y accède que par ce menu)
-  const menu = [
-    { label: 'Mon profil', icon: UserRound, onSelect: () => startTransition('/profile', 'fade') },
-    { label: 'Finances', icon: Wallet, onSelect: () => startTransition('/banque/comptes', 'fade') },
-    { label: 'Courses', icon: ShoppingBasket, onSelect: () => startTransition('/course', 'fade') },
-    { label: 'Paramètres', icon: Settings, onSelect: () => startTransition('/settings', 'fade') }
-  ];
   const verifySnapshot = useSyncExternalStore(subscribeTransfersToVerify, readTransfersToVerify, () => '');
   // Phase du cycle du jour (null si le cycle n'est pas renseigné : couleurs par défaut, sans bulles)
   const cycleSettings = useCycle().data;
@@ -255,26 +231,7 @@ export function MorningCards() {
   const store = list?.store_id ? stores?.find((s) => s.id === list.store_id) : undefined;
 
   return (
-    <section {...swipe} className="morning-page relative flex h-dvh flex-col overflow-hidden" style={theme ? themeVars(theme.colors) : undefined}>
-      {/* Écran de la gazette, le temps d'ouvrir le journal */}
-      {toJournal && (
-        <Portal>
-          <div
-            role="status"
-            aria-label="Ouverture du journal"
-            className="fixed inset-0 z-40 flex flex-col items-center justify-center"
-            style={{ backgroundColor: PAPER, color: NAVY, animation: 'page-fade-in 250ms ease-in both' }}
-          >
-            <p className="text-[58px] leading-none" style={{ fontFamily: 'var(--font-blackletter), serif' }}>
-              La Gazette
-            </p>
-            <p className="-mt-1 text-[30px] leading-none" style={{ fontFamily: 'var(--font-script), cursive' }}>
-              de nana
-            </p>
-          </div>
-        </Portal>
-      )}
-
+    <section className="morning-page relative flex h-dvh flex-col overflow-hidden" style={theme ? themeVars(theme.colors) : undefined}>
       {/* Halos de couleur flous derrière le titre et les cartes */}
       <div aria-hidden className="morning-glow pointer-events-none absolute inset-0" />
 
@@ -285,6 +242,15 @@ export function MorningCards() {
         className="absolute left-2 top-[max(env(safe-area-inset-top),0.75rem)] z-20 inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-[12px] font-medium text-neutral-600"
       >
         <LogOut size={15} aria-hidden /> Déconnexion
+      </button>
+
+      {/* Profil, en haut à droite (il n'est pas dans le menu du bas) */}
+      <button
+        type="button"
+        onClick={() => startTransition('/profile', 'fade')}
+        className="absolute right-2 top-[max(env(safe-area-inset-top),0.75rem)] z-20 inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-[12px] font-medium text-neutral-600"
+      >
+        <UserRound size={15} aria-hidden /> Mon profil
       </button>
 
       {/* Heure, puis la salutation en très grandes lettres, que les cartes viennent recouvrir en partie */}
@@ -384,22 +350,11 @@ export function MorningCards() {
         </div>
       </div>
 
-      {/* Place réservée au bouton du menu et aux deux points de l'accueil, sous les cartes */}
-      <div aria-hidden className="h-[calc(60px+max(env(safe-area-inset-bottom),1rem)+2.25rem)] shrink-0" />
+      {/* Place réservée sous les cartes : la lettre de la messagerie, puis le menu du bas et la barre du téléphone */}
+      <div aria-hidden className="shrink-0" style={{ height: `calc(${TAB_BAR_HEIGHT}px + env(safe-area-inset-bottom) + 4.5rem)` }} />
 
-      {/* Deux points pour passer de l'accueil 1 (ici) à l'accueil 2 (le journal) */}
-      <HomeDots current={0} onGo={() => setToJournal(true)} color="var(--m-accent, #9b6a92)" />
-
-      {/* Lettre fixée en bas à droite : messagerie de nana */}
-      <MessagesButton />
-
-      {/* Menu en trèfle, au centre en bas de l'écran : seul accès aux grandes parties de l'application */}
-      <QuatrefoilMenu
-        entries={menu}
-        anchor="bottom"
-        className="absolute left-1/2 z-50 -translate-x-1/2"
-        style={{ bottom: 'max(calc(env(safe-area-inset-bottom) - 4px), 0.75rem)' }}
-      />
+      {/* Lettre en bas à droite, au-dessus du menu du bas : messagerie de nana (seulement sur cet écran) */}
+      <MessagesButton bottom={`calc(${TAB_BAR_HEIGHT}px + env(safe-area-inset-bottom) + 0.75rem)`} />
     </section>
   );
 }

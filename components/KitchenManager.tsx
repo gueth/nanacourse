@@ -4,15 +4,14 @@ import { useEffect, useState } from 'react';
 import { Carrot, LayoutGrid, Store as StoreIcon } from 'lucide-react';
 import Modal, { ModalVariantContext } from '@/components/Modal';
 import { useCatalog } from '@/lib/coursesQueries';
+import { usePageTransition } from '@/components/PageTransitionProvider';
 import CategoriesSettings from '@/components/settings/CategoriesSettings';
-import IngredientsSettings from '@/components/settings/IngredientsSettings';
 import StoresSettings from '@/components/settings/StoresSettings';
 
 // MENU DE LA PAGE DES COURSES : gérer les ingrédients, les catégories et les supermarchés
-// (anciennement dans les Paramètres). Chaque bouton ouvre la gestion dans une grande popin au style cuisine ;
-// les popins et confirmations ouvertes depuis là prennent aussi ce style (ModalVariantContext).
-// /course?gerer=ingredients (ou categories, supermarches) ouvre directement la bonne gestion
-// (anciens liens /ingredients et /stores).
+// (anciennement dans les Paramètres). « Ingrédients » ouvre sa propre page (/ingredients) ; les deux autres ouvrent
+// leur gestion dans une grande popin au style cuisine, et les popins et confirmations ouvertes depuis là prennent
+// aussi ce style (ModalVariantContext). /course?gerer=categories (ou supermarches) ouvre directement la bonne gestion.
 
 const SECTIONS = [
   { id: 'ingredients', label: 'Ingrédients', icon: Carrot, tone: 'from-[#f9b08c] to-[#ef7d57]' },
@@ -23,6 +22,9 @@ type SectionId = (typeof SECTIONS)[number]['id'];
 
 export function KitchenManager() {
   const [open, setOpen] = useState<SectionId | null>(null);
+  const { startTransition } = usePageTransition();
+  // Les ingrédients ont leur page ; les autres gestions s'ouvrent en popin
+  const choose = (id: SectionId) => (id === 'ingredients' ? startTransition('/ingredients', 'fade') : setOpen(id));
 
   // Ouverture directe depuis l'adresse, puis on retire le paramètre
   useEffect(() => {
@@ -32,7 +34,8 @@ export function KitchenManager() {
     url.searchParams.delete('gerer');
     window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- l'adresse n'est lisible qu'une fois dans le navigateur
-    setOpen(asked as SectionId);
+    choose(asked as SectionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- lu une seule fois, à l'ouverture
   }, []);
 
   const section = SECTIONS.find((s) => s.id === open);
@@ -44,7 +47,7 @@ export function KitchenManager() {
           <button
             key={id}
             type="button"
-            onClick={() => setOpen(id)}
+            onClick={() => choose(id)}
             className={`flex flex-col items-start gap-3 rounded-[20px] bg-gradient-to-br ${tone} p-3 text-left text-[#2e3a24] shadow-[0_10px_22px_-16px_rgba(46,58,36,0.6)] transition-transform active:scale-[0.96]`}
           >
             <span className="flex size-8 items-center justify-center rounded-full bg-white/55" aria-hidden>
@@ -71,10 +74,10 @@ function SectionContent({ id }: { id: SectionId }) {
   const query = useCatalog();
   const data = query.data;
   if (!data) return <p className="py-6 text-center opacity-60">Chargement…</p>;
-  const { categories, stores, chains, ingredients } = data;
+  const { categories, stores, chains } = data;
   switch (id) {
     case 'ingredients':
-      return <IngredientsSettings ingredients={ingredients} categories={categories} stores={stores} onChange={query.reload} />;
+      return null; // page à part (/ingredients)
     case 'categories':
       return <CategoriesSettings categories={categories} onChange={query.reload} />;
     case 'supermarches':

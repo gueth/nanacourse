@@ -3,11 +3,8 @@
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { usePageTransition } from '@/components/PageTransitionProvider';
-import { useHorizontalSwipe } from '@/lib/swipe';
-import { ArrowLeft, Check } from 'lucide-react';
+import { Check } from 'lucide-react';
 import { Sommaire } from '@/components/gazette/Sommaire';
-import { HomeDots } from '@/components/HomeDots';
 import { TrendChart } from '@/components/finance/TrendChart';
 import { Bow, Flourish, LaceEdge, LaceFrame, MIST, NAVY, PAPER, Rosette } from '@/components/gazette/Lace';
 import { byPeriod, formatEuros, monthIndicators, monthKey, monthLabel, monthEndLabel, shiftMonth, totals } from '@/lib/finance';
@@ -17,6 +14,7 @@ import { budgetLinesOf } from '@/lib/selfDebt';
 import { fetchTransactions, monthOf, summarize, type Transaction } from '@/lib/transactions';
 import { knownLines } from '@/lib/coverage';
 import { SAVINGS_TARGET } from '@/lib/health';
+import { savingsTargetPct, useHealthSettings } from '@/lib/healthSettings';
 import { useParcours } from '@/lib/parcours';
 import { unlockCreditsAudio } from '@/lib/creditsAudio';
 import { formatIssue, gazetteIssue } from '@/lib/gazette';
@@ -24,8 +22,7 @@ import { formatIssue, gazetteIssue } from '@/lib/gazette';
 // Accueil : la gazette du jour, en bleu nuit sur papier blanc, ornée de dentelle. À la une le bilan et le compte
 // de résultat du dernier mois rempli, puis les graphiques de santé financière, la prédiction des dépenses à venir
 // (rythme actuel face aux budgets) et le parcours vers l'autonomie.
-// Les courses ont leur propre page (/course) : on passe de l'une à l'autre par le menu de la page des cartes du jour (/cartes),
-// qui est la page à gauche du journal (on y revient en glissant le doigt vers la droite).
+// On passe d'une partie à l'autre (accueil, journal, finances, courses, paramètres) par le menu du bas (components/TabBar).
 
 const serif = { fontFamily: 'var(--font-serif), Georgia, serif' };
 const blackletter = { fontFamily: 'var(--font-blackletter), serif' };
@@ -131,12 +128,9 @@ function Masthead({ today }: { today: Date | null }) {
 
   return (
     <header className="relative pt-3 text-center">
-      {/* Ligne du haut : flèche de retour à la page des cartes du jour et numéro, date, et le « Sommaire » (menu) à droite */}
+      {/* Ligne du haut : numéro, date, et le « Sommaire » (menu) à droite (le retour se fait par le menu du bas) */}
       <div className="grid h-[22px] grid-cols-[1fr_auto_1fr] items-center gap-2 text-[10px] uppercase tracking-[0.18em]">
         <p className="flex items-center gap-2 text-left">
-          <Link href="/cartes" aria-label="Retour aux cartes du jour" className="-m-2 inline-flex p-2">
-            <ArrowLeft size={18} strokeWidth={1.8} />
-          </Link>
           <span>
             N° <span className="italic" style={serif}>{issue ? formatIssue(issue) : '—'}</span>
           </span>
@@ -177,6 +171,10 @@ function Masthead({ today }: { today: Date | null }) {
 function FinanceNews({ currentMonth }: { currentMonth: string }) {
   const { data: rawLines } = useFinanceLines(currentMonth, 13);
   const coverage = useCoverage().data;
+  // Repère d'épargne : le seuil du bleu (« Santé »), réglable dans Paramètres > Finances
+  const settingsRules = useHealthSettings().data?.rules;
+  const targetPct = settingsRules ? savingsTargetPct(settingsRules) : SAVINGS_TARGET * 100;
+  const target = targetPct / 100;
 
   const news = useMemo(() => {
     if (!rawLines) return null;
@@ -208,9 +206,9 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
       best: byResult.length > 1 ? { month: byResult[0].month, resultat: byResult[0].t.resultat } : null,
       worst: byResult.length > 1 ? { month: byResult[byResult.length - 1].month, resultat: byResult[byResult.length - 1].t.resultat } : null,
       wealth: withWealth.length > 1 ? { fromMonth: first.month, from: first.t.patrimoine, toMonth: last.month, to: last.t.patrimoine } : null,
-      // Taux d'épargne moyen, et nombre de mois où le repère des 20 % (la part « Épargne » de la répartition) est atteint
+      // Taux d'épargne moyen, et nombre de mois où le repère d'épargne (seuil du bleu, Paramètres > Finances) est atteint
       avgRate: withIncome.length ? withIncome.reduce((s, m) => s + m.t.resultat / m.t.produits, 0) / withIncome.length : null,
-      aboveTarget: withIncome.filter((m) => m.t.resultat / m.t.produits >= SAVINGS_TARGET).length
+      aboveTarget: withIncome.filter((m) => m.t.resultat / m.t.produits >= target).length
     };
     // Chiffres clés du dernier mois terminé (le mois en cours n'a pas encore son relevé) : patrimoine et réserve
     // seulement si son bilan est connu, épargne seulement si son résultat l'est
@@ -232,7 +230,7 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
     const bilanKnown = !!ref && !unknownBilan.has(ref);
     const estimated = !!ref && estimatedBilan.has(ref);
     return { ref, t: ref ? totals(periods.get(ref)!) : null, bilanKnown, estimated, months, resultMonthly, bilanMonthly, health, keyFigures };
-  }, [rawLines, coverage, currentMonth]);
+  }, [rawLines, coverage, currentMonth, target]);
 
   if (!news) return <Printing />;
 
@@ -463,7 +461,7 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
             width={200}
             height={150}
             format={(n) => `${Math.round(n)} %`}
-            reference={{ value: SAVINGS_TARGET * 100, label: 'repère 20 %' }}
+            reference={{ value: targetPct, label: `repère ${targetPct} %` }}
             series={[{ name: "Taux d'épargne", color: NAVY, values: resultMonthly.map((m) => (m && m.produits > 0 ? (m.resultat / m.produits) * 100 : null)) }]}
           />
         </Figure>
@@ -472,8 +470,8 @@ function FinanceNews({ currentMonth }: { currentMonth: string }) {
             <>
               Tu mets de côté en moyenne <b>{Math.round(health.avgRate * 100)} %</b> de tes revenus.{' '}
               {health.aboveTarget === health.filled
-                ? 'Le repère des 20 % (la part « Épargne » de ta répartition) est atteint chaque mois : belle régularité.'
-                : `Le repère des 20 % est atteint ${health.aboveTarget} mois sur ${health.filled}.`}
+                ? `Le repère des ${targetPct} % d'épargne est atteint chaque mois : belle régularité.`
+                : `Le repère des ${targetPct} % est atteint ${health.aboveTarget} mois sur ${health.filled}.`}
             </>
           ) : (
             <>Ton taux d&apos;épargne s&apos;affichera ici dès qu&apos;un mois de revenus sera rempli.</>
@@ -725,9 +723,6 @@ export default function Accueil() {
   useEffect(() => {
     if (window.location.hash === '#ticket') router.replace('/course');
   }, [router]);
-  // Le journal est la page à droite des cartes du jour : glisser le doigt vers la droite y ramène
-  const { startTransition } = usePageTransition();
-  const swipe = useHorizontalSwipe({ onRight: () => startTransition('/cartes', 'fade') });
 
   const footer = (
     <div className="mt-8">
@@ -748,7 +743,6 @@ export default function Accueil() {
     <>
       {/* Toute la gazette en caractères à empattements, chiffres alignés (sans chiffres elzéviriens) */}
       <div
-        {...swipe}
         className="gazette overflow-x-clip pb-4 [font-variant-numeric:lining-nums_tabular-nums]"
         style={{ backgroundColor: PAPER, color: NAVY, ...serif }}
       >
@@ -765,9 +759,6 @@ export default function Accueil() {
       <div style={{ backgroundColor: PAPER }}>
         <LaceEdge flip />
       </div>
-
-      {/* Deux points pour revenir à l'accueil 1 (les cartes du jour) ; la messagerie est sur l'accueil 1 */}
-      <HomeDots current={1} onGo={() => startTransition('/cartes', 'fade')} color={NAVY} bottom="max(env(safe-area-inset-bottom), 0.75rem)" />
     </>
   );
 }

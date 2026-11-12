@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, CircleCheck, House, ListChecks, Plus, ReceiptText, ShoppingBasket, Trophy, Volume2, X, type LucideIcon } from 'lucide-react';
+import { CircleCheck, House, ListChecks, Palette, Plus, ReceiptText, ShoppingBasket, Trophy, Volume2, X, type LucideIcon } from 'lucide-react';
 import Modal, { ModalVariantContext } from '@/components/Modal';
 import ReceiptScan from '@/components/ReceiptScan';
 import { useCatalog } from '@/lib/coursesQueries';
@@ -11,13 +11,15 @@ import ListsSettings from '@/components/settings/ListsSettings';
 import ChallengesSettings from '@/components/settings/ChallengesSettings';
 import HomeSettings from '@/components/settings/HomeSettings';
 import SoundSettings from '@/components/settings/SoundSettings';
+import FinanceThemeSettings from '@/components/settings/FinanceThemeSettings';
 
 // Les onglets de la page Paramètres.
 // Les ingrédients, catégories et supermarchés se gèrent depuis le menu de la page des courses (components/KitchenManager).
-const TABS: readonly { id: 'lists' | 'defis' | 'accueil' | 'sons'; label: string; title: string; icon: LucideIcon }[] = [
+const TABS: readonly { id: 'lists' | 'defis' | 'accueil' | 'finances' | 'sons'; label: string; title: string; icon: LucideIcon }[] = [
   { id: 'lists', label: 'Listes', title: 'Mes listes de courses', icon: ListChecks },
   { id: 'defis', label: 'Défis', title: 'Mes défis et mes points', icon: Trophy },
   { id: 'accueil', label: 'Accueil', title: 'La page de titre', icon: House },
+  { id: 'finances', label: 'Finances', title: 'Les couleurs des finances', icon: Palette },
   { id: 'sons', label: 'Sons', title: 'Les bruitages', icon: Volume2 }
 ];
 
@@ -93,7 +95,7 @@ function SettingsContent() {
   // Anciens onglets, déplacés dans le menu de la page des courses : on y renvoie
   const moved = asked ? MOVED[asked] : undefined;
   useEffect(() => {
-    if (moved) router.replace(`/course?gerer=${moved}`);
+    if (moved) router.replace(moved === 'ingredients' ? '/ingredients' : `/course?gerer=${moved}`);
   }, [moved, router]);
   function setTab(id: TabId) {
     setFabOpen(false);
@@ -123,6 +125,9 @@ function SettingsContent() {
       // Réglages de la page de titre (gardés dans le navigateur)
       case 'accueil':
         return <HomeSettings />;
+      // Couleurs des Finances : règles de chaque situation et sa répartition (Supabase, table finance_health)
+      case 'finances':
+        return <FinanceThemeSettings />;
       // Volume des bruitages (gardé dans le navigateur)
       case 'sons':
         return <SoundSettings />;
@@ -141,9 +146,6 @@ function SettingsContent() {
         <div className="mx-auto flex max-w-5xl gap-5 px-4 pb-36 pt-4 lg:px-6 lg:pb-12 lg:pt-6">
           {/* PANNEAU DE NAVIGATION (grand écran) */}
           <aside className="sticky top-6 hidden w-64 shrink-0 flex-col gap-1 self-start rounded-[28px] p-3 lg:flex" style={{ backgroundColor: SURFACE }}>
-            <Link href="/cartes" aria-label="Retour" className="mb-3 flex size-11 items-center justify-center rounded-full hover:bg-black/5">
-              <ArrowLeft size={20} />
-            </Link>
             <button
               type="button"
               onClick={openScan}
@@ -174,14 +176,7 @@ function SettingsContent() {
           </aside>
 
           <main className="min-w-0 flex-1">
-            {/* EN-TÊTE : retour (téléphone), pastille festonnée et titre */}
-            <Link
-              href="/cartes"
-              aria-label="Retour"
-              className="mb-4 flex size-11 items-center justify-center rounded-full bg-[#cbbdfc] text-[#2b1f4f] lg:hidden"
-            >
-              <ArrowLeft size={20} />
-            </Link>
+            {/* EN-TÊTE : pastille festonnée et titre (le retour se fait par le menu du bas) */}
             <div className="flex items-center gap-4">
               <ScallopBadge icon={current.icon} />
               <div className="min-w-0">
@@ -219,7 +214,7 @@ function SettingsContent() {
         </div>
 
         {/* MENU FLOTTANT (téléphone) : bouton carré « + », qui se déplie en pilules au-dessus d'un bouton rond « × » */}
-        <div className="fixed bottom-[calc(1.5rem+env(safe-area-inset-bottom))] right-4 z-30 flex flex-col items-end gap-2 lg:hidden">
+        <div className="fixed bottom-[calc(60px+0.75rem+env(safe-area-inset-bottom))] right-4 z-30 flex flex-col items-end gap-2 lg:hidden">
           {fabOpen && (
             <>
               {/* Toucher ailleurs replie le menu */}

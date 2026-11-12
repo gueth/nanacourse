@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase';
-import { addLine, fetchOrSeedLines, formatEuros, importMayWrite, monthKey, SECTIONS, setLineAmount, shiftMonth, updateLine } from '@/lib/finance';
+import { addLine, fetchAllLines, fetchOrSeedLines, formatEuros, importMayWrite, monthKey, SECTIONS, setLineAmount, shiftMonth, updateLine } from '@/lib/finance';
 import type { ParsedTransaction, StatementSummary } from '@/lib/bankImport';
 import type { Coverage, ManualNote, SavingsEstimate, TrackedAccount, TransferCheck, TransferMismatch, TransferQuestion } from '@/lib/coverage';
 
@@ -108,7 +108,9 @@ export type CustomCategory = { id: string; label: string; kind: 'income' | 'vari
 // (pour chaque catégorie : sa grande catégorie, et un nom choisi par l'utilisateur).
 export type GroupKind = 'expense' | 'income';
 // virtual : la grande catégorie « Dépenses annuelles », construite par l'appli (ni modifiable ni supprimable)
-export type CategoryGroup = { id: string; label: string; kind: GroupKind; monthly_limit: number | null; virtual?: boolean };
+// icon : icône qui la représente (clé de GROUP_ICONS, components/finance/GroupIcon), à gauche des transactions de ses
+// sous-catégories ; null : devinée d'après son nom
+export type CategoryGroup = { id: string; label: string; kind: GroupKind; monthly_limit: number | null; icon?: string | null; virtual?: boolean };
 type CategorySetting = { category: string; group_id: string | null; label: string | null };
 
 // Sens d'une catégorie, pour la ranger dans une grande catégorie (les virements entre comptes n'en ont pas)
@@ -180,7 +182,12 @@ export async function loadCategories() {
   const [custom, removed, groupRows, settingRows, plannedRows] = await Promise.all([
     supabase.from('custom_categories').select('id, label, kind, section').order('created_at'),
     supabase.from('removed_categories').select('id'),
-    supabase.from('category_groups').select('id, label, kind, monthly_limit').order('created_at'),
+    // Colonne de l'icône absente (supabase/category_group_icons.sql pas encore lancé) : relue sans elle
+    supabase
+      .from('category_groups')
+      .select('id, label, kind, monthly_limit, icon')
+      .order('created_at')
+      .then((r) => (r.error && /icon/.test(r.error.message) ? supabase.from('category_groups').select('id, label, kind, monthly_limit').order('created_at') : r)),
     supabase.from('category_settings').select('category, group_id, label'),
     fetchPlanned()
   ]);
@@ -204,7 +211,7 @@ export async function addCategoryGroup(label: string, kind: GroupKind) {
 }
 
 // Nom ou limite mensuelle d'une grande catégorie (limite null = pas de limite)
-export async function updateCategoryGroup(id: string, changes: Partial<Pick<CategoryGroup, 'label' | 'monthly_limit'>>) {
+export async function updateCategoryGroup(id: string, changes: Partial<Pick<CategoryGroup, 'label' | 'monthly_limit' | 'icon'>>) {
   const previous = groups.find((g) => g.id === id);
   if (previous && changes.monthly_limit !== undefined && changes.monthly_limit !== previous.monthly_limit)
     await keepPastLimit(groupTarget(id), previous.monthly_limit);
@@ -738,7 +745,7 @@ const median = (values: number[]) => {
 };
 const round = (n: number) => Math.round(n * 100) / 100;
 
-const isTransfer = (t: Transaction) => categoryById(t.category).kind === 'transfer';
+export const isTransfer = (t: Transaction) => categoryById(t.category).kind === 'transfer';
 
 // Entrées, sorties et dépenses par catégorie d'un ensemble d'opérations (virements internes exclus)
 export function summarize(transactions: Transaction[]) {
@@ -826,40 +833,47 @@ export function detectUnusual(monthTx: Transaction[], history: Transaction[]) {
   return unusual;
 }
 
-// Catégories de dépenses qui bougent nettement (au moins 30 € et 25 %) : ce mois-ci comparé à la moyenne
-// des 3 mois précédents, de la plus forte variation à la plus faible (diff > 0 : hausse)
-export function spendingChanges(month: string, transactions: Transaction[]) {
-  const months = [...new Set(transactions.map((t) => monthOf(t.date)))].filter((m) => m < month).sort().slice(-3);
-  if (months.length === 0) return [];
-  const current = summarize(transactions.filter((t) => monthOf(t.date) === month)).byCategory;
-  const previous = months.map((m) => summarize(transactions.filter((t) => monthOf(t.date) === m)).byCategory);
-  const ids = new Set([...current.keys(), ...previous.flatMap((p) => [...p.keys()])]);
-  const changes: { category: string; diff: number; avg: number }[] = [];
-  for (const id of ids) {
-    const cat = categoryById(id);
-    if (cat.kind === 'income' || cat.kind === 'transfer') continue;
-    const avg = previous.reduce((s, p) => s + (p.get(id) ?? 0), 0) / previous.length;
-    const diff = (current.get(id) ?? 0) - avg;
-    if (Math.abs(diff) >= Math.max(30, avg * 0.25)) changes.push({ category: id, diff, avg });
+// Catégories désignées par des cibles de connecteur : une catégorie, ou une grande catégorie ("groupe:<id>", toutes ses
+// sous-catégories), précédée de « = » pour une liaison par égalité (lib/balanceLinks : linkCategories)
+export function targetCategories(targets: string[]) {
+  const ids = new Set<string>();
+  for (const raw of targets) {
+    const target = raw.startsWith('=') ? raw.slice(1) : raw;
+    if (target.startsWith('groupe:')) CATEGORIES.filter((c) => c.group === target.slice(7)).forEach((c) => ids.add(c.id));
+    else ids.add(target);
   }
-  return changes.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+  return [...ids];
 }
 
-// Catégories reliées à un connecteur (Gestion > Créer des connecteurs, table balance_links) : leurs opérations vont
-// au bilan, elles ne comptent donc plus dans les produits et les charges, comme les virements entre mes comptes.
-// Table absente ou illisible : aucune.
-export async function connectedCategories() {
-  const ids = new Set<string>();
-  const { data, error } = await supabase.from('balance_links').select('targets, decreases');
-  if (error) return ids;
-  for (const row of (data as { targets: string[] | null; decreases?: string[] | null }[]) ?? []) {
-    for (const raw of [...(row.targets ?? []), ...(row.decreases ?? [])]) {
-      const target = raw.startsWith('=') ? raw.slice(1) : raw; // « = » : liaison par égalité
-      if (target.startsWith('groupe:')) CATEGORIES.filter((c) => c.group === target.slice(7)).forEach((c) => ids.add(c.id));
-      else ids.add(target);
+// Catégories reliées à un connecteur (Gestion > Créer des connecteurs, table balance_links), quelle que soit la rubrique
+// (créances, emprunts, dettes) : leurs opérations vont au bilan, elles ne comptent donc plus dans les produits et les
+// charges ni dans les dépenses du budget, comme les virements entre mes comptes. Seulement à partir du mois de départ du
+// connecteur : avant, il ne les compte pas au bilan, elles restent donc des produits et des charges.
+// Pour chaque catégorie : date après laquelle ses opérations vont au bilan ('' : toutes).
+export type ConnectedCategories = Map<string, string>;
+type ConnectorRow = { targets: string[] | null; decreases?: string[] | null; opening_month?: string | null };
+export function connectedFrom(links: ConnectorRow[]): ConnectedCategories {
+  const from: ConnectedCategories = new Map();
+  for (const link of links) {
+    const start = link.opening_month ? lastDayOf(link.opening_month) : '';
+    for (const id of targetCategories([...(link.targets ?? []), ...(link.decreases ?? [])])) {
+      const prev = from.get(id);
+      // Reliée à plusieurs connecteurs : dès le plus tôt d'entre eux
+      if (prev === undefined || start < prev) from.set(id, start);
     }
   }
-  return ids;
+  return from;
+}
+// L'opération va-t-elle au bilan (et non au compte de résultat ni aux dépenses) ?
+export const isConnectedTx = (connected: ConnectedCategories, t: Pick<Transaction, 'category' | 'date'>) => {
+  const start = connected.get(t.category);
+  return start !== undefined && t.date > start;
+};
+// Table absente ou illisible : aucune (colonne "decreases" absente : sans elle)
+export async function connectedCategories() {
+  let { data, error }: { data: unknown; error: { message: string } | null } = await supabase.from('balance_links').select('targets, decreases, opening_month');
+  if (error && /decreases/.test(error.message)) ({ data, error } = await supabase.from('balance_links').select('targets, opening_month'));
+  return error ? (new Map() as ConnectedCategories) : connectedFrom((data as ConnectorRow[]) ?? []);
 }
 
 // Reporte les totaux du mois dans le compte de résultat (une ligne par catégorie, créée si besoin), à partir de toutes
@@ -875,7 +889,7 @@ export async function reportToStatement(period: string, monthTx: Transaction[], 
   // Seuls les comptes courants font le résultat du mois : les opérations des livrets (intérêts compris) n'y entrent pas
   for (const t of monthTx.filter((x) => !isSavingsAccount(x.account))) {
     const cat = categoryById(t.category);
-    if (!cat.section || !cat.line || cat.kind === 'transfer' || connected.has(cat.id)) continue;
+    if (!cat.section || !cat.line || cat.kind === 'transfer' || isConnectedTx(connected, t)) continue;
     const key = `${cat.section}|${cat.line.toLowerCase()}`;
     const entry = totals.get(key) ?? { section: cat.section, line: cat.line, amount: 0 };
     // Produits : on additionne les entrées ; charges : les sorties (en positif), remboursements déduits
@@ -1113,9 +1127,10 @@ async function estimateSavings(tracked: TrackedAccount[], covered: Set<string>) 
   const thisMonth = monthKey(new Date());
 
   // Soldes inscrits au bilan, et virements entre mes comptes
-  const { data: balanceData, error: balanceError } = await supabase.from('finance_lines').select('period, label, amount').eq('section', 'liquidites');
+  const { rows: balances, error: balanceError } = await fetchAllLines<{ period: string; label: string; amount: number }>('period, label, amount', (q) =>
+    q.eq('section', 'liquidites')
+  );
   if (balanceError) return done(balanceError);
-  const balances = (balanceData as { period: string; label: string; amount: number }[]) ?? [];
   const balanceOf = (account: string, month: string) => {
     const row = balances.find((r) => r.period === month && r.label.toLowerCase() === account.toLowerCase());
     return row ? Number(row.amount) : null;

@@ -28,10 +28,35 @@ function toRows(items: PdfItem[]): Row[] {
   return rows.sort((a, b) => b.y - a.y);
 }
 
-const fullDate = (s: string) => {
-  const m = s.match(/(\d{2})\.(\d{2})\.(\d{4})/);
-  return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
-};
+const MONTH_NAMES = ['janvier', 'fevrier', 'mars', 'avril', 'mai', 'juin', 'juillet', 'aout', 'septembre', 'octobre', 'novembre', 'decembre'];
+const plainText = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+// Date écrite sur le relevé -> AAAA-MM-JJ : « 01.01.2026 », « 01/01/2026 », « 01-01-26 », « 1er janvier 2026 »
+function readDate(s: string) {
+  const n = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2}|\d{4})$/);
+  const t = plainText(s).match(/^(\d{1,2})(?:er)?\s+([a-z]+)\.?\s+(\d{4})$/);
+  const [d, m, y] = n
+    ? [Number(n[1]), Number(n[2]), n[3].length === 2 ? 2000 + Number(n[3]) : Number(n[3])]
+    : t
+      ? [Number(t[1]), MONTH_NAMES.findIndex((name) => t[2].length >= 3 && (name.startsWith(t[2]) || t[2].startsWith(name))) + 1, Number(t[3])]
+      : [0, 0, 0];
+  if (!d || d > 31 || !m || m > 12) return null;
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+// Période du relevé, telle qu'il l'écrit : « du 01.01.2026 au 30.04.2026 », « du 1er janvier 2026 au 30 avril 2026 »,
+// « période : 01/01/2026 - 30/04/2026 »… Elle compte pour tous ses mois, même ceux sans opération.
+function statementPeriod(text: string) {
+  const date = String.raw`(\d{1,2}[./-]\d{1,2}[./-](?:\d{4}|\d{2})|\d{1,2}(?:er)?\s+[A-Za-zÀ-ÿ]+\.?\s+\d{4})`;
+  const patterns = [new RegExp(`\\bdu\\s+${date}\\s+au\\s+${date}`, 'i'), new RegExp(`p[ée]riode\\s*:?\\s*${date}\\s*(?:-|–|à|au)\\s*${date}`, 'i')];
+  for (const re of patterns) {
+    const m = text.match(re);
+    const from = m && readDate(m[1].trim());
+    const to = m && readDate(m[2].trim());
+    if (from && to && from <= to) return { from, to };
+  }
+  return null;
+}
 
 // "02.11" + période du relevé -> "2023-11-02" (l'année est celle qui tombe dans la période, utile à cheval sur deux années)
 function resolveDate(dayMonth: string, valueDate: string | undefined, from: string | null, to: string | null) {
@@ -110,10 +135,10 @@ function finalize(raws: Raw[], holder: string | null): Omit<ParsedTransaction, '
 export function parsePdfStatement(pages: PdfItem[][]): ParseResult {
   const allRows = pages.map(toRows);
   const allText = allRows.flat().map((r) => r.text).join('\n');
-  const period = allText.match(/du\s+(\d{2}\.\d{2}\.\d{4})\s+au\s+(\d{2}\.\d{2}\.\d{4})/i);
+  const period = statementPeriod(allText);
   const summary: StatementSummary = {
-    from: period ? fullDate(period[1]) : null,
-    to: period ? fullDate(period[2]) : null,
+    from: period?.from ?? null,
+    to: period?.to ?? null,
     opening: null,
     closing: null,
     totalDebit: null,

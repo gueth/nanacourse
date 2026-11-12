@@ -194,15 +194,27 @@ export async function deleteLine(id: string) {
   return error;
 }
 
+// Supabase renvoie au plus 1 000 lignes par requête : on lit page par page jusqu'à la fin.
+// "query" construit la requête (filtres et tri) ; un tri par id est ajouté pour que les pages ne se chevauchent pas.
+const PAGE = 1000;
+export async function fetchAllLines<T = FinanceLine>(
+  columns: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- constructeur de requête Supabase
+  query: (q: any) => any = (q) => q
+) {
+  const rows: T[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await query(supabase.from('finance_lines').select(columns)).order('id').range(from, from + PAGE - 1);
+    if (error) return { rows, error: error as { message: string } };
+    rows.push(...((data as T[]) ?? []));
+    if (!data || data.length < PAGE) return { rows, error: null };
+  }
+}
+
 // Lignes de plusieurs mois d'un coup (de "from" à "to" inclus, au format AAAA-MM)
 export async function fetchLinesRange(from: string, to: string) {
-  const { data, error } = await supabase
-    .from('finance_lines')
-    .select('*')
-    .gte('period', from)
-    .lte('period', to)
-    .order('position');
-  return { lines: ((data as FinanceLine[]) ?? []).map((l) => ({ ...l, amount: Number(l.amount) })), error };
+  const { rows, error } = await fetchAllLines('*', (q) => q.gte('period', from).lte('period', to).order('position'));
+  return { lines: rows.map((l) => ({ ...l, amount: Number(l.amount) })), error };
 }
 
 // --- Indicateurs du tableau de bord ---
