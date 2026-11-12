@@ -18,7 +18,6 @@ import {
   fetchPlanned,
   fetchTransactions,
   importTransactions,
-  isSavingsAccount,
   lastDayOf,
   loadCategories,
   monthOf,
@@ -44,14 +43,6 @@ const readMonth = () => monthKey(new Date());
 const MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 
 const shortDate = (date: string) => new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
-
-// Résumé des écarts entre un relevé et ce qui est déjà enregistré (ex : « 12 identiques, 2 opérations nouvelles ou modifiées »)
-function diffText(c: StatementCheck) {
-  const parts = [];
-  if (c.added.length) parts.push(`${c.added.length} opération${c.added.length > 1 ? 's' : ''} nouvelle${c.added.length > 1 ? 's' : ''} ou modifiée${c.added.length > 1 ? 's' : ''}`);
-  if (c.removed.length) parts.push(`${c.removed.length} opération${c.removed.length > 1 ? 's' : ''} enregistrée${c.removed.length > 1 ? 's' : ''} absente${c.removed.length > 1 ? 's' : ''} du relevé`);
-  return `${c.present} identique${c.present > 1 ? 's' : ''}, ${parts.join(', ')}`;
-}
 
 // Abonnements et prélèvements repérés sur les 12 derniers mois d'opérations. On n'affiche que ceux prélevés
 // au cours des 3 derniers mois complets (le mois en cours exclu), du plus récent au plus ancien.
@@ -352,49 +343,34 @@ type BatchItem = {
   account: string;
   check: StatementCheck | null;
   checkedFor: string | null;
-  replace: boolean;
+  include: boolean; // coché dans « Liste des comptes concernés » : à importer
 };
 
 const batchStart = (it: BatchItem) => it.parsed?.summary?.from ?? [...(it.parsed?.transactions ?? []).map((t) => t.date)].sort()[0] ?? '';
-const willImport = (it: BatchItem) => !!it.parsed && !!it.check && (it.check.status === 'new' || (it.check.status === 'different' && it.replace));
+// Coché et vérifié : importé, même déjà importé (un relevé qui diffère remplace alors les anciennes données)
+const willImport = (it: BatchItem) => !!it.parsed && !!it.check && it.include;
+const batchEnd = (it: BatchItem) => it.parsed?.summary?.to ?? [...(it.parsed?.transactions ?? []).map((t) => t.date)].sort().pop() ?? '';
+// « 09 Octobre 2026 »
+const longDate = (date: string) =>
+  new Date(`${date}T00:00:00`).toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' })
+    .split(' ')
+    .map((w, i) => (i === 1 ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+    .join(' ');
 
-// Import d'un relevé : choix du ou des fichiers (jusqu'à 30), aperçu, puis enregistrement
+// Import des relevés : choix d'un ou plusieurs fichiers (jusqu'à 30), récapitulatif (fichiers, dates, nombre de
+// transactions), comptes concernés à cocher avec leur solde, puis enregistrement. Un relevé déjà importé peut l'être à
+// nouveau : une note le signale, et s'il diffère, ses données remplacent les anciennes. Le compte de résultat et le bilan
+// des mois concernés sont toujours complétés.
 function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: (message: string, month?: string, groceries?: UnmatchedGrocery[]) => void }) {
-  const [parsed, setParsed] = useState<(ParseResult & { name: string }) | null>(null);
-  const [account, setAccount] = useState('Compte courant');
   const [busy, setBusy] = useState(false);
   const [reading, setReading] = useState<string | null>(null);
-  const [complete, setComplete] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [help, setHelp] = useState(false);
-  // Relevé comparé à ce qui est déjà enregistré sur le compte choisi (null pendant la vérification)
-  const [check, setCheck] = useState<StatementCheck | null>(null);
-  // Plusieurs relevés choisis d'un coup : liste à vérifier puis à importer ensemble
+  // Relevés choisis : à vérifier puis à importer ensemble
   const [batch, setBatch] = useState<BatchItem[]>([]);
   const [progress, setProgress] = useState<string | null>(null);
-  const [ask, askDialog] = useFinConfirm();
 
-  // Dès qu'un relevé est lu (ou que le compte change), on regarde s'il a déjà été importé
-  useEffect(() => {
-    if (!parsed) return;
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      const { check: c, error: err } = await checkStatement(parsed.transactions, account.trim() || 'Compte courant', parsed.summary);
-      if (cancelled) return;
-      if (err) setError(describeDbError(err.message));
-      setCheck(c);
-      // Relevé déjà importé : sa période est quand même enregistrée (mois sans opération compris), pour les relevés
-      // importés avant que les mois couverts soient retenus
-      if (c?.status === 'same') await recordStatementMonths(account.trim() || 'Compte courant', statementMonths(parsed.transactions, parsed.summary));
-    }, 300);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-      setCheck(null);
-    };
-  }, [parsed, account]);
-
-  // Même vérification pour chaque relevé de la liste, refaite quand son compte change
+  // Chaque relevé est comparé à ce qui est déjà enregistré sur son compte, de nouveau quand son compte change
   const staleKey = batch
     .filter((it) => it.parsed && it.checkedFor !== (it.account.trim() || 'Compte courant'))
     .map((it) => `${it.id}|${it.account.trim()}`)
@@ -411,7 +387,8 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
         const { check: c, error: err } = await checkStatement(it.parsed.transactions, name, it.parsed.summary);
         if (cancelled) return;
         if (err) setError(describeDbError(err.message));
-        // Déjà importé : sa période est quand même enregistrée (voir plus haut)
+        // Déjà importé : sa période est quand même enregistrée (mois sans opération compris), pour les relevés importés
+        // avant que les mois couverts soient retenus
         if (c?.status === 'same') await recordStatementMonths(name, statementMonths(it.parsed.transactions, it.parsed.summary));
         setBatch((items) => items.map((b) => (b.id === it.id && (b.account.trim() || 'Compte courant') === name ? { ...b, check: c, checkedFor: name } : b)));
       }
@@ -428,34 +405,22 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
     const files = [...(list ?? [])];
     if (files.length === 0) return;
     setError(null);
-    if (files.length === 1) {
-      setReading('Lecture du relevé…');
-      const { result, error: err } = await readStatement(files[0]);
-      setReading(null);
-      if (!result) {
-        setParsed(null);
-        return setError(err ?? null);
-      }
-      setParsed({ ...result, name: files[0].name });
-      // Nom du compte reconnu d'après le titre du relevé (« Livret A », « LEP »...)
-      if (result.summary?.accountName) setAccount(result.summary.accountName);
-      return;
-    }
     const chosen = files.slice(0, MAX_FILES);
     if (files.length > MAX_FILES) setError(`Seuls les ${MAX_FILES} premiers relevés sont gardés (${files.length} choisis) : importe les autres ensuite.`);
     const items: BatchItem[] = [];
     for (const [i, file] of chosen.entries()) {
-      setReading(`Lecture des relevés… ${i + 1}/${chosen.length}`);
+      setReading(chosen.length > 1 ? `Lecture des relevés… ${i + 1}/${chosen.length}` : 'Lecture du relevé…');
       const { result, error: err } = await readStatement(file);
       items.push({
         id: i,
         name: file.name,
         parsed: result,
         error: err,
+        // Nom du compte reconnu d'après le titre du relevé (« Livret A », « LEP »...)
         account: result?.summary?.accountName ?? 'Compte courant',
         check: null,
         checkedFor: null,
-        replace: false
+        include: true
       });
     }
     setReading(null);
@@ -463,53 +428,7 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
     setBatch(items.sort((a, b) => Number(!a.parsed) - Number(!b.parsed) || batchStart(a).localeCompare(batchStart(b))));
   }
 
-  async function confirm() {
-    if (!parsed) return;
-    const name = account.trim() || 'Compte courant';
-    setBusy(true);
-    // Nouvelle vérification juste avant l'import : relevé identique -> rien à retraiter ;
-    // relevé divergent -> on demande confirmation, puis les anciennes opérations sont remplacées par les nouvelles
-    const { check: c, error: checkErr } = await checkStatement(parsed.transactions, name, parsed.summary);
-    if (checkErr || !c) {
-      setBusy(false);
-      return setError(describeDbError(checkErr?.message ?? 'vérification impossible'));
-    }
-    setCheck(c);
-    if (c.status === 'same') return setBusy(false);
-    if (c.status === 'different') {
-      const ok = await ask(
-        'Relevé déjà importé',
-        `Cette période est déjà importée sur « ${name} », mais le relevé diffère : ${diffText(c)}. Remplacer les anciennes données par celles de ce relevé ?`,
-        { confirm: 'Remplacer', cancel: 'Annuler' }
-      );
-      if (!ok) return setBusy(false);
-    }
-    const { outcome: o, error: err } = await importStatement(parsed, name, c, complete);
-    if (!o) {
-      setBusy(false);
-      return setError(err ?? null);
-    }
-    let message = `${o.inserted} opération${o.inserted > 1 ? 's' : ''} importée${o.inserted > 1 ? 's' : ''}${o.dupes ? `, ${o.dupes} déjà présente${o.dupes > 1 ? 's' : ''} gardée${o.dupes > 1 ? 's' : ''}` : ''}.`;
-    if (o.removed) message += ` ${o.removed} ancienne${o.removed > 1 ? 's' : ''} opération${o.removed > 1 ? 's' : ''} remplacée${o.removed > 1 ? 's' : ''}.`;
-    if (o.linked.length)
-      message += ` ${o.linked.length} opération${o.linked.length > 1 ? 's' : ''} de ${[...new Set(o.linked.map((t) => `« ${t.account} »`))].join(', ')} reconnue${o.linked.length > 1 ? 's' : ''} comme virement${o.linked.length > 1 ? 's' : ''} avec ce compte (ni dépense ni revenu).`;
-    if (complete) {
-      message += o.filled.length ? ` Compte de résultat mis à jour pour ${o.filled.map(monthLabel).join(', ')}.` : ' Compte de résultat déjà à jour.';
-      if (o.kept) message += ` ${o.kept} ligne${o.kept > 1 ? 's' : ''} saisie${o.kept > 1 ? 's' : ''} à la main gardée${o.kept > 1 ? 's' : ''} telle${o.kept > 1 ? 's' : ''} quelle${o.kept > 1 ? 's' : ''}.`;
-      if (o.balances) message += ` Soldes du relevé inscrits au bilan (ligne « ${name} »).`;
-    }
-    // Lignes du bilan reliées à des catégories (dettes, créances) : recalculées avec les nouvelles opérations
-    const linkErr = await refreshBalanceLinks();
-    if (linkErr) message += ` (Dettes et créances non mises à jour : ${describeDbError(linkErr.message)})`;
-    for (const note of o.notes) message += ` ${note}`;
-    if (o.reclassified) message += ` ${o.reclassified} course${o.reclassified > 1 ? 's' : ''} de l'appli retrouvée${o.reclassified > 1 ? 's' : ''} et classée${o.reclassified > 1 ? 's' : ''}.`;
-    setBusy(false);
-    setParsed(null);
-    onImported(message, topMonth(parsed.transactions), o.groceries);
-  }
-
-  // Import de tous les relevés de la liste, du plus ancien au plus récent : ceux déjà importés à l'identique sont passés,
-  // ceux qui diffèrent d'un import précédent ne remplacent les anciennes données que si « Remplacer » est coché
+  // Import des relevés cochés, du plus ancien au plus récent
   async function confirmBatch() {
     const todo = batch.filter(willImport).sort((a, b) => batchStart(a).localeCompare(batchStart(b)));
     if (todo.length === 0) return;
@@ -524,11 +443,10 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
     const filled = new Set<string>();
     const groceries: UnmatchedGrocery[] = [];
     const notes: string[] = [];
-    const skipped: string[] = [];
     const failed: string[] = [];
     const importedTx: { date: string }[] = [];
     for (const [k, it] of todo.entries()) {
-      setProgress(`Import ${k + 1}/${todo.length}…`);
+      setProgress(todo.length > 1 ? `Import ${k + 1}/${todo.length}…` : 'Import…');
       const name = it.account.trim() || 'Compte courant';
       // Revérifié juste avant : un relevé précédent de la liste a pu couvrir la même période
       const { check: c, error: checkErr } = await checkStatement(it.parsed!.transactions, name, it.parsed!.summary);
@@ -536,11 +454,7 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
         failed.push(`${it.name} (${describeDbError(checkErr?.message ?? 'vérification impossible')})`);
         continue;
       }
-      if (c.status === 'same' || (c.status === 'different' && !it.replace)) {
-        skipped.push(it.name);
-        continue;
-      }
-      const { outcome: o, error: err } = await importStatement(it.parsed!, name, c, complete);
+      const { outcome: o, error: err } = await importStatement(it.parsed!, name, c, true);
       if (!o) {
         failed.push(`${it.name} (${err})`);
         continue;
@@ -561,14 +475,13 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
     let message = `${plural(done, 'relevé')} importé${done > 1 ? 's' : ''} : ${plural(inserted, 'opération')} ajoutée${inserted > 1 ? 's' : ''}${dupes ? `, ${dupes} déjà présente${dupes > 1 ? 's' : ''} gardée${dupes > 1 ? 's' : ''}` : ''}.`;
     if (removed) message += ` ${removed} ancienne${removed > 1 ? 's' : ''} opération${removed > 1 ? 's' : ''} remplacée${removed > 1 ? 's' : ''}.`;
     if (linked) message += ` ${plural(linked, 'opération')} reconnue${linked > 1 ? 's' : ''} comme virement${linked > 1 ? 's' : ''} entre tes comptes.`;
-    if (complete && filled.size) message += ` Compte de résultat mis à jour pour ${[...filled].sort().map(monthLabel).join(', ')}.`;
+    if (filled.size) message += ` Compte de résultat mis à jour pour ${[...filled].sort().map(monthLabel).join(', ')}.`;
     if (done) {
       const linkErr = await refreshBalanceLinks();
       if (linkErr) message += ` (Dettes et créances non mises à jour : ${describeDbError(linkErr.message)})`;
     }
     for (const note of new Set(notes)) message += ` ${note}`;
     if (reclassified) message += ` ${reclassified} course${reclassified > 1 ? 's' : ''} de l'appli retrouvée${reclassified > 1 ? 's' : ''} et classée${reclassified > 1 ? 's' : ''}.`;
-    if (skipped.length) message += ` Passé${skipped.length > 1 ? 's' : ''} (déjà importé${skipped.length > 1 ? 's' : ''}) : ${skipped.join(', ')}.`;
     setBusy(false);
     if (failed.length) setError(`Non importé${failed.length > 1 ? 's' : ''} : ${failed.join(' ; ')}. Ces relevés restent dans la liste.`);
     else setBatch([]);
@@ -604,92 +517,100 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
     onImported(parts.join(' '));
   }
 
-  const tx = parsed?.transactions ?? [];
-  const dates = tx.map((t) => t.date).sort();
-  const income = tx.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-  const spent = tx.filter((t) => t.amount < 0).reduce((s, t) => s - t.amount, 0);
-  const summary = parsed?.summary;
-  const exchangeFees = tx.filter((t) => t.label.startsWith('COM CHANGE')).reduce((s, t) => s - t.amount, 0);
+  // Récapitulatif des relevés lus : fichiers, première et dernière date, nombre de transactions
+  const readable = batch.filter((it) => it.parsed);
+  const starts = readable.map(batchStart).filter(Boolean).sort();
+  const ends = readable.map(batchEnd).filter(Boolean).sort();
+  const txCount = readable.reduce((s, it) => s + it.parsed!.transactions.length, 0);
+  const toImport = batch.filter(willImport).length;
+  // Une ligne du récapitulatif : l'intitulé puis la valeur
+  const row = (label: string, value: React.ReactNode) => (
+    <p className="border-b py-1" style={{ borderColor: FIN.line }}>
+      <span className="text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+        {label} :
+      </span>{' '}
+      <b>{value}</b>
+    </p>
+  );
 
   return (
     <>
-      {askDialog}
-      <p className="-mt-1 mb-2 text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
-        Le fichier est lu sur ton appareil : rien n&apos;est envoyé à ta banque ni à un service extérieur. Seules les opérations sont enregistrées dans ta base.
-      </p>
       <ErrorNote message={error} />
-      <datalist id="accounts">
-        {accounts.map((a) => (
-          <option key={a} value={a} />
-        ))}
-      </datalist>
       {batch.length > 0 ? (
-        <div className="mt-2 text-[12px]">
-          <p>
-            <b>{plural(batch.length, 'relevé')}</b> choisi{batch.length > 1 ? 's' : ''} · {batch.filter(willImport).length} à importer
+        <div className="mt-2 text-[12px]" style={{ color: FIN.navy }}>
+          {row(batch.length > 1 ? 'Noms des fichiers' : 'Nom du fichier', batch.map((it) => it.name).join(', '))}
+          {starts.length > 0 && row('Date de début', longDate(starts[0]))}
+          {ends.length > 0 && row('Date de fin', longDate(ends[ends.length - 1]))}
+          {row('Total de transactions', txCount)}
+          <p className="mt-2 text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+            Liste des comptes concernés :
           </p>
-          <ul className="mt-2 space-y-2">
+          <ul className="mt-1 space-y-1.5">
             {batch.map((it) => {
-              const tx = it.parsed?.transactions ?? [];
-              const ds = tx.map((t) => t.date).sort();
               const acc = it.account.trim() || 'Compte courant';
+              const s = it.parsed?.summary;
+              const checking = !!it.parsed && (!it.check || it.checkedFor !== acc);
               return (
-                <li key={it.id} className="rounded-sm border px-2.5 py-2 text-[11px]" style={{ borderColor: FIN.line, backgroundColor: FIN.paper }}>
-                  <p className="flex items-start justify-between gap-2">
-                    <b className="min-w-0 break-words">{it.name}</b>
-                    <button
-                      type="button"
-                      onClick={() => setBatch((items) => items.filter((b) => b.id !== it.id))}
-                      disabled={busy}
-                      aria-label={`Retirer ${it.name}`}
-                      className="shrink-0 opacity-50 hover:opacity-100"
-                      style={{ color: FIN.rose }}
-                    >
-                      <X size={14} />
-                    </button>
-                  </p>
+                <li key={it.id} className="rounded-sm border px-2.5 py-1.5 text-[11px]" style={{ borderColor: FIN.line, backgroundColor: FIN.paper }}>
                   {it.error ? (
-                    <p className="mt-0.5 leading-relaxed" style={{ color: FIN.rose }}>
-                      {it.error}
+                    <p className="leading-relaxed" style={{ color: FIN.rose }}>
+                      <b>{it.name}</b> : {it.error}
                     </p>
                   ) : (
                     <>
-                      <p style={{ color: FIN.slate }}>
-                        {tx.length} opérations du {shortDate(it.parsed?.summary?.from ?? ds[0])} au {shortDate(it.parsed?.summary?.to ?? ds[ds.length - 1])}
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={it.include}
+                          disabled={busy}
+                          onChange={(e) => setBatch((items) => items.map((b) => (b.id === it.id ? { ...b, include: e.target.checked } : b)))}
+                          aria-label={`Importer ${acc} (${it.name})`}
+                        />
+                        {/* Compte reconnu sur le relevé ; sinon (export CSV…) il se choisit parmi mes comptes */}
+                        {s?.accountName ? (
+                          <b className="min-w-0 flex-1 truncate text-[12px]">{acc}</b>
+                        ) : (
+                          <select
+                            value={acc}
+                            disabled={busy}
+                            onChange={(e) => setBatch((items) => items.map((b) => (b.id === it.id ? { ...b, account: e.target.value } : b)))}
+                            aria-label={`Compte de ${it.name}`}
+                            className="fin-select min-w-0 flex-1 py-0.5 pl-1.5 text-[12px] font-bold"
+                          >
+                            {[...new Set([acc, 'Compte courant', 'Livret A', 'LEP', ...accounts])].map((a) => (
+                              <option key={a} value={a}>
+                                {a}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                        {batch.length > 1 && <span className="shrink-0 text-[10px]" style={{ color: FIN.slate }}>{shortDate(batchStart(it))}</span>}
+                      </label>
+                      <p className="pl-6" style={{ color: FIN.slate }}>
+                        Solde :{' '}
+                        {s?.opening != null && s.closing != null ? (
+                          <>
+                            {formatEuros(s.opening)} → <b style={{ color: FIN.navy }}>{formatEuros(s.closing)}</b>
+                          </>
+                        ) : s?.monthEnds.length ? (
+                          <b style={{ color: FIN.navy }}>{formatEuros(s.monthEnds[s.monthEnds.length - 1].balance)}</b>
+                        ) : (
+                          'non indiqué sur le relevé'
+                        )}
                       </p>
-                      <input
-                        value={it.account}
-                        onChange={(e) => setBatch((items) => items.map((b) => (b.id === it.id ? { ...b, account: e.target.value } : b)))}
-                        list="accounts"
-                        aria-label={`Compte concerné par ${it.name}`}
-                        disabled={busy}
-                        className="mt-1 w-full rounded-sm border bg-white px-2 py-1 text-[12px] outline-none"
-                        style={{ borderColor: FIN.line }}
-                      />
-                      {!it.check || it.checkedFor !== acc ? (
-                        <p className="mt-1" style={{ color: FIN.slate }}>
+                      {/* Note seulement : un relevé déjà importé peut l'être de nouveau (s'il diffère, ses données remplacent les anciennes) */}
+                      {checking ? (
+                        <p className="pl-6" style={{ color: FIN.slate }}>
                           Vérification des imports précédents…
                         </p>
-                      ) : it.check.status === 'same' ? (
-                        <p className="mt-1" style={{ color: FIN.sage }}>
-                          ✓ Déjà importé à l&apos;identique : passé (toute sa période est comptée, mois sans opération compris).
+                      ) : it.check && it.check.status !== 'new' ? (
+                        <p className="pl-6" style={{ color: FIN.gold }}>
+                          Ce relevé a déjà été importé.
                         </p>
-                      ) : it.check.status === 'different' ? (
-                        <label className="mt-1 flex items-start gap-2 leading-relaxed" style={{ color: FIN.rose }}>
-                          <input
-                            type="checkbox"
-                            checked={it.replace}
-                            disabled={busy}
-                            onChange={(e) => setBatch((items) => items.map((b) => (b.id === it.id ? { ...b, replace: e.target.checked } : b)))}
-                            className="mt-0.5"
-                          />
-                          <span>
-                            ⚠ Période déjà importée mais différente ({diffText(it.check)}). Cocher pour remplacer les anciennes données, sinon il est passé.
-                          </span>
-                        </label>
-                      ) : (
-                        <p className="mt-1" style={{ color: FIN.sage }}>
-                          Nouveau relevé
+                      ) : null}
+                      {s?.verified === false && (
+                        <p className="pl-6 leading-relaxed" style={{ color: FIN.rose }}>
+                          ⚠ Les totaux ne correspondent pas au relevé : quelques opérations ont pu être mal lues.
                         </p>
                       )}
                     </>
@@ -698,23 +619,16 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
               );
             })}
           </ul>
-          <label className="mt-3 flex items-start gap-2 text-[11px] leading-relaxed">
-            <input type="checkbox" checked={complete} onChange={(e) => setComplete(e.target.checked)} disabled={busy} className="mt-0.5" />
-            <span>
-              Compléter automatiquement le <b>compte de résultat</b> et le <b>bilan</b> de chaque mois concerné, avec toutes les opérations connues de
-              chaque mois. Les opérations ajoutées à la main sont gardées.
-            </span>
-          </label>
           <div className="mt-3 flex gap-2">
-            <FinButton onClick={confirmBatch} disabled={busy || batch.filter(willImport).length === 0}>
-              {progress ?? `Importer ${plural(batch.filter(willImport).length, 'relevé')}`}
+            <FinButton onClick={confirmBatch} disabled={busy || toImport === 0}>
+              {progress ?? (batch.length > 1 ? `Importer ${plural(toImport, 'relevé')}` : 'Importer')}
             </FinButton>
             <FinButton outline onClick={() => setBatch([])} disabled={busy}>
               Annuler
             </FinButton>
           </div>
         </div>
-      ) : !parsed ? (
+      ) : (
         <>
           <label className="mt-2 flex cursor-pointer flex-col items-center gap-1 rounded-sm border border-dashed px-3 py-5 text-center" style={{ borderColor: FIN.slate, color: FIN.slate }}>
             <FileUp size={22} />
@@ -750,160 +664,6 @@ function ImportForm({ accounts, onImported }: { accounts: string[]; onImported: 
             </p>
           )}
         </>
-      ) : (
-        <div className="mt-2 text-[12px]">
-          <p>
-            <b>{parsed.name}</b> : {tx.length} opérations du {shortDate(summary?.from ?? dates[0])} au{' '}
-            {shortDate(summary?.to ?? dates[dates.length - 1])}
-            {parsed.skipped > 0 && <span style={{ color: FIN.slate }}> ({parsed.skipped} lignes ignorées)</span>}.
-          </p>
-          <p className="mt-1" style={{ color: FIN.slate }}>
-            Entrées <b style={{ color: FIN.sage }}>{formatEuros(income)}</b> · Sorties <b style={{ color: FIN.rose }}>{formatEuros(spent)}</b>
-          </p>
-          {summary && (
-            <ul className="mt-2 space-y-1 text-[11px] leading-relaxed">
-              {summary.opening !== null && summary.closing !== null && (
-                <li>
-                  {summary.accountName && <b>{summary.accountName} · </b>}
-                  Solde : {formatEuros(summary.opening)} → <b>{formatEuros(summary.closing)}</b>
-                  {summary.account && <span style={{ color: FIN.slate }}> · compte {summary.account}</span>}
-                </li>
-              )}
-              {summary.monthEnds.length > 0 && (
-                <li style={{ color: FIN.slate }}>
-                  Soldes de fin de mois : {summary.monthEnds.map((m) => `${monthLabel(m.month)} ${formatEuros(m.balance)}`).join(' · ')}
-                </li>
-              )}
-              {summary.savings && (
-                <li style={{ color: FIN.slate }}>
-                  Compte d&apos;épargne : les virements avec tes autres comptes ne comptent ni en dépense ni en revenu, et ses opérations
-                  n&apos;entrent pas dans le compte de résultat (seuls les comptes courants le font).
-                </li>
-              )}
-              {summary.verified !== null && (
-                <li style={{ color: summary.verified ? FIN.sage : FIN.rose }}>
-                  {summary.verified
-                    ? '✓ Toutes les opérations ont été retrouvées : les totaux et les soldes correspondent au relevé.'
-                    : '⚠ Les totaux ne correspondent pas au relevé : quelques opérations ont pu être mal lues. Vérifie-les après l’import.'}
-                </li>
-              )}
-              {exchangeFees > 0 && (
-                <li style={{ color: FIN.rose }}>
-                  Frais de change sur tes paiements à l&apos;étranger : <b>{formatEuros(exchangeFees)}</b>, mis à part dans « Frais bancaires ».
-                </li>
-              )}
-            </ul>
-          )}
-          <ul className="mt-2 space-y-0.5 text-[11px]" style={{ color: FIN.slate }}>
-            {tx.slice(0, 4).map((t) => (
-              <li key={t.importKey} className="flex justify-between gap-2">
-                <span className="min-w-0 break-words">
-                  {shortDate(t.date)} · {t.label}
-                </span>
-                <span className="shrink-0 whitespace-nowrap">{formatEuros(t.amount)}</span>
-              </li>
-            ))}
-          </ul>
-          <label className="mt-3 flex flex-col gap-0.5">
-            <span className="text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
-              Compte concerné
-            </span>
-            <input
-              value={account}
-              onChange={(e) => setAccount(e.target.value)}
-              list="accounts"
-              className="rounded-sm border bg-white px-2 py-1 text-[13px] outline-none"
-              style={{ borderColor: FIN.line }}
-            />
-          </label>
-          <p className="mt-1 text-[10px] leading-relaxed" style={{ color: FIN.slate }}>
-            Si tu importes plusieurs comptes (courant, livret…), les virements de l&apos;un à l&apos;autre sont repérés et ne sont
-            comptés ni en dépense ni en revenu.
-          </p>
-          <label className="mt-3 flex items-start gap-2 text-[11px] leading-relaxed">
-            <input type="checkbox" checked={complete} onChange={(e) => setComplete(e.target.checked)} className="mt-0.5" />
-            <span>
-              Compléter automatiquement le <b>compte de résultat</b>
-              {summary?.closing != null && (
-                <>
-                  {' '}
-                  et le <b>bilan</b> (solde du compte au {shortDate(summary.to ?? dates[dates.length - 1])})
-                </>
-              )}{' '}
-              de chaque mois concerné ({[...new Set(dates.map(monthOf))].map(monthLabel).join(', ')}), même s&apos;il n&apos;est pas
-              celui affiché, avec toutes les opérations connues de chaque mois (même venues d&apos;un autre relevé). Sur la période du relevé, ses soldes remplacent ceux déjà inscrits. Aucun solde n&apos;est reporté sur les mois suivants : le bilan signale les relevés manquants. Les opérations ajoutées à la main sont gardées.
-            </span>
-          </label>
-          {/* Relevé déjà importé ? */}
-          {!check ? (
-            <p className="mt-3 text-[11px]" style={{ color: FIN.slate }}>
-              Vérification des imports précédents…
-            </p>
-          ) : check.status === 'same' ? (
-            <p className="mt-3 rounded-sm border px-3 py-2 text-[11px] leading-relaxed" style={{ borderColor: FIN.sage, color: FIN.sage }}>
-              ✓ Relevé déjà importé : ses {check.present} opérations sont toutes enregistrées sur « {account.trim() || 'Compte courant'} ». Rien à retraiter : toute sa période est comptée, mois sans opération compris.
-            </p>
-          ) : check.status === 'different' ? (
-            <div className="mt-3 rounded-sm border px-3 py-2 text-[11px] leading-relaxed" style={{ borderColor: FIN.rose, color: FIN.rose }}>
-              <p>
-                ⚠ Cette période est déjà importée sur « {account.trim() || 'Compte courant'} », mais le relevé diffère : {diffText(check)}. Si tu
-                l&apos;importes, les anciennes données seront remplacées par celles de ce relevé (les opérations identiques gardent leur catégorie).
-              </p>
-              <ul className="mt-1 space-y-0.5" style={{ color: FIN.slate }}>
-                {check.added.slice(0, 3).map((t) => (
-                  <li key={t.importKey} className="flex justify-between gap-2">
-                    <span className="min-w-0 break-words">+ {shortDate(t.date)} · {t.label}</span>
-                    <span className="shrink-0 whitespace-nowrap">{formatEuros(t.amount)}</span>
-                  </li>
-                ))}
-                {check.removed.slice(0, 3).map((t) => (
-                  <li key={t.id} className="flex justify-between gap-2 line-through">
-                    <span className="min-w-0 break-words">− {shortDate(t.date)} · {t.label}</span>
-                    <span className="shrink-0 whitespace-nowrap">{formatEuros(t.amount)}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          {/* Virements entre mes comptes : retrouvés (ou non) sur les autres comptes déjà importés */}
-          {check && check.linked > 0 && (
-            <p className="mt-2 text-[11px] leading-relaxed" style={{ color: FIN.sage }}>
-              ✓ {check.linked} virement{check.linked > 1 ? 's' : ''} retrouvé{check.linked > 1 ? 's' : ''} en sens inverse sur{' '}
-              {check.linkedAccounts.map((a) => `« ${a} »`).join(', ')} : compté{check.linked > 1 ? 's' : ''} comme mouvement
-              {check.linked > 1 ? 's' : ''} entre tes comptes (ni dépense ni revenu), des deux côtés.
-            </p>
-          )}
-          {check && check.unlinked.length > 0 && (
-            <div className="mt-2 rounded-sm border px-3 py-2 text-[11px] leading-relaxed" style={{ borderColor: FIN.gold, color: FIN.slate }}>
-              <p>
-                {check.unlinked.length} virement{check.unlinked.length > 1 ? 's' : ''} entre tes comptes sans opération correspondante sur
-                tes autres comptes. {summary?.savings || isSavingsAccount(account)
-                  ? "L'argent d'un livret ne peut venir que de ton compte courant (ou y retourner) : importe le relevé du compte courant de la même période pour qu'ils y soient reconnus aussi."
-                  : 'Importe le relevé de l’autre compte sur la même période pour vérifier ces virements.'}
-              </p>
-              <ul className="mt-1 space-y-0.5">
-                {check.unlinked.slice(0, 4).map((t) => (
-                  <li key={t.importKey} className="flex justify-between gap-2">
-                    <span className="truncate">
-                      {shortDate(t.date)} · {t.label}
-                    </span>
-                    <span>{formatEuros(t.amount)}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          <div className="mt-3 flex gap-2">
-            {check?.status !== 'same' && (
-              <FinButton onClick={confirm} disabled={busy || !check}>
-                {busy ? 'Import…' : check?.status === 'different' ? 'Remplacer par ce relevé' : 'Importer'}
-              </FinButton>
-            )}
-            <FinButton outline onClick={() => setParsed(null)}>
-              Annuler
-            </FinButton>
-          </div>
-        </div>
       )}
     </>
   );
