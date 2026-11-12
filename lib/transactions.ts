@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase';
-import { addLine, fetchAllLines, fetchOrSeedLines, formatEuros, importMayWrite, monthKey, SECTIONS, setLineAmount, shiftMonth, updateLine } from '@/lib/finance';
+import { addUniqueLine, fetchAllLines, fetchOrSeedLines, formatEuros, importMayWrite, monthKey, SECTIONS, setLineAmount, shiftMonth, updateLine } from '@/lib/finance';
 import { isExcludedIncomeCategory } from '@/lib/savingsRule';
 import type { ParsedTransaction, StatementSummary } from '@/lib/bankImport';
 import type { Coverage, ManualNote, SavingsEstimate, TrackedAccount, TransferCheck, TransferMismatch, TransferQuestion } from '@/lib/coverage';
@@ -929,7 +929,7 @@ export async function reportToStatement(
     } else {
       if (value === 0) continue;
       writes.push(
-        addLine(period, SECTIONS.find((s) => s.id === sectionId)!, label, 100).then(({ line, error: err }) =>
+        addUniqueLine(period, SECTIONS.find((s) => s.id === sectionId)!, label, 100).then(({ line, error: err }) =>
           err ? err : line ? updateLine(line.id, { amount: value, auto: true }) : null
         )
       );

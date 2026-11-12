@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { ChevronDown, Pencil, X } from 'lucide-react';
-import { formatEuros, monthLabel } from '@/lib/finance';
+import { formatEuros } from '@/lib/finance';
 import { useCategoryLimits, useMonthBudgets } from '@/lib/financeQueries';
 import { useIncomePlan } from '@/lib/coursesQueries';
 import { useColorLimits } from '@/lib/colorBudgets';
@@ -290,8 +290,9 @@ export function BudgetLimits({
 // Popin « Modifier » du Budget du mois : la limite de chaque grande catégorie pour ce mois seulement. On part des limites
 // en place (propre au mois, de la couleur du mois ou générale) ; une limite changée devient propre au mois, et
 // « par défaut » rend à une grande catégorie la limite de la couleur du mois (ou la générale)
-// "categories" : ses petites catégories ; leurs limites (facultatives) se partagent celle de la grande catégorie :
-// dès que l'une en a une, leur somme doit faire exactement la limite de la grande catégorie
+// "categories" : ses petites catégories ; leurs limites (facultatives) se prennent sur celle de la grande catégorie :
+// si leur somme la dépasse, une notification le signale (sans empêcher d'enregistrer). Même chose pour les grandes
+// catégories face aux revenus du mois.
 type MonthLimitRow = {
   target: string;
   label: string;
@@ -299,17 +300,16 @@ type MonthLimitRow = {
   source: 'month' | 'color' | 'general' | 'none';
   categories: { target: string; label: string; limit: number | null }[];
 };
-// Écart toléré entre la somme des petites catégories et la limite (arrondis des pourcentages) : corrigé à l'enregistrement
+// Écart toléré (arrondis des pourcentages) avant de signaler un dépassement
 const SPLIT_TOLERANCE = 0.05;
 const roundCents = (n: number) => Math.round(n * 100) / 100;
 const SOURCE_LABELS: Record<MonthLimitRow['source'], string> = {
   month: 'propre à ce mois',
   color: 'par défaut',
-  general: 'limite générale',
-  none: 'aucune limite'
+  general: '',
+  none: ''
 };
 function MonthLimitsModal({
-  period,
   income,
   rows,
   onSave,
@@ -348,27 +348,28 @@ function MonthLimitsModal({
     const used = subs.some((v) => v !== null);
     const sum = roundCents(subs.reduce<number>((s, v) => s + (v ?? 0), 0));
     const gap = total === null ? null : roundCents(total - sum);
-    return { total, used, sum, gap, ok: !used || (gap !== null && Math.abs(gap) <= SPLIT_TOLERANCE) };
+    // Dépassement seulement : des petites catégories qui ne prennent pas toute la limite, c'est permis
+    return { total, used, sum, gap, ok: !used || gap === null || gap >= -SPLIT_TOLERANCE };
   };
-  const invalid = rows.filter((r) => !splitOf(r).ok);
+  // Grandes catégories face aux revenus du mois : de combien leurs limites les dépassent (null : pas de dépassement)
+  const groupsSum = roundCents(rows.reduce((sum, r) => sum + (valueOf(r.target, r.limit) ?? 0), 0));
+  const overIncome = income > 0 && groupsSum - income > SPLIT_TOLERANCE ? roundCents(groupsSum - income) : null;
+  // Grandes catégories dépliées (leurs petites catégories visibles) : repliées à l'ouverture
+  const [openRows, setOpenRows] = useState<Set<string>>(() => new Set());
+  const toggleRow = (target: string) =>
+    setOpenRows((o) => {
+      const next = new Set(o);
+      if (!next.delete(target)) next.add(target);
+      return next;
+    });
   // Supprimer la limite d'une grande catégorie retire aussi celles de ses petites catégories
   const clearGroup = (r: MonthLimitRow) => {
     set(r.target, null);
     r.categories.forEach((c) => valueOf(c.target, c.limit) !== null && set(c.target, null));
   };
-  // Seules les limites vraiment changées sont enregistrées ; un petit écart d'arrondi est reporté sur la plus grande
-  // limite de petite catégorie, pour que la somme tombe juste
+  // Seules les limites vraiment changées sont enregistrées
   function save() {
     const final = new Map(draft);
-    for (const r of rows) {
-      const { used, gap } = splitOf(r);
-      if (!used || !gap) continue;
-      const biggest = r.categories
-        .map((c) => ({ target: c.target, v: valueOf(c.target, c.limit) }))
-        .filter((c): c is { target: string; v: number } => c.v !== null)
-        .sort((a, b) => b.v - a.v)[0];
-      if (biggest) final.set(biggest.target, roundCents(biggest.v + gap));
-    }
     const saved = (target: string) => {
       for (const r of rows) {
         if (r.target === target) return r.limit;
@@ -382,37 +383,38 @@ function MonthLimitsModal({
   const changed = draft.size + reset.size > 0;
   return (
     <FinModal title="Modifier le budget" onClose={onClose}>
-      <p className="mb-3 text-[11px]" style={{ color: FIN.slate }}>
-        Pour {monthLabel(period)} seulement. Laisse un champ vide pour ne mettre aucune limite.
+      <p className="mb-2 text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
+        Liste de catégories
       </p>
-      {/* Chaque limite se saisit en euros ou en pourcentage des revenus : les deux champs se suivent */}
-      <p className="-mt-2 mb-3 text-[10px]" style={{ color: FIN.slate }}>
-        {income > 0
-          ? `Pourcentages des revenus du mois (${formatEuros(income)}). La limite est enregistrée en euros.`
-          : 'Aucun revenu ce mois-ci ni de revenu prévu (Gestion) : les limites se fixent en euros.'}
-      </p>
+      {/* Limites des grandes catégories au-delà des revenus du mois : une simple notification */}
+      {overIncome !== null && <OverNote text={`Les grandes catégories dépassent de ${formatEuros(overIncome)} les revenus du mois (${formatEuros(income)}).`} />}
       <ul className="max-h-[55vh] space-y-2.5 overflow-y-auto pr-1">
         {rows.map((r) => {
           const value = draft.has(r.target) ? draft.get(r.target)! : r.limit;
           const back = reset.has(r.target);
+          const open = openRows.has(r.target);
+          const split = splitOf(r);
+          const origin = back ? 'reprendra la limite par défaut' : draft.has(r.target) ? 'propre à ce mois' : SOURCE_LABELS[r.source];
           return (
             <li key={r.target}>
-              {/* Grande catégorie : son nom (et d'où vient sa limite) à gauche, ses champs à droite sur la même ligne */}
+              {/* Grande catégorie : flèche (déplie ses petites catégories) et nom à gauche, ses champs à droite */}
               <div className="flex items-center gap-2">
-              <div className="min-w-0 flex-1 text-[12px]" style={{ color: FIN.navy }}>
-                <span className="block truncate font-bold uppercase tracking-[0.05em]">{r.label}</span>
-                <span className="block text-[10px]" style={{ color: FIN.slate }}>
-                  {back ? 'reprendra la limite par défaut' : draft.has(r.target) ? 'propre à ce mois' : SOURCE_LABELS[r.source]}
-                  {r.source === 'month' && !back && (
-                    <>
-                      {' · '}
-                      <button type="button" onClick={() => backToDefault(r.target)} className="underline" style={{ color: FIN.accent }}>
-                        par défaut
-                      </button>
-                    </>
-                  )}
-                </span>
-              </div>
+                <button
+                  type="button"
+                  onClick={() => toggleRow(r.target)}
+                  disabled={r.categories.length === 0}
+                  aria-expanded={open}
+                  className="flex min-w-0 flex-1 items-center gap-1 text-left text-[12px] disabled:cursor-default"
+                  style={{ color: FIN.navy }}
+                >
+                  <ChevronDown
+                    size={13}
+                    aria-hidden
+                    className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''} ${r.categories.length === 0 ? 'opacity-0' : ''}`}
+                    style={{ color: FIN.gold }}
+                  />
+                  <span className="block truncate font-bold uppercase tracking-[0.05em]">{r.label}</span>
+                </button>
                 <LinkedLimit value={value} income={income} onChange={(n) => set(r.target, n)} label={r.label} />
                 {/* Supprimer la limite : aucune limite pour cette grande catégorie ce mois-ci (ni pour ses petites catégories) */}
                 <button
@@ -427,18 +429,27 @@ function MonthLimitsModal({
                   <X size={13} />
                 </button>
               </div>
-              {r.categories.length > 0 && (
-                <SplitEditor row={r} split={splitOf(r)} valueOf={valueOf} set={set} />
+              {/* D'où vient la limite (propre à ce mois, par défaut) ; rien pour la limite générale ou sans limite */}
+              {(origin || (r.source === 'month' && !back)) && (
+                <span className="block pl-[18px] text-[10px]" style={{ color: FIN.slate }}>
+                  {origin}
+                  {r.source === 'month' && !back && (
+                    <>
+                      {origin && ' · '}
+                      <button type="button" onClick={() => backToDefault(r.target)} className="underline" style={{ color: FIN.accent }}>
+                        par défaut
+                      </button>
+                    </>
+                  )}
+                </span>
               )}
+              {/* Petites catégories qui dépassent la limite de la grande catégorie : une simple notification */}
+              {!split.ok && split.gap !== null && <OverNote text={`Les petites catégories dépassent de ${formatEuros(-split.gap)} la limite de ${r.label}.`} />}
+              {open && r.categories.length > 0 && <SplitEditor row={r} split={split} valueOf={valueOf} set={set} />}
             </li>
           );
         })}
       </ul>
-      {invalid.length > 0 && (
-        <p className="mt-3 text-[10px]" style={{ color: FIN.rose }}>
-          Les limites des petites catégories doivent faire, ensemble, la limite de leur grande catégorie : {invalid.map((r) => r.label).join(', ')}.
-        </p>
-      )}
       <div className="mt-4 flex justify-end gap-2">
         <button
           type="button"
@@ -451,7 +462,7 @@ function MonthLimitsModal({
         <button
           type="button"
           onClick={save}
-          disabled={!changed || invalid.length > 0}
+          disabled={!changed}
           className="rounded-full px-4 py-1.5 text-[11px] uppercase tracking-[0.15em] disabled:opacity-40"
           style={{ backgroundColor: FIN.accent, color: FIN.paper }}
         >
@@ -546,8 +557,8 @@ function LinkedLimit({
 
 type Split = { total: number | null; used: boolean; sum: number; gap: number | null; ok: boolean };
 
-// Petites catégories d'une grande catégorie, dans la popin « Modifier le budget » : toujours affichées sous elle, chacune
-// avec sa limite en euros ou en pourcentage de la limite de la grande catégorie. Leur somme doit faire cette limite.
+// Petites catégories d'une grande catégorie (dépliée), dans la popin « Modifier le budget » : sur un fond à part, chacune
+// avec sa limite en euros ou en pourcentage de la limite de la grande catégorie
 function SplitEditor({
   row,
   split,
@@ -559,48 +570,43 @@ function SplitEditor({
   valueOf: (target: string, saved: number | null) => number | null;
   set: (target: string, n: number | null) => void;
 }) {
-  const color = split.ok ? FIN.slate : FIN.rose;
   return (
-    <div className="mt-1.5 border-l-2 pl-2" style={{ borderColor: split.ok ? FIN.line : FIN.rose }}>
-      <p className="flex items-center gap-1 text-[10px]" style={{ color }}>
-        <span className="min-w-0 flex-1">
-          {split.used ? `${formatEuros(split.sum)} répartis${split.total !== null ? ` sur ${formatEuros(split.total)}` : ''}` : 'Petites catégories · aucune limite'}
-        </span>
-        {split.used && !split.ok && (
-          <b>{split.gap === null ? 'pas de limite totale' : split.gap > 0 ? `reste ${formatEuros(split.gap)}` : `${formatEuros(-split.gap)} de trop`}</b>
-        )}
-      </p>
-      {
-        <ul className="mt-1 space-y-1 pb-1">
-          {split.total === null && (
-            <li className="text-[10px]" style={{ color: FIN.slate }}>
-              Fixe d&apos;abord la limite de la grande catégorie.
-            </li>
-          )}
-          {row.categories.map((c) => {
-            const v = valueOf(c.target, c.limit);
-            return (
-              <li key={c.target} className="flex items-center gap-2">
-                <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: FIN.navy }} title={c.label}>
-                  {c.label}
-                </span>
-                <LinkedLimit value={v} income={split.total ?? 0} onChange={(n) => set(c.target, n)} label={c.label} base="de la grande catégorie" />
-                <button
-                  type="button"
-                  onClick={() => set(c.target, null)}
-                  disabled={v === null}
-                  aria-label={`Supprimer la limite · ${c.label}`}
-                  title="Supprimer la limite"
-                  className="flex size-6 shrink-0 items-center justify-center rounded-full border disabled:opacity-30"
-                  style={{ borderColor: FIN.rose, color: FIN.rose }}
-                >
-                  <X size={11} />
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      }
-    </div>
+    <ul className="mt-1.5 space-y-1 rounded-sm px-2 py-1.5" style={{ backgroundColor: FIN.mist }}>
+      {row.categories.map((c) => {
+        const v = valueOf(c.target, c.limit);
+        return (
+          <li key={c.target} className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: FIN.navy }} title={c.label}>
+              {c.label}
+            </span>
+            <LinkedLimit value={v} income={split.total ?? 0} onChange={(n) => set(c.target, n)} label={c.label} base="de la grande catégorie" />
+            <button
+              type="button"
+              onClick={() => set(c.target, null)}
+              disabled={v === null}
+              aria-label={`Supprimer la limite · ${c.label}`}
+              title="Supprimer la limite"
+              className="flex size-6 shrink-0 items-center justify-center rounded-full border disabled:opacity-30"
+              style={{ borderColor: FIN.rose, color: FIN.rose }}
+            >
+              <X size={11} />
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+// Notification de dépassement (limites au-delà de la grande catégorie, ou des revenus du mois) : n'empêche pas d'enregistrer
+function OverNote({ text }: { text: string }) {
+  return (
+    <p
+      className="mb-1.5 mt-1 flex items-start gap-1.5 rounded-sm border px-2 py-1 text-[10px] leading-snug"
+      style={{ borderColor: FIN.rose, color: FIN.rose, backgroundColor: FIN.paper }}
+    >
+      <span aria-hidden>⚠</span>
+      <span>{text}</span>
+    </p>
   );
 }

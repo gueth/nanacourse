@@ -84,7 +84,11 @@ export function TabBar() {
                     // En quittant les Finances, elles se rouvriront sur le mois précédent (le dernier terminé)
                     if (pathname.startsWith('/banque')) forgetFinanceMonth();
                     if (href === '/accueil') setJournal({ from: pathname });
-                    else startTransition(href, 'fade');
+                    else {
+                      // Un autre onglet touché pendant l'écran de la gazette : le journal ne s'ouvre plus
+                      setJournal(null);
+                      startTransition(href, 'fade');
+                    }
                   }}
                   className="flex flex-1 flex-col items-center justify-center gap-0.5 text-[10.5px] font-medium transition-colors active:scale-95"
                   style={{ color: active ? ACTIVE : INK, fontFamily: 'var(--font-cuisine), system-ui, sans-serif' }}

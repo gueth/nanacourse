@@ -33,6 +33,7 @@ export type FinanceLine = {
   label: string;
   amount: number;
   position: number;
+  created_at?: string; // date de création (lue en base) : la plus ancienne de deux lignes en double est gardée
   auto?: boolean; // montant calculé par l'import des relevés (recalculé aux imports suivants) ; sinon saisi à la main, jamais modifié par l'import
 };
 
@@ -131,6 +132,17 @@ export async function fetchLines(period: string) {
   return { lines: ((data as FinanceLine[]) ?? []).map((l) => ({ ...l, amount: Number(l.amount) })), error };
 }
 
+// Écritures qui ne doivent pas se croiser (deux imports lancés ensemble, deux relevés du même mois…) : chacune attend
+// que la précédente de même clé soit finie avant de relire la base et d'écrire
+const locks = new Map<string, Promise<unknown>>();
+function serialized<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const run = (locks.get(key) ?? Promise.resolve()).then(task, task);
+  const settled = run.catch(() => undefined);
+  locks.set(key, settled);
+  settled.then(() => locks.get(key) === settled && locks.delete(key));
+  return run;
+}
+
 // Remplit un mois vide : avec le modèle (montants à zéro), ou en reprenant les lignes d'un autre mois
 export async function seedMonth(period: string, from: FinanceLine[] | null) {
   const rows = from
@@ -147,9 +159,37 @@ export async function seedMonth(period: string, from: FinanceLine[] | null) {
 export async function fetchOrSeedLines(period: string) {
   const first = await fetchLines(period);
   if (first.error || first.lines.length > 0) return first;
-  const before = await fetchLines(shiftMonth(period, -1));
-  const error = await seedMonth(period, before.lines.length > 0 ? before.lines.map((l) => ({ ...l, amount: 0, auto: false })) : null);
-  return error ? { lines: [] as FinanceLine[], error } : fetchLines(period);
+  // Un seul remplissage à la fois pour un mois : celui qui attend relit le mois, déjà rempli par l'autre
+  return serialized(`remplir:${period}`, async () => {
+    const again = await fetchLines(period);
+    if (again.error || again.lines.length > 0) return again;
+    const before = await fetchLines(shiftMonth(period, -1));
+    const error = await seedMonth(period, before.lines.length > 0 ? before.lines.map((l) => ({ ...l, amount: 0, auto: false })) : null);
+    return error ? { lines: [] as FinanceLine[], error } : fetchLines(period);
+  });
+}
+
+// Ligne d'une rubrique pour un mois, créée si elle n'existe pas encore, jamais en double : les créations d'une même ligne
+// passent l'une après l'autre (et relisent la base avant), et si une autre page l'a créée en même temps, seule la plus
+// ancienne est gardée (les autres sont supprimées)
+export function addUniqueLine(period: string, section: Section, label: string, position: number) {
+  const same = (l: Pick<FinanceLine, 'section' | 'label'>) => l.section === section.id && l.label.trim().toLowerCase() === label.trim().toLowerCase();
+  return serialized(`ligne:${period}|${section.id}|${label.trim().toLowerCase()}`, async () => {
+    const before = await fetchLines(period);
+    if (before.error) return { line: null, error: before.error };
+    const found = before.lines.find(same);
+    if (found) return { line: found, error: null };
+    const added = await addLine(period, section, label, position);
+    if (added.error || !added.line) return added;
+    const after = await fetchLines(period);
+    const twins = after.lines.filter(same).sort((a, b) => ((a.created_at ?? '') < (b.created_at ?? '') ? -1 : 1));
+    if (after.error || twins.length <= 1) return added;
+    const { error } = await supabase
+      .from('finance_lines')
+      .delete()
+      .in('id', twins.slice(1).map((l) => l.id));
+    return { line: twins[0], error };
+  });
 }
 
 // Ce que l'import peut faire d'une ligne : la remplir si elle est vide ou absente, la recalculer si elle vient déjà
@@ -168,7 +208,7 @@ export async function setLineAmount(period: string, sectionId: string, label: st
     if (!importMayWrite(existing) || (!replaceAuto && existing.amount !== 0)) return null;
     return updateLine(existing.id, { amount, auto: true });
   }
-  const { line, error: err } = await addLine(period, SECTIONS.find((s) => s.id === sectionId)!, label, 100);
+  const { line, error: err } = await addUniqueLine(period, SECTIONS.find((s) => s.id === sectionId)!, label, 100);
   return err ?? (line ? updateLine(line.id, { amount, auto: true }) : null);
 }
 

@@ -123,6 +123,8 @@ export default function FinancePage() {
 
   // Lignes du mois affiché, gardées en mémoire entre deux visites (lib/financeQueries) : affichées tout de suite, puis rafraîchies
   const currentQuery = useMonthLines(period);
+  // Lignes du mois d'avant : sa situation nette ouvre les capitaux propres du mois affiché
+  const previousQuery = useMonthLines(period && shiftMonth(period, -1));
   // Lignes qui ont déjà eu un montant, un mois ou un autre : les autres peuvent être masquées pour égaler les tableaux
   const filledQuery = useFilledLines();
   const filled = useMemo(() => (filledQuery.data ? new Set(filledQuery.data) : null), [filledQuery.data]);
@@ -232,6 +234,40 @@ export default function FinancePage() {
   const iOwe = lineTotal('dettes', 'dette');
   const owedToMe = lineTotal('creances', 'créance');
 
+  // Capitaux propres : la situation nette de la fin du mois d'avant (son patrimoine net, calculé comme au bilan de ce
+  // mois-là : soldes estimés compris, soldes inconnus exclus), plus le résultat du mois. Le patrimoine peut aussi bouger
+  // hors du compte de résultat (livrets et placements, qui n'y sont pas, intérêts, soldes corrigés, lignes reliées…) :
+  // cet écart a sa propre ligne, pour que le total reste le patrimoine net du mois.
+  const previousMonth = period && shiftMonth(period, -1);
+  const previousStored = previousQuery.data;
+  const previousStatus = previousMonth && coverage ? monthStatus(coverage, previousMonth) : null;
+  const previousNet =
+    !previousMonth || !coverage || !previousStored || previousStored.every((l) => l.statement !== 'bilan')
+      ? null
+      : totals(withEstimates(previousStored, coverage, previousMonth).filter((l) => !isMissingLine(l, previousStatus!.unknown))).patrimoine;
+  const previousKnown = previousNet !== null && previousStatus!.bilanKnown;
+  const otherChanges = previousNet === null ? 0 : Math.round((t.patrimoine - previousNet - t.resultat) * 100) / 100;
+  const capitalRows: { label: string; value: number | null; note?: string; color?: string }[] = [
+    previousNet === null
+      ? { label: 'Situation nette avant le résultat', value: known(t.patrimoine - t.resultat), note: 'Pas de bilan le mois d’avant : patrimoine net moins le résultat' }
+      : {
+          label: 'Situation nette du mois précédent',
+          value: previousKnown ? previousNet : null,
+          note: 'Patrimoine net à la fin du mois d’avant'
+        },
+    { label: 'Résultat du mois', value: knownResult(t.resultat), note: 'Repris du compte de résultat', color: t.resultat >= 0 ? FIN.sage : FIN.rose },
+    ...(previousNet !== null && otherChanges !== 0
+      ? [
+          {
+            label: 'Autres variations',
+            value: previousKnown && !incomplete && !resultIncomplete ? otherChanges : null,
+            note: 'Hors compte de résultat : livrets, placements, intérêts, soldes corrigés, lignes reliées…',
+            color: otherChanges >= 0 ? FIN.sage : FIN.rose
+          }
+        ]
+      : [])
+  ];
+
   // Charges : par grande catégorie, d'après les transactions du mois (le total reste celui du compte de résultat)
   const txReady = !!txQuery.data && categoriesQuery.data !== undefined && !!period;
   const monthTx = txReady && !empty ? txQuery.data!.list.filter((tx) => tx.date.startsWith(period!)) : [];
@@ -249,10 +285,10 @@ export default function FinancePage() {
   //    sont ajoutées en bas du tableau le plus court.
   // Tant que la liste des lignes déjà remplies n'est pas chargée, rien n'est replié (les lignes vides égalisent seules).
   const linesOf = (side: Side) => sectionsOf(side).flatMap((s) => sideLines(side).filter((l) => l.section === s.id));
-  // Lignes d'un tableau : un intitulé par rubrique, ses lignes ; au passif, en plus, les capitaux propres (intitulé et 2 lignes)
+  // Lignes d'un tableau : un intitulé par rubrique, ses lignes ; au passif, en plus, les capitaux propres (intitulé et ses lignes)
   // Capitaux propres repliés avec les autres rubriques quand les tableaux le sont (sauf si on les a ouverts)
   const capitauxFolded = !tablesOpen && !openSections.has(CAPITAUX);
-  const rowCount = (side: Side) => sectionsOf(side).length + linesOf(side).length + (side === 'passif' ? (capitauxFolded ? 1 : 3) : 0);
+  const rowCount = (side: Side) => sectionsOf(side).length + linesOf(side).length + (side === 'passif' ? (capitauxFolded ? 1 : 1 + capitalRows.length) : 0);
   const folded = new Set<string>();
   const fillers: Partial<Record<Side, number>> = {};
   for (const [a, b] of [['actif', 'passif'], ['produits', 'charges']] as [Side, Side][]) {
@@ -511,19 +547,7 @@ export default function FinancePage() {
                         folded={!tablesOpen}
                         open={openSections.has(CAPITAUX)}
                         onToggle={() => toggleSection(CAPITAUX)}
-                        rows={[
-                          {
-                            label: 'Situation nette avant le résultat',
-                            value: known(t.patrimoine - t.resultat),
-                            note: 'Ce que tu possédais déjà, hors résultat du mois'
-                          },
-                          {
-                            label: 'Résultat du mois',
-                            value: knownResult(t.resultat),
-                            note: 'Repris du compte de résultat',
-                            color: t.resultat >= 0 ? FIN.sage : FIN.rose
-                          }
-                        ]}
+                        rows={capitalRows}
                       />
                       {renderSide('passif')}
                     </Ledger>
