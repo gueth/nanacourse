@@ -31,6 +31,12 @@ export const metadata = {
 // Couleur de départ de la barre du téléphone (heure, batterie) : le bleu de fond,
 // ensuite remplacée par la couleur de la page affichée (components/SystemBarsColor.tsx)
 export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  // La page s'étend sous la barre du bas du téléphone (boutons retour, accueil...) : sur Android, la barre devient
+  // transparente et laisse voir le fond de la page, qui suit sa couleur (components/SystemBarsColor.tsx).
+  // Le contenu garde une marge de la hauteur de cette barre (env(safe-area-inset-bottom), voir globals.css).
+  viewportFit: 'cover',
   themeColor: '#8494c6'
 };
 

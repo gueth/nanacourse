@@ -219,7 +219,7 @@ function SettingsContent() {
         </div>
 
         {/* MENU FLOTTANT (téléphone) : bouton carré « + », qui se déplie en pilules au-dessus d'un bouton rond « × » */}
-        <div className="fixed bottom-6 right-4 z-30 flex flex-col items-end gap-2 lg:hidden">
+        <div className="fixed bottom-[calc(1.5rem+env(safe-area-inset-bottom))] right-4 z-30 flex flex-col items-end gap-2 lg:hidden">
           {fabOpen && (
             <>
               {/* Toucher ailleurs replie le menu */}

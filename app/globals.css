@@ -21,6 +21,9 @@ body {
   background-color: var(--color-backdrop);
   color: var(--color-ink);
   font-family: var(--font-type);
+  /* La page passe sous la barre du bas du téléphone (viewport-fit=cover) : le contenu s'arrête au-dessus de ses boutons,
+     et le fond de la page remplit la barre */
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 @layer components {

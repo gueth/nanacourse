@@ -60,7 +60,7 @@ export function SwipePages({ pages, labels, color, page: controlled, onPageChang
       </div>
 
       {/* INDICATEUR DE PAGE, FIXÉ EN BAS DE L'ÉCRAN */}
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 flex justify-center gap-2 z-20">
+      <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 flex justify-center gap-2 z-20">
         {pages.map((_, i) => (
           <button
             key={i}
