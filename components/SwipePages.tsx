@@ -1,6 +1,8 @@
 'use client';
 
 import { useRef, useState } from 'react';
+import { Info } from 'lucide-react';
+import Modal from '@/components/Modal';
 
 type Props = {
   pages: React.ReactNode[];
@@ -17,6 +19,11 @@ type Props = {
   // Page affichée, si le parent la pilote (sinon gérée ici)
   page?: number;
   onPageChange?: (page: number) => void;
+  // Explication de chaque page (dans l'ordre des pages) : une icône « i » au bout de la ligne des intitulés l'ouvre
+  // dans une popin, pour la page affichée
+  infos?: React.ReactNode[];
+  // Cadre de cette popin, au style de la page (ex : FinModal pour les Finances) ; sinon la popin par défaut
+  infoModal?: React.ComponentType<{ title: string; onClose: () => void; children: React.ReactNode }>;
 };
 
 // Pages côte à côte sur une même page : on passe de l'une à l'autre en glissant le doigt, en touchant leur intitulé
@@ -24,8 +31,10 @@ type Props = {
 // partie qu'on quitte et celle qui arrive bougent ensemble : on reste sur la même page.
 // Toutes les pages restent montées (leur état est gardé). Pas de transform permanent : seulement pendant la glissade,
 // pour que les fenêtres en position fixe qu'elles contiennent restent calées sur l'écran.
-export function SwipePages({ pages, labels, color, tabs, caption, scriptLabels, dots = true, page: controlled, onPageChange }: Props) {
+export function SwipePages({ pages, labels, color, tabs, caption, scriptLabels, dots = true, page: controlled, onPageChange, infos, infoModal: InfoModal = Modal }: Props) {
   const [own, setOwn] = useState(0);
+  // Explication ouverte (celle de la page affichée)
+  const [infoOpen, setInfoOpen] = useState(false);
   const page = controlled ?? own;
   // Glissade en cours : la page qu'on quitte et le sens (null : au repos)
   const [slide, setSlide] = useState<{ from: number; dir: 'next' | 'prev' } | null>(null);
@@ -61,6 +70,11 @@ export function SwipePages({ pages, labels, color, tabs, caption, scriptLabels, 
 
   return (
     <div ref={root}>
+      {infoOpen && infos?.[page] && (
+        <InfoModal title={labels[page]} onClose={() => setInfoOpen(false)}>
+          <div className="text-[13px] leading-relaxed">{infos[page]}</div>
+        </InfoModal>
+      )}
       {/* INTITULÉS : celui de la partie affichée est souligné, le trait glisse de l'un à l'autre */}
       {tabs && (
         <div className="mt-4">
@@ -95,12 +109,26 @@ export function SwipePages({ pages, labels, color, tabs, caption, scriptLabels, 
               className="absolute bottom-0 h-[2px] rounded-full transition-[left] duration-300 ease-out"
               style={{ width: `${100 / labels.length}%`, left: `${(page * 100) / labels.length}%`, backgroundColor: ink }}
             />
+            {/* « i » au bout de la ligne : ce qu'est la partie affichée */}
+            {infos?.[page] && (
+              <button
+                type="button"
+                onClick={() => setInfoOpen(true)}
+                aria-label={`Qu'est-ce que : ${labels[page]} ?`}
+                className="absolute right-0 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full opacity-70 hover:opacity-100"
+                style={{ color: ink }}
+              >
+                <Info size={18} aria-hidden />
+              </button>
+            )}
           </div>
         </div>
       )}
 
-      {/* Toutes les pages dans la même case : pendant la glissade, celle qu'on quitte part d'un côté pendant que l'autre arrive */}
-      <div className="grid overflow-x-clip pb-16" onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
+      {/* Toutes les pages dans la même case : pendant la glissade, celle qu'on quitte part d'un côté pendant que l'autre arrive.
+          La place sous les pages n'est laissée que pour l'indicateur de page fixé en bas, s'il est affiché : sinon, pas de
+          vide après le dernier élément */}
+      <div className={`grid overflow-x-clip ${dots ? 'pb-16' : ''}`} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
         {pages.map((content, i) => {
           const leaving = slide?.from === i;
           const shown = i === page || leaving;

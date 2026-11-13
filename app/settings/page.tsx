@@ -35,7 +35,7 @@ const SURFACE = '#f8f3fb';
 // Indicateur de chargement ondulé (vague violette qui avance, puis la piste grise)
 function WavyLoader() {
   return (
-    <div className="m3 flex min-h-dvh items-center justify-center" style={{ backgroundColor: BG }} role="status" aria-label="Chargement">
+    <div className="m3 flex min-h-page items-center justify-center" style={{ backgroundColor: BG }} role="status" aria-label="Chargement">
       <svg width="180" height="16" viewBox="0 0 180 16" aria-hidden>
         <defs>
           <clipPath id="wave-clip">
@@ -142,7 +142,7 @@ function SettingsContent() {
   // Les popins ouvertes depuis la page prennent le même style (ModalVariantContext « m3 »).
   return (
     <ModalVariantContext.Provider value="m3">
-      <div className="m3 m3-page min-h-dvh" style={{ backgroundColor: BG }}>
+      <div className="m3 m3-page min-h-page" style={{ backgroundColor: BG }}>
         <div className="mx-auto flex max-w-5xl gap-5 px-4 pb-36 pt-4 lg:px-6 lg:pb-12 lg:pt-6">
           {/* PANNEAU DE NAVIGATION (grand écran) */}
           <aside className="sticky top-6 hidden w-64 shrink-0 flex-col gap-1 self-start rounded-[28px] p-3 lg:flex" style={{ backgroundColor: SURFACE }}>

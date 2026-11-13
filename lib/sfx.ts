@@ -8,7 +8,7 @@ import { getCreditsAudio } from '@/lib/creditsAudio';
 // Ils restent doux : le volume réglé dans Paramètres > Sons est multiplié par un plafond bas (MAX_GAIN),
 // donc même à 100 % les bruitages ne couvrent jamais la musique du téléphone.
 
-export type Sfx = 'tap' | 'open' | 'close' | 'toggle' | 'select' | 'success' | 'error' | 'page';
+export type Sfx = 'tap' | 'open' | 'close' | 'toggle' | 'select' | 'success' | 'error' | 'page' | 'pageTurn';
 
 const KEY = 'nana-sfx-volume';
 const DEFAULT_VOLUME = 0.5;
@@ -123,7 +123,51 @@ function swish(ctx: AudioContext, out: AudioNode) {
   src.start(t);
 }
 
+// Grande page de papier qu'on tourne (carnet du profil) : un « fffouip » feutré.
+// Bruit rose (plus doux que le bruit blanc), léger frémissement régulier de la feuille dans l'air,
+// filtre qui s'ouvre quand la page passe au milieu puis se referme quand elle retombe. Aucun crépitement.
+function pageTurn(ctx: AudioContext, out: AudioNode, dur = 0.5) {
+  const t = ctx.currentTime;
+  const len = Math.floor(ctx.sampleRate * dur);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  // Bruit rose (méthode de Paul Kellet, version courte)
+  let b0 = 0;
+  let b1 = 0;
+  let b2 = 0;
+  for (let i = 0; i < len; i++) {
+    const w = Math.random() * 2 - 1;
+    b0 = 0.99765 * b0 + w * 0.099046;
+    b1 = 0.963 * b1 + w * 0.2965164;
+    b2 = 0.57 * b2 + w * 1.0526913;
+    const pink = (b0 + b1 + b2 + w * 0.1848) * 0.2;
+    const p = i / len;
+    // Enveloppe en cloche, un peu plus longue à retomber qu'à monter
+    const env = Math.pow(Math.sin(Math.PI * Math.pow(p, 0.8)), 1.6);
+    // Frémissement doux de la feuille (ondulation régulière, de plus en plus lente)
+    const flutter = 0.8 + 0.2 * Math.sin(2 * Math.PI * (28 - 12 * p) * (i / ctx.sampleRate));
+    data[i] = pink * env * flutter;
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const low = ctx.createBiquadFilter();
+  low.type = 'lowpass';
+  low.Q.value = 0.5;
+  low.frequency.setValueAtTime(1200, t);
+  low.frequency.exponentialRampToValueAtTime(3200, t + dur * 0.45);
+  low.frequency.exponentialRampToValueAtTime(1400, t + dur);
+  const high = ctx.createBiquadFilter();
+  high.type = 'highpass';
+  high.frequency.value = 180;
+  const gain = ctx.createGain();
+  gain.gain.value = 1.6;
+  src.connect(low).connect(high).connect(gain).connect(out);
+  src.start(t);
+}
+
 const SOUNDS: Record<Sfx, (ctx: AudioContext, out: AudioNode) => void> = {
+  // Carnet du profil qui s'ouvre ou se referme
+  pageTurn: (c, o) => pageTurn(c, o),
   // Toucher un bouton : bulle ronde qui éclate
   tap: (c, o) => tone(c, o, { freq: 820, to: 1250, dur: 0.07, gain: 0.7 }),
   // Ouvrir une popin : deux notes qui montent
@@ -194,7 +238,7 @@ export function playSfx(name: Sfx) {
     master.connect(ctx.destination);
     SOUNDS[name](ctx, master);
     // Débranche le volume une fois le son fini
-    setTimeout(() => master.disconnect(), 800);
+    setTimeout(() => master.disconnect(), 1200);
   } catch {
     // pas de son disponible : on ignore
   }

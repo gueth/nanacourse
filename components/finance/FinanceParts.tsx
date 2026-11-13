@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Portal from '@/components/Portal';
 import { useModalSfx } from '@/lib/sfx';
 import { ChevronDown, ChevronLeft, ChevronRight, X } from 'lucide-react';
@@ -89,8 +89,8 @@ function FinanceNav() {
           <Link
             key={p.href}
             href={p.href}
-            className="shrink-0 rounded-full border px-3 py-1 text-[10px] uppercase tracking-[0.18em]"
-            style={active ? { backgroundColor: FIN.paper, color: FIN.accent, borderColor: FIN.paper } : { borderColor: 'rgba(248,247,244,0.45)' }}
+            className="shrink-0 rounded-full border px-3.5 py-1.5 text-[12px] uppercase tracking-[0.18em]"
+            style={active ? { backgroundColor: FIN.paper, color: FIN.accent, borderColor: FIN.paper } : { borderColor: 'rgba(248,247,244,0.55)' }}
           >
             {p.label}
           </Link>
@@ -100,8 +100,47 @@ function FinanceNav() {
   );
 }
 
-// En-tête bleu : retour à l'écran titre (cartes du jour, d'où s'ouvre le menu), titre, menu des pages et, si fourni, choix du mois
-// (avec, à sa droite, un bouton d'action facultatif)
+// En-tête : une enveloppe ouverte vue de face, la tête en bas, collée au haut de l'écran ; sur un grand écran, elle garde
+// la largeur du contenu de la page (max-w-md), centrée, pour avoir le même dessin que sur un téléphone.
+// Le grand trapèze du rabat est en haut : toute la largeur au début, puis ses côtés descendent en pente, des bords jusqu'aux
+// coins de son bord plat ; posé par-dessus avec une ombre et un haut qui fonce, il porte, en clair, le titre, le
+// sous-titre et le menu des pages. Les deux rabats des côtés (un peu plus sombres) sont des triangles : du bord, ils
+// pointent vers les coins du bord plat. Sous le bord plat, entre eux, un V s'ouvre jusqu'aux bords en bas de l'en-tête :
+// on y voit le fond de la page, où s'écrit le choix du mois (avec, à droite, un bouton d'action facultatif).
+// Haut des côtés en pente du trapèze, aux bords de l'enveloppe
+const ENV_SIDE_Y = 44;
+// Bord plat du trapèze (pointe des rabats) : sa hauteur et sa demi-largeur
+const ENV_FLAT_Y = 136;
+const ENV_FLAT_HALF = 112;
+// Marge au-dessus du titre
+const ENV_TEXT_TOP = 18;
+
+// Bas des rabats des côtés : un petit bord horizontal, de cette largeur, avant le V
+const ENV_FLAP_FOOT = 5;
+
+// Point d'un polygone : décalage en px depuis le milieu, bord gauche / droit, ou bout du bas d'un rabat (LF / RF) ;
+// hauteur en px
+type EnvPt = [number | 'L' | 'R' | 'LF' | 'RF', number];
+function envPoint([x, y]: EnvPt) {
+  const xs =
+    x === 'L' ? '0%' : x === 'R' ? '100%' : x === 'LF' ? `${ENV_FLAP_FOOT}px` : x === 'RF' ? `calc(100% - ${ENV_FLAP_FOOT}px)` : `calc(50% + ${x}px)`;
+  return `${xs} ${y}px`;
+}
+const envMirror = (x: EnvPt[0]): EnvPt[0] => (typeof x === 'number' ? -x : ({ L: 'R', R: 'L', LF: 'RF', RF: 'LF' } as const)[x]);
+const envPolygon = (pts: EnvPt[]) => `polygon(${pts.map(envPoint).join(', ')})`;
+
+function envelopeShapes(height: number) {
+  const F = ENV_FLAT_Y;
+  const a = ENV_FLAT_HALF;
+  // Rabat gauche : du bord jusqu'à la pointe au coin du bord plat (son haut est caché sous le trapèze), puis le long du V
+  // jusqu'au bas, où il finit par un petit bord horizontal
+  const left: EnvPt[] = [['L', 0], [-a + 16, 0], [-a + 16, F - 6], [-a, F], ['LF', height], ['L', height]];
+  const right: EnvPt[] = left.map(([x, y]) => [envMirror(x), y]);
+  // Trapèze : toute la largeur en haut, côtés en pente jusqu'au bord plat, coins nets
+  const front: EnvPt[] = [['L', 0], ['R', 0], ['R', ENV_SIDE_Y], [a, F], [-a, F], ['L', ENV_SIDE_Y]];
+  return { left: envPolygon(left), right: envPolygon(right), front: envPolygon(front) };
+}
+
 export function FinanceHeader({
   subtitle = 'bilan · compte de résultat',
   month,
@@ -118,54 +157,115 @@ export function FinanceHeader({
   canNext?: boolean;
   action?: React.ReactNode;
 }) {
+  const withMonth = month !== undefined;
+  // Hauteur de l'enveloppe : le trapèze, puis le V, qui s'ouvre jusqu'aux bords en bas (plus profond s'il porte le mois)
+  const height = ENV_FLAT_Y + (withMonth ? 64 : 34);
+  const { left, right, front } = envelopeShapes(height);
   return (
-    // En-tête compact : titre, sous-titre juste dessous (le retour se fait par le menu du bas)
-    <header className="relative px-4 pb-5 pt-2 text-center" style={{ backgroundColor: FIN.accent, color: FIN.paper }}>
-      <h1 className="pt-6 text-[32px] leading-none" style={script}>
-        Finances
-      </h1>
-      <p className="text-[9px] uppercase tracking-[0.3em] opacity-70">{subtitle}</p>
-      <FinanceNav />
-      {month !== undefined && (
-        // Trois colonnes : le mois reste centré, l'action se place à droite
-        <div className="mt-1 grid grid-cols-[1fr_auto_1fr] items-center">
-          <span />
-          <div className="flex items-center justify-center gap-3">
-            <button type="button" onClick={onPrev} aria-label="Mois précédent" className="rounded-full p-1 opacity-80 hover:opacity-100">
-              <ChevronLeft size={20} />
-            </button>
-            <span className="min-w-[140px] text-[13px] uppercase tracking-[0.25em]">{month}</span>
-            <button type="button" onClick={onNext} disabled={!canNext} aria-label="Mois suivant" className="rounded-full p-1 opacity-80 hover:opacity-100 disabled:opacity-20">
-              <ChevronRight size={20} />
-            </button>
-          </div>
-          <div className="flex justify-end">{action}</div>
+    <header className="shrink-0 text-center">
+      <div className="relative isolate mx-auto max-w-md" style={{ height, color: FIN.paper }}>
+        {/* Titre, sous-titre et menu, en clair, à l'intérieur du trapèze */}
+        <div className="px-4" style={{ paddingTop: ENV_TEXT_TOP }}>
+          <h1 className="text-[38px] leading-none" style={script}>
+            Finances
+          </h1>
+          <p className="text-[11px] uppercase tracking-[0.22em] opacity-85">{subtitle}</p>
+          <FinanceNav />
         </div>
-      )}
-      {/* Bas de l'en-tête : petit dôme central, comme les cartes de l'accueil */}
-      <svg className="absolute -bottom-px left-0 w-full" height={18} viewBox="0 0 412 18" preserveAspectRatio="none" aria-hidden>
-        <path d="M0 18 H156 A60 60 0 0 1 256 18 H412 V18Z" style={{ fill: FIN.mist }} />
-      </svg>
+        {/* Rabats des côtés, un peu plus sombres, avec une ombre sur le fond */}
+        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10" style={{ filter: 'drop-shadow(0 -1px 2.5px rgba(0,0,0,0.28))' }}>
+          {[left, right].map((clip, i) => (
+            <div
+              key={i}
+              className="absolute inset-0"
+              style={{ clipPath: clip, backgroundColor: FIN.accent, backgroundImage: 'linear-gradient(rgba(0,0,0,0.12), rgba(0,0,0,0.12))' }}
+            />
+          ))}
+        </div>
+        {/* Grand trapèze, par-dessus, avec son ombre et le haut qui fonce */}
+        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10" style={{ filter: 'drop-shadow(0 1.5px 3px rgba(0,0,0,0.35))' }}>
+          <div
+            className="absolute inset-0"
+            style={{
+              clipPath: front,
+              backgroundColor: FIN.accent,
+              backgroundImage: 'linear-gradient(rgba(0,0,0,0.3), rgba(0,0,0,0) 10px, rgba(255,255,255,0.05))'
+            }}
+          />
+        </div>
+        {withMonth && (
+          <>
+            {/* Choix du mois : sur le fond de la page, dans le V entre les rabats */}
+            <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center justify-center gap-2" style={{ color: FIN.navy }}>
+              <button type="button" onClick={onPrev} aria-label="Mois précédent" className="rounded-full p-1 opacity-80 hover:opacity-100">
+                <ChevronLeft size={20} />
+              </button>
+              <span className="min-w-[140px] text-[13px] uppercase tracking-[0.25em]">{month}</span>
+              <button type="button" onClick={onNext} disabled={!canNext} aria-label="Mois suivant" className="rounded-full p-1 opacity-80 hover:opacity-100 disabled:opacity-20">
+                <ChevronRight size={20} />
+              </button>
+            </div>
+            {/* Action facultative : à droite, à hauteur du mois */}
+            {action && <div className="absolute bottom-3.5 right-3">{action}</div>}
+          </>
+        )}
+      </div>
     </header>
   );
 }
 
 // Tuile de synthèse : intitulé, montant, et une précision facultative
 // "corner" : petit bouton posé sur le coin haut droit de la case (alerte…)
+// Les cases d'une même rangée (SummaryRow) se partagent la largeur selon la longueur de leur montant : un grand nombre
+// prend plus de place, un petit en laisse ; un montant encore trop long pour sa case s'écrit un peu plus petit
+export function SummaryRow({ children }: { children: React.ReactNode }) {
+  return <div className="flex gap-2">{children}</div>;
+}
+
 export function SummaryTile({ label, value, color, note, corner }: { label: string; value: string; color: string; note?: string; corner?: React.ReactNode }) {
+  // Montant estimé : le « ≈ » devant s'écrit en petit, collé au nombre, pour laisser la place aux chiffres
+  const approx = value.startsWith('≈');
+  const amount = approx ? value.replace(/^≈\s*/, '') : value;
+  // Part de la largeur : le nombre de caractères du montant (au moins 6, pour que l'intitulé reste lisible)
+  const length = amount.length + (approx ? 1 : 0);
+  const weight = Math.max(6, length);
+  const size = length > 14 ? 14 : length > 12 ? 16 : 18;
+  // Précision du bas : si la case est trop étroite pour l'écrire en entier, juste un tiret (mesurée à chaque
+  // changement de largeur de la case)
+  const noteBox = useRef<HTMLParagraphElement>(null);
+  const noteText = useRef<HTMLSpanElement>(null);
+  const [noteFits, setNoteFits] = useState(true);
+  useLayoutEffect(() => {
+    const box = noteBox.current;
+    const text = noteText.current;
+    if (!box || !text) return;
+    const check = () => setNoteFits(text.offsetWidth <= box.clientWidth);
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [note]);
   return (
     // Hauteur fixe, ligne de précision toujours réservée : deux synthèses (bilan, compte de résultat) ont la même taille,
     // avec ou sans précision, et rien ne bouge en passant de l'une à l'autre
-    <div className="relative flex h-[84px] min-w-0 flex-col justify-center rounded-sm border px-2 text-center" style={{ backgroundColor: FIN.paper, borderColor: FIN.line }}>
+    <div
+      className="relative flex h-[84px] min-w-0 flex-col justify-center rounded-sm border px-1.5 text-center"
+      style={{ backgroundColor: FIN.paper, borderColor: FIN.line, flex: `${weight} 1 0%` }}
+    >
       {corner && <div className="absolute -right-2 -top-2 z-[1]">{corner}</div>}
-      <p className="truncate text-[9px] uppercase tracking-[0.25em]" style={{ color: FIN.slate }}>
+      <p className="truncate text-[9px] uppercase tracking-[0.2em]" style={{ color: FIN.slate }}>
         {label}
       </p>
-      <p className="mt-1 truncate text-[18px] font-bold leading-tight" style={{ color }}>
-        {value}
+      <p className="mt-1 truncate whitespace-nowrap font-bold leading-tight tracking-tight" style={{ color, fontSize: size }}>
+        {approx && <span className="mr-px align-[0.1em] text-[0.6em] font-normal">≈</span>}
+        {amount}
       </p>
-      <p className="mt-0.5 h-[15px] truncate text-[10px] leading-[15px]" style={{ color: FIN.slate }}>
-        {note ?? ''}
+      <p ref={noteBox} className="relative mt-0.5 h-[15px] overflow-hidden whitespace-nowrap text-[10px] leading-[15px]" style={{ color: FIN.slate }}>
+        {/* Précision entière, invisible : sert à mesurer sa largeur */}
+        <span ref={noteText} aria-hidden className="invisible absolute left-0 top-0">
+          {note ?? ''}
+        </span>
+        {!note ? '' : noteFits ? note : <span title={note}>-</span>}
       </p>
     </div>
   );
@@ -292,6 +392,10 @@ export function Ledger({
   );
 }
 
+// Fond blanc des titres de rubriques repliées (et des lignes vides habillées comme eux) : plus visibles ; dépliées, elles
+// reprennent le fond de la page
+const FOLDED_BG = '#ffffff';
+
 // Ligne de titre d'une rubrique dans le tableau, avec son sous-total
 // "folded" : nombre de lignes repliées dans cette rubrique ; le bouton à côté de l'intitulé les montre ou les replie
 function LedgerGroupRow({
@@ -308,7 +412,7 @@ function LedgerGroupRow({
   onToggle?: () => void;
 }) {
   return (
-    <tr className={ROW} style={{ backgroundColor: FIN.mist }}>
+    <tr className={ROW} style={{ backgroundColor: folded > 0 && !open ? FOLDED_BG : FIN.mist }}>
       <th className="truncate border-b px-2 py-0 text-left text-[9px] font-bold uppercase tracking-[0.25em]" style={{ borderColor: FIN.line, color: FIN.slate }}>
         {title}
         {folded > 0 && onToggle && (
@@ -318,7 +422,8 @@ function LedgerGroupRow({
             aria-expanded={open}
             title={open ? 'Replier les lignes' : 'Montrer les lignes repliées'}
             className="ml-1.5 inline-flex items-center gap-0.5 rounded-full border px-1.5 align-middle text-[9px] normal-case tracking-normal"
-            style={{ borderColor: FIN.line, color: FIN.slate, backgroundColor: FIN.paper }}
+            // Plein tant que les lignes sont repliées, vide (contour seul) une fois dépliées
+            style={open ? { borderColor: FIN.slate, color: FIN.slate, backgroundColor: 'transparent' } : { borderColor: FIN.slate, color: FIN.paper, backgroundColor: FIN.slate }}
           >
             {open ? '−' : '+'}
             {folded}
@@ -427,14 +532,14 @@ export function SectionBlock({
 }
 
 // Lignes vides en bas d'un tableau, de la même hauteur qu'une ligne : pour qu'il ait autant de lignes que celui d'à côté
-// "group" : habillée comme un titre de rubrique (même fond, sans trait au milieu), sous des rubriques repliées
+// "group" : habillée comme un titre de rubrique repliée (fond blanc, sans trait au milieu), sous des rubriques repliées
 export function LedgerFiller({ count, variant = 'line' }: { count: number; variant?: 'line' | 'group' }) {
   if (count <= 0) return null;
   const group = variant === 'group';
   return (
     <tbody aria-hidden>
       {Array.from({ length: count }, (_, i) => (
-        <tr key={i} className={ROW} style={{ backgroundColor: group ? FIN.mist : undefined }}>
+        <tr key={i} className={ROW} style={{ backgroundColor: group ? FOLDED_BG : undefined }}>
           <td className={group ? 'border-b' : 'border-b border-r'} style={{ borderColor: FIN.line }} />
           <td className="border-b" style={{ borderColor: FIN.line }} />
           <td className="border-b" style={{ borderColor: FIN.line }} />
@@ -707,11 +812,17 @@ export function useFinanceToneVars() {
 export function FinancePage({ header, children }: { header: React.ReactNode; children: React.ReactNode }) {
   const toneVars = useFinanceToneVars();
   return (
-    <div className="finance-screen min-h-dvh pb-16 transition-colors duration-700" style={{ ...toneVars, backgroundColor: FIN.mist, color: FIN.navy }}>
+    <div className="finance-screen min-h-page flex flex-col transition-colors duration-700" style={{ ...toneVars, backgroundColor: FIN.mist, color: FIN.navy }}>
       {header}
-      <main className="mx-auto max-w-md px-4">{children}</main>
+      <FinanceLetter>{children}</FinanceLetter>
     </div>
   );
+}
+
+// Contenu d'une page Finances, sous l'en-tête
+export function FinanceLetter({ children }: { children: React.ReactNode }) {
+  // Juste un petit espace sous le dernier élément (la place du menu du bas est laissée à part, par PageShell)
+  return <main className="mx-auto w-full max-w-md px-4 pb-4">{children}</main>;
 }
 
 // Confirmation au style des Finances (même cadre que FinModal), même usage que useConfirm (components/ConfirmDialog) :

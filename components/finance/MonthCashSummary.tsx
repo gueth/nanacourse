@@ -5,7 +5,7 @@ import { formatEuros, shiftMonth } from '@/lib/finance';
 import { useCached, orThrow } from '@/lib/cache';
 import { useDebtCategories } from '@/lib/financeQueries';
 import { fetchTransactions, loadCategories, monthOf, summarize, type Transaction } from '@/lib/transactions';
-import { FIN, SummaryTile } from '@/components/finance/FinanceParts';
+import { FIN, SummaryRow, SummaryTile } from '@/components/finance/FinanceParts';
 
 // Opérations chargées pour un mois : une fenêtre de 13 mois (le mois et les 12 d'avant), gardée en mémoire (lib/cache)
 // et partagée entre le Budget et le compte de résultat du Bilan
@@ -44,11 +44,11 @@ export function MonthCashSummary({ period }: { period: string }) {
 
   return (
     <div>
-      <div className="grid grid-cols-3 gap-2">
+      <SummaryRow>
         <SummaryTile label="Entrées" note="revenus" value={euros(summary?.income ?? 0)} color={has ? FIN.sage : FIN.slate} />
         <SummaryTile label="Sorties" note="dépenses" value={euros(summary?.expenses ?? 0)} color={has ? FIN.rose : FIN.slate} />
         <SummaryTile label="Reste" note="résultat" value={euros(rest)} color={!has ? FIN.slate : rest >= 0 ? FIN.navy : FIN.rose} />
-      </div>
+      </SummaryRow>
     </div>
   );
 }

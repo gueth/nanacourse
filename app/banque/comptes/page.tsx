@@ -36,6 +36,9 @@ import {
   useFinanceToneVars,
   FIN,
   FinanceHeader,
+  FinButton,
+  FinanceLetter,
+  FinModal,
   ImportStatementButton,
   NewMonthCard,
   Ledger,
@@ -43,6 +46,7 @@ import {
   LedgerFiller,
   SectionBlock,
   StatementTabs,
+  SummaryRow,
   SummaryTile
 } from '@/components/finance/FinanceParts';
 import { SwipePages } from '@/components/SwipePages';
@@ -61,6 +65,15 @@ const BILAN_PAGES = ['Actif', 'Passif'];
 // Rubrique calculée des capitaux propres (passif), repliable comme les autres
 const CAPITAUX = 'capitaux-propres';
 const RESULT_PAGES = ['Produits', 'Charges'];
+// Ce qu'est chaque partie, ouvert par l'icône « i » à côté des intitulés
+const BILAN_INFOS = [
+  <p key="1">L&apos;actif, c&apos;est tout ce que tu possèdes à la fin du mois : l&apos;argent sur tes comptes et livrets, tes placements, tes biens de valeur, et les sommes qu&apos;on te doit encore.</p>,
+  <p key="2">Le passif dit d&apos;où vient ce que tu possèdes : de tes dettes (emprunts, découvert, argent que tu dois à des proches), ou de toi-même (capitaux propres). Le résultat du mois s&apos;ajoute à tes capitaux propres.</p>
+];
+const RESULT_INFOS = [
+  <p key="1">Les produits, c&apos;est tout l&apos;argent qui est entré pendant le mois : salaire, primes, aides, intérêts, remboursements reçus…</p>,
+  <p key="2">Les charges, c&apos;est tout l&apos;argent dépensé pendant le mois : logement, courses, transport, abonnements, loisirs… Produits moins charges donne le résultat : ce que tu as épargné (ou perdu) ce mois-ci.</p>
+];
 
 // Tableau des charges par grande catégorie : une rubrique par grande catégorie de sorties (ordre alphabétique), avec
 // les catégories qui ont des dépenses ce mois-ci ; les catégories sans grande catégorie viennent à la fin. Mêmes règles
@@ -77,7 +90,9 @@ function chargesByGroup(period: string, monthTx: Transaction[], isDebtTx: (t: Tr
   }
   const sections: Section[] = [];
   const lines: FinanceLine[] = [];
+  // Grande catégorie sans aucune dépense ce mois (montant 0) : pas affichée, le tableau reste court comme celui des produits
   const add = (id: string, title: string, rows: { id: string; label: string; amount: number }[]) => {
+    if (rows.length === 0) return;
     sections.push({ id, statement: 'resultat', side: 'charges', title, template: [] });
     rows.forEach((r, position) => lines.push({ id: r.id, period, statement: 'resultat', section: id, label: r.label, amount: r.amount, position }));
   };
@@ -231,6 +246,8 @@ export default function FinancePage() {
   // à côté du patrimoine
   const lineTotal = (section: string, label: string) =>
     shownLines.filter((l) => l.section === section && l.label.trim().toLowerCase() === label).reduce((s, l) => s + l.amount, 0);
+  // Liquidités : l'argent disponible sur les comptes et livrets (soldes estimés compris), affiché en haut du bilan
+  const liquidity = shownLines.filter((l) => l.section === 'liquidites' && !lineMissing(l)).reduce((s, l) => s + l.amount, 0);
   const iOwe = lineTotal('dettes', 'dette');
   const owedToMe = lineTotal('creances', 'créance');
 
@@ -367,7 +384,7 @@ export default function FinancePage() {
   }
 
   return (
-    <div className="finance-screen min-h-dvh pb-16 transition-colors duration-700" style={{ ...toneVars, backgroundColor: FIN.mist, color: FIN.navy }}>
+    <div className="finance-screen min-h-page flex flex-col transition-colors duration-700" style={{ ...toneVars, backgroundColor: FIN.mist, color: FIN.navy }}>
       {/* Pas de mois futur : les Finances retranscrivent ce qui a déjà été fait */}
       <FinanceHeader
         month={period ? monthLabel(period) : ''}
@@ -376,7 +393,7 @@ export default function FinancePage() {
         canNext={!!period && !!currentMonth && period < currentMonth}
       />
 
-      <main className="mx-auto max-w-md px-4">
+      <FinanceLetter>
         {/* Bilan ou compte de résultat : en haut, juste sous le choix du mois */}
         {!(isNew && !blank) && (
           <div className="mt-4">
@@ -433,25 +450,25 @@ export default function FinancePage() {
             {/* Synthèse du mois, en haut : celle du document ouvert. Bilan : patrimoine net et épargne du mois ;
                 compte de résultat : entrées, sorties et reste */}
             {/* Même place, même hauteur pour les deux (cases de hauteur fixe) : rien ne se décale en changeant d'onglet */}
-            <div className="mt-6">
+            <div className="mt-2.5">
             {tab === 'resultat' ? (
               period ? (
                 <MonthCashSummary period={period} />
               ) : (
-                <div className="grid grid-cols-3 gap-2">
+                <SummaryRow>
                   {[['Entrées', 'revenus'], ['Sorties', 'dépenses'], ['Reste', 'résultat']].map(([label, note]) => (
                     <SummaryTile key={label} label={label} note={note} value="—" color={FIN.slate} />
                   ))}
-                </div>
+                </SummaryRow>
               )
             ) : (
             <>
-            <div className="grid grid-cols-3 gap-2">
+            <SummaryRow>
               <SummaryTile
-                label="Patrimoine net"
-                value={incomplete ? '—' : `${estimatedBilan ? '≈ ' : ''}${formatEuros(t.patrimoine)}`}
-                color={incomplete || t.patrimoine >= 0 ? FIN.navy : FIN.rose}
-                note={estimatedBilan ? 'ce que je possède, estimé' : 'ce que je possède'}
+                label="Liquidités"
+                value={incomplete ? '—' : `${estimatedBilan ? '≈ ' : ''}${formatEuros(liquidity)}`}
+                color={incomplete || liquidity >= 0 ? FIN.navy : FIN.rose}
+                note={estimatedBilan ? 'sur mes comptes, estimé' : 'sur mes comptes'}
                 // Relevés manquants : un triangle sur le coin de la case, qui affiche ou masque leurs messages
                 corner={
                   !empty && missingAccounts.length > 0 ? (
@@ -483,39 +500,32 @@ export default function FinancePage() {
                 note="ce qu'on me doit"
                 corner={!empty && unbalanced ? unbalancedButton : undefined}
               />
-            </div>
+            </SummaryRow>
+            {/* Problèmes du bilan, ouverts par le triangle : dans une popin, avec l'import des relevés */}
             {showUnbalanced && !empty && unbalanced && (
-              <Link
-                href="/banque/releves"
-                className="mt-2 block rounded-sm border px-3 py-2 text-[12px]"
-                style={{ borderColor: FIN.rose, backgroundColor: FIN.paper, color: FIN.rose }}
-              >
+              <AlertModal title="Bilan déséquilibré" onClose={() => setShowUnbalanced(false)}>
                 <span className="flex items-start gap-2 py-0.5 font-bold">
                   <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden />
-                  <span>Bilan déséquilibré : vérifie tes connecteurs</span>
+                  <span>Vérifie tes connecteurs</span>
                 </span>
                 {balanceProblems.map((p) => (
                   <span key={p} className="block py-0.5 pl-[22px]">
                     {p}
                   </span>
                 ))}
-              </Link>
+              </AlertModal>
             )}
-            {/* Messages des relevés manquants, ouverts par le triangle : un par compte, ils mènent à l'import (même quand
-                le solde d'un livret est estimé) */}
+            {/* Relevés manquants, ouverts par le triangle : un message par compte, dans une popin avec l'import des relevés
+                (même quand le solde d'un livret est estimé) */}
             {showMissing && !empty && missingAccounts.length > 0 && (
-              <Link
-                href="/banque/releves"
-                className="mt-2 block rounded-sm border px-3 py-2 text-[12px]"
-                style={{ borderColor: FIN.rose, backgroundColor: FIN.paper, color: FIN.rose }}
-              >
+              <AlertModal title="Relevés manquants" onClose={() => setShowMissing(false)}>
                 {missingAccounts.map((a) => (
                   <span key={a} className="flex items-start gap-2 py-0.5">
                     <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden />
                     <span>Relevé {a} manquant</span>
                   </span>
                 ))}
-              </Link>
+              </AlertModal>
             )}
             </>
             )}
@@ -527,6 +537,8 @@ export default function FinancePage() {
                 key="bilan"
                 color={FIN.accent}
                 labels={BILAN_PAGES}
+                infos={BILAN_INFOS}
+                infoModal={FinModal}
                 tabs
                 scriptLabels
                 dots={false}
@@ -535,9 +547,6 @@ export default function FinancePage() {
                     <Ledger open={tablesOpen} onToggle={() => setTablesOpen((o) => !o)} total={known(t.actif)} color={ON_NAVY.sage} alert={!empty && unbalanced} totalLabel="Total de l'actif">
                       {renderSide('actif')}
                     </Ledger>
-                    <Explain>
-                      L&apos;actif, c&apos;est tout ce que tu possèdes à la fin du mois : l&apos;argent sur tes comptes et livrets, tes placements, tes biens de valeur, et les sommes qu&apos;on te doit encore.
-                    </Explain>
                   </div>,
                   <div key="passif">
                     <Ledger open={tablesOpen} onToggle={() => setTablesOpen((o) => !o)} total={known(t.patrimoine + t.dettes)} color={ON_NAVY.rose} alert={!empty && unbalanced} totalLabel="Total du passif">
@@ -551,9 +560,6 @@ export default function FinancePage() {
                       />
                       {renderSide('passif')}
                     </Ledger>
-                    <Explain>
-                      Le passif dit d&apos;où vient ce que tu possèdes : de tes dettes (emprunts, découvert, argent que tu dois à des proches), ou de toi-même (capitaux propres). Le résultat du mois s&apos;ajoute à tes capitaux propres.
-                    </Explain>
                   </div>
                 ]}
               />
@@ -563,6 +569,8 @@ export default function FinancePage() {
                 key="resultat"
                 color={FIN.accent}
                 labels={RESULT_PAGES}
+                infos={RESULT_INFOS}
+                infoModal={FinModal}
                 tabs
                 scriptLabels
                 dots={false}
@@ -571,17 +579,11 @@ export default function FinancePage() {
                     <Ledger open={tablesOpen} onToggle={() => setTablesOpen((o) => !o)} total={knownResult(t.produits)} color={ON_NAVY.sage} totalLabel="Total des produits">
                       {renderSide('produits')}
                     </Ledger>
-                    <Explain>
-                      Les produits, c&apos;est tout l&apos;argent qui est entré pendant le mois : salaire, primes, aides, intérêts, remboursements reçus…
-                    </Explain>
                   </div>,
                   <div key="charges">
                     <Ledger open={tablesOpen} onToggle={() => setTablesOpen((o) => !o)} total={knownResult(t.charges)} color={ON_NAVY.rose} totalLabel="Total des charges">
                       {renderSide('charges')}
                     </Ledger>
-                    <Explain>
-                      Les charges, c&apos;est tout l&apos;argent dépensé pendant le mois : logement, courses, transport, abonnements, loisirs… Produits moins charges donne le résultat : ce que tu as épargné (ou perdu) ce mois-ci.
-                    </Explain>
                   </div>
                 ]}
               />
@@ -589,19 +591,11 @@ export default function FinancePage() {
             )}
           </>
         )}
-      </main>
+      </FinanceLetter>
     </div>
   );
 }
 
-// Explication en bas d'une partie du bilan ou du compte de résultat (ce qu'est l'actif, le passif...)
-function Explain({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="mt-3 text-[11px] leading-relaxed" style={{ color: FIN.slate }}>
-      {children}
-    </p>
-  );
-}
 
 // Virements entre mes comptes du mois : pour chacun, l'autre compte (celui qui reçoit l'argent, ou qui l'envoie).
 // Ceux dont l'autre compte n'est pas connu sont à préciser ; après un changement dans la liste des opérations, ou quand
@@ -712,4 +706,28 @@ function describeError(message: string) {
     return "La table « finance_lines » n'existe pas encore dans Supabase : crée-la avec le script SQL indiqué en haut de lib/finance.ts.";
   }
   return `Erreur : ${message}`;
+}
+
+// Alerte ouverte par un triangle (relevés manquants, bilan déséquilibré) : le message dans une popin, avec un bouton
+// pour importer les relevés et un pour fermer l'alerte
+function AlertModal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <FinModal title={title} onClose={onClose}>
+      <div className="mt-2 rounded-sm border px-3 py-2 text-[12px]" style={{ borderColor: FIN.rose, color: FIN.rose }}>
+        {children}
+      </div>
+      <div className="mt-5 flex flex-col gap-2">
+        <Link
+          href="/banque/releves"
+          className="rounded-full border py-2.5 text-center text-[10px] uppercase tracking-[0.2em]"
+          style={{ backgroundColor: FIN.accent, borderColor: FIN.accent, color: FIN.paper }}
+        >
+          Importer les relevés
+        </Link>
+        <FinButton outline onClick={onClose}>
+          Fermer l&apos;alerte
+        </FinButton>
+      </div>
+    </FinModal>
+  );
 }

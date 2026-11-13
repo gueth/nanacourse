@@ -24,6 +24,7 @@ import {
   useRewards
 } from '@/lib/challenges';
 import { CardSpotlight } from '@/components/profile/CardSpotlight';
+import { playSfx } from '@/lib/sfx';
 import { Doily, EditablePhoto, EditButton, Envelope, mono, NoteSection, paperGrain, PaperClip, PaperModal, PF, Ribbon, script, serif, Stamp, useProfileConfirm } from '@/components/profile/ProfileParts';
 
 // Informations d'exemple, pour voir la page une fois remplie (à remplacer par les vraies).
@@ -81,7 +82,12 @@ export default function ProfilePage() {
   // Fenêtre de détail ouverte depuis la page de droite : budgets, défis ou coupons
   const [panel, setPanel] = useState<'budgets' | 'defis' | 'coupons' | null>(null);
   // Carnet plié en deux comme un menu : fermé (on voit sa couverture) ou ouvert à plat
-  const [notebookOpen, setNotebookOpen] = useState(false);
+  const [notebookOpen, setNotebookOpenState] = useState(false);
+  // Ouvrir ou fermer le carnet fait le bruit d'une page qu'on tourne
+  function setNotebookOpen(open: boolean) {
+    playSfx('pageTurn');
+    setNotebookOpenState(open);
+  }
   // Carte de gauche mise au premier plan, avec sa place de départ sur l'écran
   const [spotlight, setSpotlight] = useState<{ id: 'about' | 'visite'; rect: DOMRect } | null>(null);
   const budgets = budgetsQuery.data ?? [];
@@ -160,7 +166,7 @@ export default function ProfilePage() {
   }
 
   return (
-    <div className="relative isolate min-h-dvh overflow-x-hidden pb-4" style={{ backgroundColor: PF.bg, color: PF.ink }}>
+    <div className="relative isolate min-h-page overflow-x-hidden pb-4" style={{ backgroundColor: PF.bg, color: PF.ink }}>
       {/* DÉCORS DU FOND : quelques napperons et un ruban posés une fois pour toutes, qui ne bougent pas quand le carnet s'ouvre.
           Posés sur toute la page, jusqu'en bas de l'écran ; coupés à ses bords (overflow-hidden), ils n'allongent pas la page */}
       <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden" aria-hidden>

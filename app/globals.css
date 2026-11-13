@@ -1090,3 +1090,13 @@ body:has(.cuisine-page) {
     display: none;
   }
 }
+
+/* Page plein écran juste à la hauteur de l'écran, sans défilement de trop : on retire la marge sous la page (barre du bas
+   du téléphone, posée sur body) et, quand il est là, la place réservée au menu du bas (components/TabBar.tsx). La page ne
+   défile donc que si son contenu dépasse (par exemple une fois des tableaux dépliés). */
+.min-h-page {
+  min-height: calc(100dvh - env(safe-area-inset-bottom));
+}
+body:has(nav[data-tab-bar]) .min-h-page {
+  min-height: calc(100dvh - 60px - env(safe-area-inset-bottom));
+}

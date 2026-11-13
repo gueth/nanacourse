@@ -68,8 +68,11 @@ export function TabBar() {
       )}
       <nav
         aria-label="Menu principal"
-        className="fixed inset-x-0 bottom-0 z-40 border-t pb-[env(safe-area-inset-bottom)]"
-        style={{ backgroundColor: TAB_BAR_BG, borderColor: 'rgba(91,74,95,0.12)' }}
+        data-tab-bar
+        className="fixed inset-x-0 -bottom-px z-40 border-t pb-[calc(env(safe-area-inset-bottom)+1px)]"
+        // Descendu d'un pixel et prolongé vers le bas par son ombre : selon l'écran, l'arrondi des pixels laissait un
+        // mince trait sombre entre le menu et la barre du téléphone
+        style={{ backgroundColor: TAB_BAR_BG, borderColor: 'rgba(91,74,95,0.12)', boxShadow: `0 48px 0 0 ${TAB_BAR_BG}` }}
       >
         <ul className="mx-auto flex max-w-md items-stretch justify-around" style={{ height: TAB_BAR_HEIGHT }}>
           {TABS.map(({ label, icon: Icon, href, match }) => {

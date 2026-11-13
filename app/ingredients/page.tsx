@@ -15,7 +15,7 @@ export default function IngredientsPage() {
   const data = query.data;
   return (
     <ModalVariantContext.Provider value="cuisine">
-      <div className="cuisine-page min-h-dvh overflow-x-clip pb-4" style={{ backgroundColor: CUISINE_BG, color: CUISINE_INK }}>
+      <div className="cuisine-page min-h-page overflow-x-clip pb-4" style={{ backgroundColor: CUISINE_BG, color: CUISINE_INK }}>
         <div className="cuisine mx-auto max-w-[430px] px-4 pt-4">
           {/* Retour à la page des courses, d'où s'ouvre cette page */}
           <Link href="/course" className="-ml-2 inline-flex items-center gap-1 px-2 py-2 text-[13px] font-medium opacity-70">
